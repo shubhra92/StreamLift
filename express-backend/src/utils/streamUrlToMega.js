@@ -3,11 +3,35 @@ import { progressMap } from "./progressStore.js";
 import { mega } from "./megaStorage.js";
 
 
-export async function  streamUrlToMega(id, url) {
+async function fetchWithRetry(url, retries = 3, timeout = 30000) {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
+            
+            const response = await fetch(url, { 
+                signal: controller.signal,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            });
+            
+            clearTimeout(timeoutId);
+            return response;
+        } catch (err) {
+            console.log(`Fetch attempt ${attempt}/${retries} failed:`, err.message);
+            if (attempt === retries) throw err;
+            // Wait before retry (exponential backoff)
+            await new Promise(r => setTimeout(r, 1000 * attempt));
+        }
+    }
+}
 
-    const response = await fetch(url);
+export async function streamUrlToMega(id, url) {
+
+    const response = await fetchWithRetry(url);
     if (!response.ok) {
-        return res.status(400).json({ details: "Download failed" });
+        throw new Error(`Download failed with status ${response.status}`);
     }
 
     const [fileType, fileExtention] = response.headers.get("content-type")?.split("/")
