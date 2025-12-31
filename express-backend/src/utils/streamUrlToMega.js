@@ -1,6 +1,6 @@
 import path from "path";
 import { progressMap } from "./progressStore.js";
-import { mega } from "./megaStorage.js";
+import { initMega } from "./megaStorage.js";
 
 
 async function fetchWithRetry(url, retries = 3, timeout = 30000) {
@@ -28,6 +28,13 @@ async function fetchWithRetry(url, retries = 3, timeout = 30000) {
 }
 
 export async function streamUrlToMega(id, url) {
+    // Get the initialized mega instance
+    const mega = await initMega();
+    
+    // Ensure storage is ready before proceeding
+    if (mega.ready && typeof mega.ready.then === 'function') {
+        await mega.ready;
+    }
 
     const response = await fetchWithRetry(url);
     if (!response.ok) {

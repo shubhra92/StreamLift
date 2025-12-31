@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import 'dotenv/config'
 import routes from "./routes/index.r.js";
-import { mega } from "./utils/megaStorage.js";
+import { initMega } from "./utils/megaStorage.js";
 
 const app = express();
 
@@ -34,7 +34,7 @@ const PORT = process.env.PORT || 4000;
 // Wait for MEGA to be ready before marking server as ready
 async function startServer() {
   try {
-    await mega.ready;
+    await initMega();
     console.log("Connected to MEGA ✅");
     isReady = true;
   } catch (err) {

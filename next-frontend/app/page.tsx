@@ -1,13 +1,25 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState, useEffect } from "react";
+import { useProgress } from "./hooks/useProgress";
 
 export default function Home() {
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState("");
-  const [progress, setProgress] = useState<number | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
-  const [location, setLocation] = useState<"server" | "mega">("server")
+  const [fileStatusId, setFileStatusId] = useState<string | null>(null);
+  const [location, setLocation] = useState<"server" | "mega">("server");
+
+  const { progress, error, isDone } = useProgress(fileStatusId);
+
+  // Handle progress updates
+  useEffect(() => {
+    if (isDone) {
+      setStatus("Download completed 🎉");
+    }
+    if (error) {
+      setStatus(`Progress error: ${error} ❌`);
+    }
+  }, [isDone, error]);
 
   const startStreaming = async () => {
     if (!url) {
@@ -16,8 +28,7 @@ export default function Home() {
     }
 
     setStatus("Starting streaming...");
-    setProgress(0);
-
+    setFileStatusId(null);
 
     try {
       const res = await fetch(`/api/stream-download/${location}`, {
@@ -30,34 +41,9 @@ export default function Home() {
 
       if (!res.ok) throw new Error("Failed");
 
-
-      const {data} = await res.json();
+      const { data } = await res.json();
       setStatus("Streaming started 🚀");
-
-      // 🔥 START LISTENING TO PROGRESS HERE
-      const es = new EventSource(`/api/progress/${data.fileStatusId}`);
-      eventSourceRef.current = es;
-
-      es.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-
-        if (typeof data.percent === "number") {
-          setProgress(data.percent);
-        }
-
-        if (data.done) {
-          setStatus("Download completed 🎉");
-          es.close();
-        }
-      }
-
-      es.onerror = () => {
-        setStatus("Progress connection lost ❌");
-        es.close();
-      };
-
-
-      // setStatus("Streaming started successfully 🚀");
+      setFileStatusId(data.fileStatusId);
     } catch (err) {
       setStatus("Error starting stream ❌");
     }
@@ -100,16 +86,16 @@ export default function Home() {
           </p>
         )}
 
-        {progress !== null && (
+        {progress && (
           <div className="mt-4">
             <div className="w-full bg-gray-200 rounded h-3">
               <div
                 className="bg-green-600 h-3 rounded"
-                style={{ width: `${progress}%` }}
+                style={{ width: `${progress.percent ?? 0}%` }}
               />
             </div>
             <p className="mt-2 text-sm text-gray-700">
-              Progress: {progress}%
+              Progress: {progress.percentFixed2 ?? '0.00'}%
             </p>
           </div>
         )}

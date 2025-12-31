@@ -1,3 +1,4 @@
 node_modules
 downloads
 .env
+.mega-session.json
