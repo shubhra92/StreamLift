@@ -1,10 +1,66 @@
 import { Storage } from "megajs";
 import { db, megaSessions } from "../db/index.js";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 
 let mega = null;
 let isReady = false;
 
+// Get current IP info (country, IP address)
+async function getCurrentIpInfo() {
+  // Try ipapi.co first
+  try {
+    const response = await fetch('https://ipapi.co/json/');
+    const data = await response.json();
+    if (data.ip && data.country_code) {
+      return {
+        ip: data.ip,
+        country: data.country_code, // e.g., 'US', 'GB', 'IN'
+        countryName: data.country_name,
+        region: data.region,
+        city: data.city,
+      };
+    }
+  } catch (err) {
+    console.error("ipapi.co failed:", err.message);
+  }
+
+  // Fallback to ifconfig.co
+  try {
+    const response = await fetch('https://ifconfig.co/json');
+    const data = await response.json();
+    if (data.ip && data.country_iso) {
+      return {
+        ip: data.ip,
+        country: data.country_iso, // e.g., 'US', 'GB', 'IN'
+        countryName: data.country,
+        region: data.region_name,
+        city: data.city,
+      };
+    }
+  } catch (err) {
+    console.error("ifconfig.co failed:", err.message);
+  }
+
+  // Last fallback: ipify + ipapi.co combo
+  try {
+    const response = await fetch('https://api.ipify.org?format=json');
+    const { ip } = await response.json();
+    const geoResponse = await fetch(`https://ipapi.co/${ip}/json/`);
+    const geoData = await geoResponse.json();
+    return {
+      ip: geoData.ip,
+      country: geoData.country_code,
+      countryName: geoData.country_name,
+      region: geoData.region,
+      city: geoData.city,
+    };
+  } catch (fallbackErr) {
+    console.error("All IP services failed:", fallbackErr.message);
+    return null;
+  }
+}
+
+// Get session from DB by email
 async function getSessionFromDb() {
   const email = process.env.MEGA_EMAIL;
   const sessions = await db
@@ -16,34 +72,92 @@ async function getSessionFromDb() {
   return sessions[0] || null;
 }
 
-async function saveSessionToDb(sessionData) {
+// Get session by country
+async function getSessionByCountry(country) {
   const email = process.env.MEGA_EMAIL;
-  const existingSession = await getSessionFromDb();
+  const sessions = await db
+    .select()
+    .from(megaSessions)
+    .where(
+      and(
+        eq(megaSessions.email, email),
+        eq(megaSessions.country, country),
+        eq(megaSessions.isActive, true)
+      )
+    )
+    .limit(1);
+
+  return sessions[0] || null;
+}
+
+// Search sessions by country (returns all matching sessions)
+async function searchSessionsByCountry(country) {
+  const sessions = await db
+    .select()
+    .from(megaSessions)
+    .where(
+      and(
+        eq(megaSessions.country, country),
+        eq(megaSessions.isActive, true)
+      )
+    );
+
+  return sessions;
+}
+
+// Get all sessions for an email
+async function getAllSessionsForEmail(email) {
+  const sessions = await db
+    .select()
+    .from(megaSessions)
+    .where(eq(megaSessions.email, email || process.env.MEGA_EMAIL));
+
+  return sessions;
+}
+
+async function saveSessionToDb(sessionData, ipInfo) {
+  const email = process.env.MEGA_EMAIL;
+  
+  // Check if session exists for this email AND country
+  const existingSession = ipInfo?.country 
+    ? await getSessionByCountry(ipInfo.country)
+    : await getSessionFromDb();
 
   if (existingSession) {
     await db
       .update(megaSessions)
       .set({
         sessionData: JSON.stringify(sessionData),
+        country: ipInfo?.country || existingSession.country,
+        ipAddress: ipInfo?.ip || existingSession.ipAddress,
         isActive: true,
         updatedAt: new Date(),
       })
-      .where(eq(megaSessions.email, email));
+      .where(eq(megaSessions.id, existingSession.id));
   } else {
     await db.insert(megaSessions).values({
       email,
       sessionData: JSON.stringify(sessionData),
+      country: ipInfo?.country,
+      ipAddress: ipInfo?.ip,
       isActive: true,
     });
   }
 }
 
-async function deleteSessionFromDb() {
-  const email = process.env.MEGA_EMAIL;
-  await db
-    .update(megaSessions)
-    .set({ isActive: false, updatedAt: new Date() })
-    .where(eq(megaSessions.email, email));
+async function deleteSessionFromDb(sessionId) {
+  if (sessionId) {
+    await db
+      .update(megaSessions)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(megaSessions.id, sessionId));
+  } else {
+    const email = process.env.MEGA_EMAIL;
+    await db
+      .update(megaSessions)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(megaSessions.email, email));
+  }
 }
 
 async function initMega() {
@@ -52,10 +166,30 @@ async function initMega() {
     return mega;
   }
 
-  // Try to restore from saved session in DB
-  const dbSession = await getSessionFromDb();
+  // Get current IP info
+  const currentIpInfo = await getCurrentIpInfo();
+  console.log("Current IP info:", currentIpInfo);
 
-  console.log("DB Session found:", dbSession ? "yes" : "no");
+  // Try to find session matching current country
+  let dbSession = null;
+  
+  if (currentIpInfo?.country) {
+    dbSession = await getSessionByCountry(currentIpInfo.country);
+    console.log(`Session for country ${currentIpInfo.country}:`, dbSession ? "found" : "not found");
+  }
+  
+  // Fallback to any session for this email if no country-specific session
+  if (!dbSession) {
+    dbSession = await getSessionFromDb();
+    console.log("Fallback session found:", dbSession ? "yes" : "no");
+    
+    // Check if existing session country matches current IP country
+    if (dbSession && currentIpInfo?.country && dbSession.country !== currentIpInfo.country) {
+      console.log(`Session country mismatch: session=${dbSession.country}, current=${currentIpInfo.country}`);
+      console.log("Will create new session for current country");
+      dbSession = null; // Force new login
+    }
+  }
 
   if (dbSession && dbSession.isActive && dbSession.sessionData) {
     try {
@@ -66,10 +200,8 @@ async function initMega() {
         throw new Error("Invalid session data: missing sid or key");
       }
 
-      // Use Storage.fromJSON - it expects the same format as toJSON() output
-      // key should be base64 string, not array
       mega = Storage.fromJSON({
-        key: sessionData.key,  // base64 string
+        key: sessionData.key,
         sid: sessionData.sid,
         name: sessionData.name,
         user: sessionData.user,
@@ -81,20 +213,15 @@ async function initMega() {
         },
       });
 
-      // reload() fetches file tree using existing sid
       await mega.reload();
-
-      // Manually set status to 'ready' since reload() doesn't do it
-      // (only login() sets status, but we're restoring session)
       mega.status = 'ready';
-
       isReady = true;
 
       console.log("Mega session restored successfully from database!");
       return mega;
     } catch (err) {
-      console.log("Failed to restore session, will login fresh");
-      await deleteSessionFromDb();
+      console.log("Failed to restore session, will login fresh:", err.message);
+      await deleteSessionFromDb(dbSession.id);
       mega = null;
       isReady = false;
     }
@@ -110,32 +237,92 @@ async function initMega() {
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
   });
 
-  // Wait for storage to be ready
   await mega.ready;
   isReady = true;
 
-  // Save session using toJSON() format
-  await saveSession();
-  console.log("Mega login successful, session saved to database!");
+  // Save session with IP info
+  await saveSession(currentIpInfo);
+  console.log(`Mega login successful, session saved for country: ${currentIpInfo?.country || 'unknown'}`);
 
   return mega;
 }
 
-async function saveSession() {
+async function saveSession(ipInfo) {
   if (!mega) return;
 
-  // Use mega.toJSON() which returns the correct format:
-  // { key: base64string, sid, name, user, options }
   const sessionData = mega.toJSON();
 
-  // Don't save password in options
   if (sessionData.options) {
     delete sessionData.options.password;
   }
 
-  await saveSessionToDb(sessionData);
+  await saveSessionToDb(sessionData, ipInfo);
 }
 
-// Export the init function and a getter for the instance
-export { initMega };
-export { mega };
+// Force create new session (useful when IP country changes)
+async function createNewSession() {
+  const currentIpInfo = await getCurrentIpInfo();
+  console.log("Creating new session for IP:", currentIpInfo);
+
+  // Reset current instance
+  mega = null;
+  isReady = false;
+
+  // Fresh login
+  console.log("Logging into Mega...");
+  mega = new Storage({
+    email: process.env.MEGA_EMAIL,
+    password: process.env.MEGA_PASSWORD,
+    autologin: true,
+    keepalive: true,
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+  });
+
+  await mega.ready;
+  isReady = true;
+
+  await saveSession(currentIpInfo);
+  console.log(`New Mega session created for country: ${currentIpInfo?.country || 'unknown'}`);
+
+  return mega;
+}
+
+// Check if current session matches IP country
+async function validateSessionCountry() {
+  const currentIpInfo = await getCurrentIpInfo();
+  const dbSession = await getSessionFromDb();
+
+  if (!dbSession) {
+    return { valid: false, reason: 'no_session', currentCountry: currentIpInfo?.country };
+  }
+
+  if (!currentIpInfo?.country) {
+    return { valid: true, reason: 'ip_check_failed', sessionCountry: dbSession.country };
+  }
+
+  if (dbSession.country !== currentIpInfo.country) {
+    return {
+      valid: false,
+      reason: 'country_mismatch',
+      sessionCountry: dbSession.country,
+      currentCountry: currentIpInfo.country,
+    };
+  }
+
+  return {
+    valid: true,
+    reason: 'match',
+    country: dbSession.country,
+  };
+}
+
+export { 
+  initMega, 
+  mega,
+  getCurrentIpInfo,
+  getSessionByCountry,
+  searchSessionsByCountry,
+  getAllSessionsForEmail,
+  createNewSession,
+  validateSessionCountry,
+};

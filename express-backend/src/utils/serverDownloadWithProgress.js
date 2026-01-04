@@ -9,7 +9,21 @@ export async function serverDownloadWithProgress(id, url, options = { fileName: 
 
     const response = await fetch(url);
     if (!response.ok) {
-        return res.status(400).json({ details: "Download failed" });
+        const errorData = await response.text()
+        await db.update(fileDownloads).set({
+            status: "failed",
+            errorMessage: errorData,
+            updatedAt: new Date(),
+        }).where(eq(fileDownloads.id, id))
+
+        progressMap.set(id, {
+            "downloadedBytes":null,
+            "totalBytes":null,
+            "percentFixed2": null,
+            "percent": null,
+            "done": true
+        })
+        throw new Error(`Download failed with status ${response.status}`);
     }
 
     const [fileType, fileExtention] = response.headers.get("content-type")?.split("/")
@@ -24,7 +38,6 @@ export async function serverDownloadWithProgress(id, url, options = { fileName: 
 
     //update db save file deatil status fro pending to downloading
     await db.update(fileDownloads).set({
-        location: "server",
         locationPath: filePath,
         fileName:filename,
         status: "downloading",

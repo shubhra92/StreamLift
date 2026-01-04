@@ -5,6 +5,8 @@ export const megaSessions = pgTable('mega_sessions', {
   id: uuid('id').defaultRandom().primaryKey(),
   email: text('email').notNull(),
   sessionData: text('session_data'), // JSON string of mega session
+  country: text('country'), // Country code from IP (e.g., 'US', 'GB', 'DE')
+  ipAddress: text('ip_address'), // IP address when session was created
   isActive: boolean('is_active').default(true),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),

@@ -40,6 +40,20 @@ export async function streamUrlToMega(id, url, options = { fileName: null }) {
 
     const response = await fetchWithRetry(url);
     if (!response.ok) {
+        const errorData = await response.text()
+        await db.update(fileDownloads).set({
+            status: "failed",
+            errorMessage: errorData,
+            updatedAt: new Date(),
+        }).where(eq(fileDownloads.id, id))
+        
+        progressMap.set(id, {
+            "downloadedBytes":null,
+            "totalBytes":null,
+            "percentFixed2": null,
+            "percent": null,
+            "done": true
+        })
         throw new Error(`Download failed with status ${response.status}`);
     }
 
