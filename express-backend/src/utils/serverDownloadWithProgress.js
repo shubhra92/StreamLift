@@ -40,6 +40,7 @@ export async function serverDownloadWithProgress(id, url, options = { fileName: 
     await db.update(fileDownloads).set({
         locationPath: filePath,
         fileName:filename,
+        fileType: fileType,
         status: "downloading",
         fileSize: totalBytes,
         updatedAt: new Date(),
@@ -78,19 +79,19 @@ export async function serverDownloadWithProgress(id, url, options = { fileName: 
                 close() {
                     fileStream.end();
                     console.log("Download completed ✅");
-                    progressMap.set(id, {
-                        "downloadedBytes": downloadedBytes,
-                        "percent": 100,
-                        "percentFixed2": 100.00,
-                         "done": true
-                    });
-
+                    
                     //update db save file deatil status fro pending to downloading
                     db.update(fileDownloads).set({
                         status: "completed",
                         updatedAt: new Date(),
                     }).where(eq(fileDownloads.id, id))
                     .then(()=>{
+                        progressMap.set(id, {
+                            "downloadedBytes": downloadedBytes,
+                            "percent": 100,
+                            "percentFixed2": 100.00,
+                            "done": true
+                        });
                         resolve();
                     }).catch(()=>{
                         console.log("DB update failed");
@@ -104,6 +105,9 @@ export async function serverDownloadWithProgress(id, url, options = { fileName: 
                         updatedAt: new Date(),
                     }).where(eq(fileDownloads.id, id))
                     .then(()=>{
+                        progressMap.set(id, {
+                            "done": true
+                        });
                         reject(err);
                     }).catch(()=>{
                         console.log("DB update failed");

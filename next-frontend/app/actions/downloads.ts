@@ -23,6 +23,16 @@ export async function getDownloads() {
   return downloads;
 }
 
+export async function getDownloadById(fileId: string) {
+  const [download] = await db
+    .select()
+    .from(fileDownloads)
+    .where(eq(fileDownloads.id, fileId))
+    .limit(1);
+  
+  return download;
+}
+
 export async function deleteDownload(id: string) {
   // Check if download is currently downloading
   const [existing] = await db.select().from(fileDownloads).where(eq(fileDownloads.id, id));

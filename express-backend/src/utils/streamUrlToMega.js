@@ -72,6 +72,7 @@ export async function streamUrlToMega(id, url, options = { fileName: null }) {
     await db.update(fileDownloads).set({
         locationPath: filename,
         fileName:filename,
+        fileType: fileType,
         status: "downloading",
         fileSize: totalBytes,
         updatedAt: new Date(),
@@ -80,13 +81,6 @@ export async function streamUrlToMega(id, url, options = { fileName: null }) {
     return await new Promise((resolve, reject) => {
         fileStream.on("complete", (file) => {
             console.log("MEGA upload completed ✅");
-            progressMap.set(id, {
-                downloadedBytes,
-                totalBytes,
-                percent: 100,
-                percentFixed2: 100.0,
-                done: true,
-            });
 
             //update db save file deatil status from pending to downloading
             db.update(fileDownloads).set({
@@ -94,6 +88,13 @@ export async function streamUrlToMega(id, url, options = { fileName: null }) {
                 updatedAt: new Date(),
             }).where(eq(fileDownloads.id, id))
                 .then(() => {
+                    progressMap.set(id, {
+                        downloadedBytes,
+                        totalBytes,
+                        percent: 100,
+                        percentFixed2: 100.0,
+                        done: true,
+                    });
                     resolve(file);
                 }).catch(() => {
                     console.log("failed to update db")
@@ -110,6 +111,9 @@ export async function streamUrlToMega(id, url, options = { fileName: null }) {
                 updatedAt: new Date(),
             }).where(eq(fileDownloads.id, id))
                 .then(() => {
+                    progressMap.set(id, {
+                        "done": true
+                    });
                     reject(err);
                 }).catch(() => {
                     console.log("failed to update db")
@@ -166,6 +170,9 @@ export async function streamUrlToMega(id, url, options = { fileName: null }) {
                         updatedAt: new Date(),
                     }).where(eq(fileDownloads.id, id))
                         .then(() => {
+                            progressMap.set(id, {
+                                "done": true
+                            });
                             reject(err);
                         }).catch(() => {
                             console.log("failed to update db")

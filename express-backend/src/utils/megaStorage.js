@@ -7,57 +7,65 @@ let isReady = false;
 
 // Get current IP info (country, IP address)
 async function getCurrentIpInfo() {
-  // Try ipapi.co first
+  // Try ip-api.com first (free, 45 req/min limit, no API key needed)
+  try {
+    const response = await fetch('http://ip-api.com/json/?fields=status,country,countryCode,regionName,city,query');
+    if (response.ok) {
+      const data = await response.json();
+      if (data.status === 'success' && data.query && data.countryCode) {
+        return {
+          ip: data.query,
+          country: data.countryCode,
+          countryName: data.country,
+          region: data.regionName,
+          city: data.city,
+        };
+      }
+    }
+  } catch (err) {
+    console.error("ip-api.com failed:", err.message);
+  }
+
+  // Fallback to ipwho.is (free, no rate limit advertised)
+  try {
+    const response = await fetch('https://ipwho.is/');
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success && data.ip && data.country_code) {
+        return {
+          ip: data.ip,
+          country: data.country_code,
+          countryName: data.country,
+          region: data.region,
+          city: data.city,
+        };
+      }
+    }
+  } catch (err) {
+    console.error("ipwho.is failed:", err.message);
+  }
+
+  // Last fallback: ipapi.co (has stricter rate limits)
   try {
     const response = await fetch('https://ipapi.co/json/');
-    const data = await response.json();
-    if (data.ip && data.country_code) {
-      return {
-        ip: data.ip,
-        country: data.country_code, // e.g., 'US', 'GB', 'IN'
-        countryName: data.country_name,
-        region: data.region,
-        city: data.city,
-      };
+    if (response.ok) {
+      const data = await response.json();
+      if (data.ip && data.country_code && !data.error) {
+        return {
+          ip: data.ip,
+          country: data.country_code,
+          countryName: data.country_name,
+          region: data.region,
+          city: data.city,
+        };
+      }
     }
   } catch (err) {
     console.error("ipapi.co failed:", err.message);
   }
 
-  // Fallback to ifconfig.co
-  try {
-    const response = await fetch('https://ifconfig.co/json');
-    const data = await response.json();
-    if (data.ip && data.country_iso) {
-      return {
-        ip: data.ip,
-        country: data.country_iso, // e.g., 'US', 'GB', 'IN'
-        countryName: data.country,
-        region: data.region_name,
-        city: data.city,
-      };
-    }
-  } catch (err) {
-    console.error("ifconfig.co failed:", err.message);
-  }
-
-  // Last fallback: ipify + ipapi.co combo
-  try {
-    const response = await fetch('https://api.ipify.org?format=json');
-    const { ip } = await response.json();
-    const geoResponse = await fetch(`https://ipapi.co/${ip}/json/`);
-    const geoData = await geoResponse.json();
-    return {
-      ip: geoData.ip,
-      country: geoData.country_code,
-      countryName: geoData.country_name,
-      region: geoData.region,
-      city: geoData.city,
-    };
-  } catch (fallbackErr) {
-    console.error("All IP services failed:", fallbackErr.message);
-    return null;
-  }
+  console.error("All IP services failed");
+  return null;
 }
 
 // Get session from DB by email
