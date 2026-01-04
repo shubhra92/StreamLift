@@ -1,8 +1,11 @@
 import fs from "fs";
 import path from "path";
 import { progressMap } from "./progressStore.js";
+import { db, fileDownloads } from "../db/index.js";
+import { eq } from "drizzle-orm";
 
-export async function serverDownloadWithProgress(id, url) {
+
+export async function serverDownloadWithProgress(id, url, options = { fileName: null }) {
 
     const response = await fetch(url);
     if (!response.ok) {
@@ -10,7 +13,7 @@ export async function serverDownloadWithProgress(id, url) {
     }
 
     const [fileType, fileExtention] = response.headers.get("content-type")?.split("/")
-    const filename = response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1] ?? `movie.${fileExtention}`
+    const filename = options.fileName ?? response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1] ?? `movie.${fileExtention}`
 
     const filePath = path.join("downloads", filename);
 
@@ -18,6 +21,16 @@ export async function serverDownloadWithProgress(id, url) {
     let downloadedBytes = 0;
 
     const fileStream = fs.createWriteStream(filePath);
+
+    //update db save file deatil status fro pending to downloading
+    await db.update(fileDownloads).set({
+        location: "server",
+        locationPath: filePath,
+        fileName:filename,
+        status: "downloading",
+        fileSize: totalBytes,
+        updatedAt: new Date(),
+    }).where(eq(fileDownloads.id, id))
 
     return await new Promise((resolve, reject) => {
         response.body.pipeTo(
@@ -58,10 +71,32 @@ export async function serverDownloadWithProgress(id, url) {
                         "percentFixed2": 100.00,
                          "done": true
                     });
-                    resolve();
+
+                    //update db save file deatil status fro pending to downloading
+                    db.update(fileDownloads).set({
+                        status: "completed",
+                        updatedAt: new Date(),
+                    }).where(eq(fileDownloads.id, id))
+                    .then(()=>{
+                        resolve();
+                    }).catch(()=>{
+                        console.log("DB update failed");
+                        resolve();
+                    })
                 },
                 abort(err) {
-                    reject(err);
+                    db.update(fileDownloads).set({
+                        status: "failed",
+                        errorMessage: err?.message ?? "check server logs",
+                        updatedAt: new Date(),
+                    }).where(eq(fileDownloads.id, id))
+                    .then(()=>{
+                        reject(err);
+                    }).catch(()=>{
+                        console.log("DB update failed");
+                        reject(err);
+                    })
+                    // reject(err);
                 },
             })
         );

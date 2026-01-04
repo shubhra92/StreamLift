@@ -1,6 +1,8 @@
 import path from "path";
 import { progressMap } from "./progressStore.js";
 import { initMega } from "./megaStorage.js";
+import { db, fileDownloads } from "../db/index.js";
+import { eq } from "drizzle-orm";
 
 
 async function fetchWithRetry(url, retries = 3, timeout = 30000) {
@@ -27,7 +29,7 @@ async function fetchWithRetry(url, retries = 3, timeout = 30000) {
     }
 }
 
-export async function streamUrlToMega(id, url) {
+export async function streamUrlToMega(id, url, options = { fileName: null }) {
     // Get the initialized mega instance
     const mega = await initMega();
     
@@ -42,9 +44,7 @@ export async function streamUrlToMega(id, url) {
     }
 
     const [fileType, fileExtention] = response.headers.get("content-type")?.split("/")
-    const filename = response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1] ?? `movie.${fileExtention}`
-
-    const filePath = path.join("downloads", filename);
+    const filename = options.fileName ?? response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1] ?? `movie.${fileExtention}`
 
     const totalBytes = Number(response.headers.get("content-length")) || 0;
     let downloadedBytes = 0;
@@ -53,6 +53,15 @@ export async function streamUrlToMega(id, url) {
         name: filename,
         size: totalBytes
     })
+
+    //update db save file deatil status fro pending to downloading
+    await db.update(fileDownloads).set({
+        locationPath: filename,
+        fileName:filename,
+        status: "downloading",
+        fileSize: totalBytes,
+        updatedAt: new Date(),
+    }).where(eq(fileDownloads.id, id))
 
     return await new Promise((resolve, reject) => {
         fileStream.on("complete", (file) => {
@@ -64,11 +73,35 @@ export async function streamUrlToMega(id, url) {
                 percentFixed2: 100.0,
                 done: true,
             });
-            resolve(file);
+
+            //update db save file deatil status from pending to downloading
+            db.update(fileDownloads).set({
+                status: "completed",
+                updatedAt: new Date(),
+            }).where(eq(fileDownloads.id, id))
+                .then(() => {
+                    resolve(file);
+                }).catch(() => {
+                    console.log("failed to update db")
+                    resolve(file);
+                })
+            // resolve(file);
         });
 
         fileStream.on("error", (err) => {
-            reject(err);
+            //update db status
+            db.update(fileDownloads).set({
+                status: "failed",
+                errorMessage: err?.message ?? "check server logs",
+                updatedAt: new Date(),
+            }).where(eq(fileDownloads.id, id))
+                .then(() => {
+                    reject(err);
+                }).catch(() => {
+                    console.log("failed to update db")
+                    reject(err);
+                })
+            // reject(err);
         });
 
         response.body.pipeTo(
@@ -111,7 +144,20 @@ export async function streamUrlToMega(id, url) {
                 },
                 abort(err) {
                     fileStream.destroy?.();
-                    reject(err);
+
+                    // db status update
+                    db.update(fileDownloads).set({
+                        status: "failed",
+                        errorMessage: err?.message ?? "check server logs",
+                        updatedAt: new Date(),
+                    }).where(eq(fileDownloads.id, id))
+                        .then(() => {
+                            reject(err);
+                        }).catch(() => {
+                            console.log("failed to update db")
+                            reject(err);
+                        })
+                    // reject(err);
                 },
             })
         );

@@ -4,12 +4,18 @@ const API_HOST = process.env.SERVER_HOST
 
 const NO_BODY_METHOD = new Set([ "DELETE", "GET" ]);
 const NOT_ALLOWED_REQ_HEADERS = new Set([ "host", "origin", "referer" ]);
-const NOT_ALLOWED_RES_HEADERS = new Set([ "x-powered-by" ]);
+const NOT_ALLOWED_RES_HEADERS = new Set([ "x-powered-by", "content-encoding", "transfer-encoding", "content-length" ]);
+
+// Check if this is an SSE request
+function isSSERequest(pathname: string, accept: string | null): boolean {
+    return pathname.endsWith('/stream') || accept?.includes('text/event-stream') || false;
+}
 
 //All Request Handler
 async function handler(req: NextRequest) {
     try {
         const url = `${API_HOST}${req.nextUrl.pathname}${req.nextUrl.search}`
+        const isSSE = isSSERequest(req.nextUrl.pathname, req.headers.get('accept'));
 
         // Replicate Headers
         const clientHeaders: Record<string, string> = {};
@@ -19,9 +25,16 @@ async function handler(req: NextRequest) {
             }
         });
 
+        // For SSE, ensure proper accept header
+        if (isSSE) {
+            clientHeaders['accept'] = 'text/event-stream';
+        }
+
         const requestInit: RequestInit = {
             method: req.method,
             headers: clientHeaders,
+            // Disable caching for SSE
+            cache: isSSE ? 'no-store' : 'default',
         }
 
         // Handle Body & Duplex
@@ -41,18 +54,41 @@ async function handler(req: NextRequest) {
             }
         });
 
+        // Handle SSE responses - stream without buffering
+        if (isSSE && res.ok && res.body) {
+            responseHeaders.set('Content-Type', 'text/event-stream');
+            responseHeaders.set('Cache-Control', 'no-cache, no-transform');
+            responseHeaders.set('Connection', 'keep-alive');
+            responseHeaders.set('X-Accel-Buffering', 'no'); // Disable nginx buffering
+            
+            return new Response(res.body, {
+                status: res.status,
+                headers: responseHeaders,
+            });
+        }
+
         // Handle Backend Errors (!res.ok)
         // If the backend returns 404, 401, 500 etc., we still want to 
         // forward that specific error body to the frontend.
         if (!res.ok) {
-            const errorData = await res.text(); // or res.json()
+            const errorData = await res.text();
             return new Response(errorData, {
                 status: res.status,
-                headers: responseHeaders, // Keeps content-type from backend
+                headers: responseHeaders,
             });
         }
 
-        // Success: Stream the body back
+        // For non-SSE responses, read the full body to avoid truncation
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json') || contentType.includes('text/')) {
+            const body = await res.text();
+            return new Response(body, {
+                status: res.status,
+                headers: responseHeaders,
+            });
+        }
+
+        // For binary/other content, stream the body back
         return new Response(res.body, {
             headers: responseHeaders
         });
@@ -70,5 +106,9 @@ async function handler(req: NextRequest) {
         )
     }
 }
+
+// Force dynamic rendering for SSE routes
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
 
 export { handler as GET, handler as POST, handler as PUT, handler as DELETE };
