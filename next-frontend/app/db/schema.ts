@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, boolean, uuid } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, integer, boolean, uuid, bigint } from 'drizzle-orm/pg-core';
 
 export const megaSessions = pgTable('mega_sessions', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -16,7 +16,7 @@ export const fileDownloads = pgTable('file_downloads', {
   sourceUrl: text('source_url').notNull(),
   location: text('location'),
   locationPath: text('location_path'),
-  fileSize: integer('file_size'),
+  fileSize: bigint('file_size', { mode: 'number' }),
   fileType: text('file_type'),
   status: text('status').default('pending'),
   errorMessage: text('error_message'),
