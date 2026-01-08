@@ -4,8 +4,28 @@ import { progressMap } from "./progressStore.js";
 import { db, fileDownloads } from "../db/index.js";
 import { eq } from "drizzle-orm";
 
+const isServerDownloadEnabled = process.env.SERVER_DOWNLOAD_ENABLED ?? false
+
 
 export async function serverDownloadWithProgress(id, url, options = { fileName: null }) {
+
+    if(isServerDownloadEnabled !== "true"){
+         await db.update(fileDownloads).set({
+            status: "failed",
+            errorMessage: "server download not available",
+            updatedAt: new Date(),
+        }).where(eq(fileDownloads.id, id))
+
+        progressMap.set(id, {
+            "downloadedBytes":null,
+            "totalBytes":null,
+            "percentFixed2": null,
+            "percent": null,
+            "done": true
+        })
+
+        return null
+    }
 
     const response = await fetch(url);
     if (!response.ok) {
