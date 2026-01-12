@@ -25,13 +25,12 @@ export default function Home() {
   const homeService = useHomeService();
   const isFnEnd_fetchDownloads = useRef<boolean>(true)
 
-  const { progress, isDone } = useProgress(downloadingFileId);
+  const { progress, isDone, error } = useProgress(downloadingFileId);
 
   const fetchDownloads = async () => {
     if(!isFnEnd_fetchDownloads.current) return null;
     isFnEnd_fetchDownloads.current = false
 
-    console.log("yeeeeee..........")
     const data = await getDownloads();
 
     setDownloads(data);
@@ -60,7 +59,7 @@ export default function Home() {
     if (targetFile?.status === "pending") {
       const { status, message } = await homeService.startDownload(targetFile);
       if (!status) {
-        console.log("-----msg from page-----\n", message, "\n-----msg from page-----");
+        console.log(message);
       } else {
         setDownloadingFileId(targetFile.id);
         // Refetch to get updated file size and status from server
@@ -75,6 +74,22 @@ export default function Home() {
 
     isFnEnd_fetchDownloads.current = true
   };
+
+  //status Update On Download Not Found
+  useEffect(() => {
+    if (error === "Download not found") {
+      (async () => {
+        if (!downloadingFileId) return null
+
+        await updateDownload(downloadingFileId, {
+          status: "failed",
+          errorMessage: "Download not found in server cache"
+        })
+
+        fetchDownloads()
+      })()
+    }
+  }, [error])
 
   useEffect(() => {
     if (downloadingFileId === null || isDone) {

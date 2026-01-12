@@ -2,6 +2,7 @@
 
 import { db, fileDownloads } from "../db";
 import { desc, eq } from "drizzle-orm";
+import type { FileDownload } from "../db/schema";
 
 export async function createDownload(sourceUrl: string, location: "server" | "mega", fileName?: string) {
   const [data] = await db.insert(fileDownloads).values({
@@ -44,13 +45,19 @@ export async function deleteDownload(id: string) {
   return { success: true };
 }
 
-export async function updateDownload(id: string, data: { sourceUrl?: string; fileName?: string; location?: "server" | "mega" }) {
+export async function updateDownload(id: string, data: Partial<Omit<FileDownload, "id"|"createdAt"|"updatedAt">>) {
   // Check if download is still pending (reject if it started downloading)
   const [existing] = await db.select().from(fileDownloads).where(eq(fileDownloads.id, id));
   if (!existing) {
     return { success: false, message: "Download not found" };
   }
-  if (existing.status !== "pending") {
+  
+  if(data.status === "failed" && data.errorMessage){
+    data = {
+      status: "failed",
+      errorMessage: data.errorMessage
+    }
+  } else if (existing.status !== "pending") {
     return { success: false, message: "Cannot edit a download that is no longer pending" };
   }
   
