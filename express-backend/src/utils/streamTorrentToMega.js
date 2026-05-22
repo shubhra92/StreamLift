@@ -91,12 +91,18 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
     return new Promise((resolve, reject) => {
         console.log(`🧲 Starting cloud-stream torrent download for ID: ${id}`);
         console.log(`🔍 Magnet link: ${magnetLink.substring(0, 100)}...`);
-        console.log(`⚙️ WebTorrent config: maxConns=${client.maxConns}, downloadLimit=${(client.downloadLimit / 1024 / 1024).toFixed(1)}MB/s`);
+        console.log(`⚙️ WebTorrent config: maxConns=${client.maxConns}, downloadLimit=${client.downloadLimit ? (client.downloadLimit / 1024 / 1024).toFixed(1) : 'unlimited'}MB/s`);
         
         let progressInterval = null;
         let torrentInstance = null;
         let isFinalized = false;
         let customStoreInstance = null;
+        
+        // Store timeout IDs so we can clear them
+        let metadataTimeout = null;
+        let progressTimeout30 = null;
+        let progressTimeout60 = null;
+        let progressTimeout90 = null;
 
         // References to hold active file streams for safe error-cleanup access
         let currentTorrentStream = null;
@@ -104,7 +110,7 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
         let currentFileStream = null;
 
         // Add timeout for metadata fetching (critical for server environments)
-        const metadataTimeout = setTimeout(() => {
+        metadataTimeout = setTimeout(() => {
             if (!torrentInstance || !torrentInstance.ready) {
                 const timeoutError = new Error('Torrent metadata fetch timeout after 120 seconds. This may indicate network restrictions, unavailable peers, or dead torrent.');
                 console.error('❌ Metadata timeout:', timeoutError.message);
@@ -147,6 +153,9 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
         }, (torrent) => {
             console.log(`✅ Torrent added to client successfully`);
             clearTimeout(metadataTimeout);
+            clearTimeout(progressTimeout30);
+            clearTimeout(progressTimeout60);
+            clearTimeout(progressTimeout90);
             handleTorrent(torrent);
         });
 
@@ -154,27 +163,30 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
         client.on('error', (err) => {
             console.error('❌ WebTorrent client error:', err);
             clearTimeout(metadataTimeout);
+            clearTimeout(progressTimeout30);
+            clearTimeout(progressTimeout60);
+            clearTimeout(progressTimeout90);
             if (!isFinalized) {
                 reject(err);
             }
         });
         
         // Log when we start trying to connect to trackers
-        setTimeout(() => {
+        progressTimeout30 = setTimeout(() => {
             if (!torrentInstance) {
                 console.log(`⏳ Still waiting for metadata... (30s elapsed)`);
                 console.log(`💡 This is normal for some torrents. Trying to connect to trackers...`);
             }
         }, 30000);
         
-        setTimeout(() => {
+        progressTimeout60 = setTimeout(() => {
             if (!torrentInstance) {
                 console.log(`⏳ Still waiting for metadata... (60s elapsed)`);
                 console.log(`⚠️ Taking longer than usual. Check if torrent has active seeders.`);
             }
         }, 60000);
         
-        setTimeout(() => {
+        progressTimeout90 = setTimeout(() => {
             if (!torrentInstance) {
                 console.log(`⏳ Still waiting for metadata... (90s elapsed)`);
                 console.log(`⚠️ Last chance - will timeout in 30 seconds if no response.`);
@@ -255,10 +267,16 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                     if (isFinalized) return;
                     isFinalized = true;
 
+                    // Clear all timers
                     if (progressInterval) {
                         clearInterval(progressInterval);
                         progressInterval = null;
                     }
+                    
+                    if (metadataTimeout) clearTimeout(metadataTimeout);
+                    if (progressTimeout30) clearTimeout(progressTimeout30);
+                    if (progressTimeout60) clearTimeout(progressTimeout60);
+                    if (progressTimeout90) clearTimeout(progressTimeout90);
 
                     // Destroy active stream pipelines to unlock memory allocations
                     if (currentTorrentStream) currentTorrentStream.destroy();
