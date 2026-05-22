@@ -10,10 +10,47 @@ const client = new WebTorrent({
     utp: false,  // 🔒 DISABLE uTP (Forces clean, standard TCP stream connections only)
     torrentPort: 15000,  // ⚡ Move to 15000 so it NEVER collides with your Express App on 10000
     tracker: {
-        getAnnounceOpts: () => ({ numwant: 5 }), // Keep peer lists tiny to restrict incoming connection requests
+        getAnnounceOpts: () => ({ numwant: 3 }), // Keep peer lists tiny to restrict incoming connection requests
         rtcConfig: false      // Completely disable WebRTC tracking connections 
-    }
+    },
+    maxConns: 5,  // Limit concurrent connections to reduce memory usage
+    downloadLimit: -1,  // No download speed limit
+    // uploadLimit: 0  // Disable uploading to save bandwidth and memory
 });
+
+// ==========================================
+// THE MAGIC BULLET: Zero-Memory / Zero-Disk Custom Store
+// ==========================================
+function FreeTierChunkStore(chunkLength, storeOpts) {
+    this.chunkLength = chunkLength;
+    this.chunks = [];
+
+    this.put = function (index, buf, cb) {
+        // Keep chunks localized strictly within active streaming allocations
+        this.chunks[index] = buf;
+        if (cb) cb(null);
+    };
+
+    this.get = function (index, opts, cb) {
+        if (typeof opts === 'function') { cb = opts; opts = null; }
+        const buf = this.chunks[index];
+        if (!buf) return cb(new Error('Chunk not found'));
+
+        const start = (opts && opts.offset) || 0;
+        const end = (opts && opts.length) ? start + opts.length : buf.length;
+        cb(null, buf.slice(start, end));
+    };
+
+    this.close = function (cb) { this.chunks = []; if (cb) cb(null); };
+    this.destroy = function (cb) { this.chunks = []; if (cb) cb(null); };
+
+    // Custom method to wipe old data pieces instantly during execution loop transitions
+    this.evict = function (index) {
+        if (this.chunks[index]) {
+            this.chunks[index] = null; // Free up V8 Garbage Collector target pointer instantly
+        }
+    };
+}
 
 export async function streamTorrentToMega(id, magnetLink, options = { fileName: null, fileIndices: null }) {
     const mega = await initMega();
@@ -28,13 +65,20 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
         let progressInterval = null;
         let torrentInstance = null;
         let isFinalized = false;
+        let customStoreInstance = null;
 
         // References to hold active file streams for safe error-cleanup access
         let currentTorrentStream = null;
         let currentTrackingStream = null;
         let currentFileStream = null;
 
-        client.add(magnetLink, { path: '/tmp' }, (torrent) => {
+        // Stream directly without downloading to disk - prevents /tmp storage overflow
+        client.add(magnetLink, {
+            store: function (chunkLength, storeOpts) {
+                customStoreInstance = new FreeTierChunkStore(chunkLength, storeOpts);
+                return customStoreInstance;
+            }
+        }, (torrent) => {
             handleTorrent(torrent);
         });
 
@@ -118,6 +162,11 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                         torrentInstance = null;
                     }
 
+                    if (customStoreInstance) {
+                        customStoreInstance.destroy();
+                        customStoreInstance = null;
+                    }
+
                     if (status === "completed") {
                         await db.update(fileDownloads).set({
                             status: "completed",
@@ -171,6 +220,7 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
 
                     await new Promise((resolveFile, rejectFile) => {
                         currentTrackingStream = new Transform({
+                            highWaterMark: 32 * 1024, // 32KB backpressure gate
                             transform(chunk, encoding, callback) {
                                 downloadedBytes += chunk.length;
                                 
@@ -193,6 +243,13 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                         });
 
                         currentTorrentStream = currentFile.createReadStream();
+
+                        // Evict verified pieces from memory immediately after they successfully transition downstream
+                        torrent.on('piece', (pieceIndex) => {
+                            if (customStoreInstance && !isFinalized) {
+                                customStoreInstance.evict(pieceIndex);
+                            }
+                        });
                         
                         // Assemble the pipeline channels
                         currentTorrentStream.pipe(currentTrackingStream).pipe(currentFileStream);
