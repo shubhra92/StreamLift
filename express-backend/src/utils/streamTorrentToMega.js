@@ -5,7 +5,15 @@ import { db, fileDownloads } from "../db/index.js";
 import { eq } from "drizzle-orm";
 import { Transform } from "stream";
 
-const client = new WebTorrent();
+const client = new WebTorrent({
+    dht: false,  // Disable Distributed Hash Table port-bindings
+    utp: false,  // 🔒 DISABLE uTP (Forces clean, standard TCP stream connections only)
+    torrentPort: 15000,  // ⚡ Move to 15000 so it NEVER collides with your Express App on 10000
+    tracker: {
+        getAnnounceOpts: () => ({ numwant: 5 }), // Keep peer lists tiny to restrict incoming connection requests
+        rtcConfig: false      // Completely disable WebRTC tracking connections 
+    }
+});
 
 export async function streamTorrentToMega(id, magnetLink, options = { fileName: null, fileIndices: null }) {
     const mega = await initMega();
@@ -138,14 +146,14 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                 };
 
                 // Periodic logger monitoring continuous global upload scale progress
-                progressInterval = setInterval(() => {
-                    if (isFinalized) return;
+                // progressInterval = setInterval(() => {
+                //     if (isFinalized) return;
                     
-                    const displayPercent = ((downloadedBytes / totalBytes) * 100).toFixed(2);
-                    console.log(`📊 Batch Stream Progress: ${displayPercent}% | ` +
-                               `Engine Speed: ${(torrent.downloadSpeed / 1024 / 1024).toFixed(2)} MB/s | ` +
-                               `Peers: ${torrent.numPeers}`);
-                }, 5000);
+                //     const displayPercent = ((downloadedBytes / totalBytes) * 100).toFixed(2);
+                //     console.log(`📊 Batch Stream Progress: ${displayPercent}% | ` +
+                //                `Engine Speed: ${(torrent.downloadSpeed / 1024 / 1024).toFixed(2)} MB/s | ` +
+                //                `Peers: ${torrent.numPeers}`);
+                // }, 5000);
 
                 // ==========================================
                 // FIX 3: Sequential Upload Processing Loop
