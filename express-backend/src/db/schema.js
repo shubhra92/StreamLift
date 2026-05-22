@@ -24,6 +24,8 @@ export const fileDownloads = pgTable('file_downloads', {
   fileType: text('file_type'),
   status: text('status').default('pending'), // pending, downloading, uploading, completed, failed
   errorMessage: text('error_message'),
+  downloadType: text('download_type').default('http'), // 'http' or 'torrent'
+  selectedFileIndices: text('selected_file_indices'), // JSON array of selected file indices for torrents
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

@@ -10,6 +10,7 @@ export async function createDownload(sourceUrl: string, location: "server" | "me
     location,
     fileName: fileName || "default",
     status: "pending",
+    downloadType: "http",
   }).returning();
   
   return data;
@@ -19,6 +20,7 @@ export async function getDownloads() {
   const downloads = await db
     .select()
     .from(fileDownloads)
+    .where(eq(fileDownloads.downloadType, "http"))
     .orderBy(desc(fileDownloads.createdAt));
   
   return downloads;

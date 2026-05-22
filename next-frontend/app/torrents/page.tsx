@@ -3,35 +3,35 @@
 import { useState, useEffect, useRef } from "react";
 import { motion } from "motion/react";
 import { Button } from "@/components/ui/button";
-import { useProgress } from "./hooks/useProgress";
-import { createDownload, getDownloads, deleteDownload, updateDownload } from "./actions/downloads";
-import type { FileDownload } from "./db/schema";
-import useHomeService from "./service/homeService";
+import { useProgress } from "../hooks/useProgress";
+import { createTorrentDownload, getTorrentDownloads, deleteTorrentDownload, updateTorrentDownload } from "../actions/torrents";
+import type { FileDownload } from "../db/schema";
+import useTorrentService from "../service/torrentService";
 import {
   DownloadList,
   DownloadDetails,
-  AddDownloadModal,
   EditDownloadModal,
-} from "./components/downloads";
+} from "../components/downloads";
+import { AddTorrentModal } from "../components/torrents/AddTorrentModal";
 
-export default function Home() {
+export default function TorrentsPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [downloads, setDownloads] = useState<FileDownload[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
   const [editingFile, setEditingFile] = useState<FileDownload | null>(null);
-  const homeService = useHomeService();
-  const isFnEnd_fetchDownloads = useRef<boolean>(true)
+  const torrentService = useTorrentService();
+  const isFnEnd_fetchDownloads = useRef<boolean>(true);
   const isDBCallHapping = useRef<boolean>(false);
 
   const { progress, isDone, error } = useProgress(downloadingFileId);
 
   const fetchDownloads = async () => {
-    if(!isFnEnd_fetchDownloads.current) return null;
-    isFnEnd_fetchDownloads.current = false
+    if (!isFnEnd_fetchDownloads.current) return null;
+    isFnEnd_fetchDownloads.current = false;
 
-    const data = await getDownloads();
+    const data = await getTorrentDownloads();
 
     setDownloads(data);
 
@@ -57,13 +57,18 @@ export default function Home() {
     }
 
     if (targetFile?.status === "pending") {
-      const { status, message } = await homeService.startDownload(targetFile);
+      // Parse stored file indices from database
+      const fileIndices = targetFile.selectedFileIndices 
+        ? JSON.parse(targetFile.selectedFileIndices as string)
+        : undefined;
+      
+      const { status, message } = await torrentService.startDownload(targetFile, fileIndices);
       if (!status) {
         console.log(message);
       } else {
         setDownloadingFileId(targetFile.id);
         // Refetch to get updated file size and status from server
-        const updatedData = await getDownloads();
+        const updatedData = await getTorrentDownloads();
         setDownloads(updatedData);
       }
     } else if (targetFile) {
@@ -72,37 +77,43 @@ export default function Home() {
       setDownloadingFileId(null);
     }
 
-    isFnEnd_fetchDownloads.current = true
+    isFnEnd_fetchDownloads.current = true;
   };
 
-  //status Update On Download Not Found
+  // Status Update On Download Not Found
   useEffect(() => {
     if (error === "Download not found") {
       (async () => {
-        if (!downloadingFileId || isDBCallHapping.current) return null
+        if (!downloadingFileId || isDBCallHapping.current) return null;
 
-        isDBCallHapping.current = true
-        await updateDownload(downloadingFileId, {
+        isDBCallHapping.current = true;
+        await updateTorrentDownload(downloadingFileId, {
           status: "failed",
-          errorMessage: "Download not found in server cache"
-        })
-        isDBCallHapping.current = false
+          errorMessage: "Download not found in server cache",
+        });
+        isDBCallHapping.current = false;
 
-        fetchDownloads()
-      })()
+        fetchDownloads();
+      })();
     }
-  }, [error])
+  }, [error]);
 
   useEffect(() => {
     if (downloadingFileId === null || isDone) {
+      console.log('📥 Refetching downloads - isDone:', isDone, 'downloadingFileId:', downloadingFileId);
       fetchDownloads();
     }
   }, [isDone]);
 
-  const handleAddDownload = async (url: string, location: "server" | "mega", fileName?: string) => {
+  const handleAddDownload = async (
+    magnetLink: string,
+    location: "server" | "mega",
+    fileName?: string,
+    fileIndices?: number[]
+  ) => {
     setLoading(true);
     try {
-      await createDownload(url, location, fileName);
+      await createTorrentDownload(magnetLink, location, fileName, fileIndices);
       setIsModalOpen(false);
       fetchDownloads();
     } finally {
@@ -111,7 +122,7 @@ export default function Home() {
   };
 
   const handleDelete = async (id: string) => {
-    const result = await deleteDownload(id);
+    const result = await deleteTorrentDownload(id);
     if (result.success) {
       fetchDownloads();
     } else {
@@ -125,7 +136,7 @@ export default function Home() {
   ) => {
     setLoading(true);
     try {
-      const result = await updateDownload(id, data);
+      const result = await updateTorrentDownload(id, data);
       if (result.success) {
         setEditingFile(null);
         fetchDownloads();
@@ -148,11 +159,16 @@ export default function Home() {
           className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6"
         >
           <div>
-            <h2 className="text-xl md:text-2xl font-bold">HTTP Downloads</h2>
-            <p className="text-sm text-muted-foreground mt-1">Download files from direct URLs</p>
+            <h2 className="text-xl md:text-2xl font-bold">Torrent Downloads</h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              Download torrents via magnet links
+            </p>
           </div>
-          <Button onClick={() => setIsModalOpen(true)} className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 py-2 cursor-pointer">
-            + Add Download
+          <Button
+            onClick={() => setIsModalOpen(true)}
+            className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 py-2 cursor-pointer"
+          >
+            + Add Torrent
           </Button>
         </motion.div>
 
@@ -176,7 +192,7 @@ export default function Home() {
         )}
       </div>
 
-      <AddDownloadModal
+      <AddTorrentModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         onSubmit={handleAddDownload}

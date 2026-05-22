@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: streamlift-backend
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - MEGA_EMAIL=${MEGA_EMAIL}
+      - MEGA_PASSWORD=${MEGA_PASSWORD}
+      - DATABASE_URL=${DATABASE_URL}
+      - SERVER_DOWNLOAD_ENABLED=${SERVER_DOWNLOAD_ENABLED}
+    volumes:
+      # Persist downloads directory
+      - ./downloads:/app/downloads
+      # Persist MEGA session
+      - ./.mega-session.json:/app/.mega-session.json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:4000/health', (r) => {let d='';r.on('data', (c) => d+=c);r.on('end', () => {process.exit(JSON.parse(d).ready ? 0 : 1)})}).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
