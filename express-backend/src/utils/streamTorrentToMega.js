@@ -8,18 +8,18 @@ import { Transform } from "stream";
 const client = new WebTorrent({
     dht: false,  // Disable Distributed Hash Table port-bindings
     utp: false,  // 🔒 DISABLE uTP (Forces clean, standard TCP stream connections only)
-    // Remove torrentPort to let WebTorrent use dynamic ports or disable incoming connections
+    torrentPort: 0,  // CRITICAL: 0 = disable incoming connections completely (outbound only)
     tracker: {
         getAnnounceOpts: () => ({ 
-            numwant: 10,  // Increased from 3 to get more peers (important on restricted networks)
+            numwant: 5,  // Reduced to 5 peers to limit connections and memory
             compact: 1    // Use compact peer format
         }),
         rtcConfig: false,      // Completely disable WebRTC tracking connections
         wrtc: false            // Disable WebRTC completely
     },
-    maxConns: 10,  // Increased from 5 to improve peer availability
-    downloadLimit: -1,  // No download speed limit
-    // uploadLimit: 1,  // Minimal upload to maintain peer connections (0 can cause disconnections)
+    maxConns: 3,  // CRITICAL: Limit to 3 connections to prevent resource exhaustion on Render
+    downloadLimit: 2 * 1024 * 1024,  // Limit to 2 MB/s to prevent memory overflow
+    uploadLimit: 50 * 1024,  // Limit upload to 50 KB/s (minimal but present)
     // Server-friendly settings for restricted environments
     natUpnp: false,  // Disable UPnP (not available on cloud servers)
     natPmp: false,   // Disable NAT-PMP (not available on cloud servers)
@@ -32,10 +32,23 @@ const client = new WebTorrent({
 function FreeTierChunkStore(chunkLength, storeOpts) {
     this.chunkLength = chunkLength;
     this.chunks = [];
+    this.maxChunks = 10; // CRITICAL: Only keep 10 chunks in memory at once
 
     this.put = function (index, buf, cb) {
         // Keep chunks localized strictly within active streaming allocations
         this.chunks[index] = buf;
+        
+        // AGGRESSIVE CLEANUP: Remove old chunks if we have too many
+        if (this.chunks.length > this.maxChunks) {
+            const oldestIndex = Math.max(0, index - this.maxChunks);
+            for (let i = oldestIndex; i < index - 5; i++) {
+                if (this.chunks[i]) {
+                    this.chunks[i] = null;
+                    delete this.chunks[i];
+                }
+            }
+        }
+        
         if (cb) cb(null);
     };
 
@@ -49,13 +62,21 @@ function FreeTierChunkStore(chunkLength, storeOpts) {
         cb(null, buf.slice(start, end));
     };
 
-    this.close = function (cb) { this.chunks = []; if (cb) cb(null); };
-    this.destroy = function (cb) { this.chunks = []; if (cb) cb(null); };
+    this.close = function (cb) { 
+        this.chunks = []; 
+        if (cb) cb(null); 
+    };
+    
+    this.destroy = function (cb) { 
+        this.chunks = []; 
+        if (cb) cb(null); 
+    };
 
     // Custom method to wipe old data pieces instantly during execution loop transitions
     this.evict = function (index) {
         if (this.chunks[index]) {
             this.chunks[index] = null; // Free up V8 Garbage Collector target pointer instantly
+            delete this.chunks[index];
         }
     };
 }
@@ -247,14 +268,32 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                     if (isFinalized) return;
                     
                     const displayPercent = ((downloadedBytes / totalBytes) * 100).toFixed(2);
-                    console.log(`📊 Batch Stream Progress: ${displayPercent}% | ` +
-                               `Engine Speed: ${(torrent.downloadSpeed / 1024 / 1024).toFixed(2)} MB/s | ` +
+                    const memUsage = process.memoryUsage();
+                    const memUsedMB = (memUsage.heapUsed / 1024 / 1024).toFixed(2);
+                    
+                    console.log(`📊 Progress: ${displayPercent}% | ` +
+                               `Speed: ${(torrent.downloadSpeed / 1024 / 1024).toFixed(2)} MB/s | ` +
                                `Peers: ${torrent.numPeers} | ` +
-                               `Downloaded: ${(downloadedBytes / 1024 / 1024).toFixed(2)} MB / ${(totalBytes / 1024 / 1024).toFixed(2)} MB`);
+                               `Downloaded: ${(downloadedBytes / 1024 / 1024).toFixed(2)} MB / ${(totalBytes / 1024 / 1024).toFixed(2)} MB | ` +
+                               `Memory: ${memUsedMB} MB`);
                     
                     // Warning if no peers after some time
                     if (torrent.numPeers === 0 && downloadedBytes === 0) {
                         console.warn('⚠️ No peers connected yet. This may indicate network restrictions or unavailable torrent.');
+                    }
+                    
+                    // CRITICAL: Memory safety check for Render's 512MB limit
+                    if (memUsage.heapUsed > 400 * 1024 * 1024) { // 400MB threshold
+                        console.warn(`⚠️ HIGH MEMORY USAGE: ${memUsedMB} MB - Forcing garbage collection`);
+                        if (global.gc) {
+                            global.gc();
+                        }
+                    }
+                    
+                    // Emergency stop if memory exceeds 450MB
+                    if (memUsage.heapUsed > 450 * 1024 * 1024) {
+                        console.error(`❌ CRITICAL MEMORY: ${memUsedMB} MB - Aborting to prevent crash`);
+                        cleanupAndFinish("failed", new Error(`Memory limit exceeded: ${memUsedMB} MB`));
                     }
                 }, 5000);
                 
@@ -283,7 +322,7 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
 
                     await new Promise((resolveFile, rejectFile) => {
                         currentTrackingStream = new Transform({
-                            highWaterMark: 32 * 1024, // 32KB backpressure gate
+                            highWaterMark: 16 * 1024, // Reduced to 16KB backpressure gate (was 32KB)
                             transform(chunk, encoding, callback) {
                                 downloadedBytes += chunk.length;
                                 

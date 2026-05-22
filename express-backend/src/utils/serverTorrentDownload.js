@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 const client = new WebTorrent({
     dht: false,  // Disable Distributed Hash Table port-bindings
     utp: false,  // 🔒 DISABLE uTP (Forces clean, standard TCP stream connections only)
-    torrentPort: 15001,  // ⚡ Move to 15000 so it NEVER collides with your Express App on 10000
+    // torrentPort: 15001,  // ⚡ Move to 15000 so it NEVER collides with your Express App on 10000
     tracker: {
         getAnnounceOpts: () => ({ numwant: 5 }), // Keep peer lists tiny to restrict incoming connection requests
         rtcConfig: false      // Completely disable WebRTC tracking connections 
