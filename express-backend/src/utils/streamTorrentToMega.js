@@ -32,7 +32,7 @@ const client = new WebTorrent({
 function FreeTierChunkStore(chunkLength, storeOpts) {
     this.chunkLength = chunkLength;
     this.chunks = [];
-    this.maxChunks = 10; // CRITICAL: Only keep 10 chunks in memory at once
+    this.maxChunks = 30; // Increased from 10 to 30 to prevent premature eviction during streaming
 
     this.put = function (index, buf, cb) {
         // Keep chunks localized strictly within active streaming allocations
@@ -41,7 +41,7 @@ function FreeTierChunkStore(chunkLength, storeOpts) {
         // AGGRESSIVE CLEANUP: Remove old chunks if we have too many
         if (this.chunks.length > this.maxChunks) {
             const oldestIndex = Math.max(0, index - this.maxChunks);
-            for (let i = oldestIndex; i < index - 5; i++) {
+            for (let i = oldestIndex; i < index - 10; i++) {  // Keep last 10 chunks safe
                 if (this.chunks[i]) {
                     this.chunks[i] = null;
                     delete this.chunks[i];
@@ -381,12 +381,16 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                     const targetUploadName = (selectedFiles.length === 1 && options.fileName) ? options.fileName : currentFile.name;
 
                     console.log(`🚀 [File ${i + 1}/${selectedFiles.length}] Streaming "${currentFile.name}" directly to MEGA...`);
+                    console.log(`📦 File size: ${(currentFile.length / 1024 / 1024).toFixed(2)} MB`);
 
                     await new Promise((resolveFile, rejectFile) => {
+                        let fileDownloadedBytes = 0;
+                        
                         currentTrackingStream = new Transform({
                             highWaterMark: 16 * 1024, // Reduced to 16KB backpressure gate (was 32KB)
                             transform(chunk, encoding, callback) {
                                 downloadedBytes += chunk.length;
+                                fileDownloadedBytes += chunk.length;
                                 
                                 const percent = ((downloadedBytes / totalBytes) * 100).toFixed(2);
                                 progressMap.set(id, {
@@ -398,20 +402,44 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                                 
                                 this.push(chunk);
                                 callback();
+                            },
+                            flush(callback) {
+                                // Check if we got all the data
+                                if (fileDownloadedBytes < currentFile.length) {
+                                    console.error(`⚠️ Stream ended early: got ${fileDownloadedBytes} / ${currentFile.length} bytes`);
+                                    callback(new Error(`Incomplete download: ${fileDownloadedBytes} / ${currentFile.length} bytes`));
+                                } else {
+                                    console.log(`✅ Stream complete: ${fileDownloadedBytes} bytes`);
+                                    callback();
+                                }
                             }
                         });
 
                         currentFileStream = mega.upload({
                             name: targetUploadName,
-                            size: currentFile.length
+                            size: currentFile.length,
+                            // Add allowUploadBuffering to handle stream interruptions
+                            allowUploadBuffering: true
                         });
 
-                        currentTorrentStream = currentFile.createReadStream();
+                        // Create read stream with explicit options to prevent premature ending
+                        currentTorrentStream = currentFile.createReadStream({
+                            // Don't end stream on first error, retry
+                            autoClose: false
+                        });
 
-                        // Evict verified pieces from memory immediately after they successfully transition downstream
+                        // Track which pieces have been fully consumed by the stream
+                        let lastConsumedPiece = -1;
+                        
+                        // Only evict pieces that are well behind the current read position
                         torrent.on('piece', (pieceIndex) => {
                             if (customStoreInstance && !isFinalized) {
-                                customStoreInstance.evict(pieceIndex);
+                                // Only evict pieces that are at least 20 pieces behind
+                                // This ensures we don't evict data that's still being streamed
+                                if (pieceIndex > lastConsumedPiece + 20) {
+                                    customStoreInstance.evict(lastConsumedPiece);
+                                    lastConsumedPiece++;
+                                }
                             }
                         });
                         
@@ -430,11 +458,15 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
 
                         const handleStreamError = (err) => {
                             console.error(`❌ Pipeline crash encountered on "${currentFile.name}":`, err);
+                            console.error(`📊 Download progress: ${downloadedBytes} / ${totalBytes} bytes`);
+                            console.error(`📊 Current file expected: ${currentFile.length} bytes`);
+                            console.error(`💡 This may indicate: chunk eviction too aggressive, stream interrupted, or network issue`);
                             rejectFile(err);
                         };
 
                         currentFileStream.on("error", handleStreamError);
                         currentTorrentStream.on("error", handleStreamError);
+                        currentTrackingStream.on("error", handleStreamError);
                     }).catch(err => {
                         // Forward loop promises errors straight to the master pipeline finalizer
                         cleanupAndFinish("failed", err);
