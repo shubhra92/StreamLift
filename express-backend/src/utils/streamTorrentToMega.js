@@ -8,14 +8,22 @@ import { Transform } from "stream";
 const client = new WebTorrent({
     dht: false,  // Disable Distributed Hash Table port-bindings
     utp: false,  // 🔒 DISABLE uTP (Forces clean, standard TCP stream connections only)
-    torrentPort: 15000,  // ⚡ Move to 15000 so it NEVER collides with your Express App on 10000
+    // Remove torrentPort to let WebTorrent use dynamic ports or disable incoming connections
     tracker: {
-        getAnnounceOpts: () => ({ numwant: 3 }), // Keep peer lists tiny to restrict incoming connection requests
-        rtcConfig: false      // Completely disable WebRTC tracking connections 
+        getAnnounceOpts: () => ({ 
+            numwant: 10,  // Increased from 3 to get more peers (important on restricted networks)
+            compact: 1    // Use compact peer format
+        }),
+        rtcConfig: false,      // Completely disable WebRTC tracking connections
+        wrtc: false            // Disable WebRTC completely
     },
-    maxConns: 5,  // Limit concurrent connections to reduce memory usage
+    maxConns: 10,  // Increased from 5 to improve peer availability
     downloadLimit: -1,  // No download speed limit
-    // uploadLimit: 0  // Disable uploading to save bandwidth and memory
+    // uploadLimit: 1,  // Minimal upload to maintain peer connections (0 can cause disconnections)
+    // Server-friendly settings for restricted environments
+    natUpnp: false,  // Disable UPnP (not available on cloud servers)
+    natPmp: false,   // Disable NAT-PMP (not available on cloud servers)
+    lsd: false       // Disable Local Service Discovery (not useful on cloud)
 });
 
 // ==========================================
@@ -72,28 +80,68 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
         let currentTrackingStream = null;
         let currentFileStream = null;
 
+        // Add timeout for metadata fetching (critical for server environments)
+        const metadataTimeout = setTimeout(() => {
+            if (!torrentInstance) {
+                const timeoutError = new Error('Torrent metadata fetch timeout after 60 seconds. This may indicate network restrictions or unavailable peers.');
+                console.error('❌ Metadata timeout:', timeoutError.message);
+                reject(timeoutError);
+            }
+        }, 60000); // 60 second timeout
+
         // Stream directly without downloading to disk - prevents /tmp storage overflow
         client.add(magnetLink, {
             store: function (chunkLength, storeOpts) {
                 customStoreInstance = new FreeTierChunkStore(chunkLength, storeOpts);
                 return customStoreInstance;
-            }
+            },
+            // Add announce list with reliable public trackers
+            announce: [
+                'udp://tracker.opentrackr.org:1337/announce',
+                'udp://open.stealth.si:80/announce',
+                'udp://tracker.torrent.eu.org:451/announce',
+                'udp://tracker.moeking.me:6969/announce',
+                'https://tracker.nanoha.org:443/announce',
+                'https://tracker.lilithraws.org:443/announce'
+            ]
         }, (torrent) => {
+            clearTimeout(metadataTimeout);
             handleTorrent(torrent);
+        });
+
+        // Add error handler for client-level errors
+        client.on('error', (err) => {
+            console.error('❌ WebTorrent client error:', err);
+            clearTimeout(metadataTimeout);
+            if (!isFinalized) {
+                reject(err);
+            }
         });
 
         async function handleTorrent(torrent) {
             try {
                 torrentInstance = torrent;
                 
+                console.log(`🔍 Torrent added to client. InfoHash: ${torrent.infoHash}`);
+                console.log(`📊 Initial state - Ready: ${torrent.ready}, Files: ${torrent.files?.length || 0}, Peers: ${torrent.numPeers}`);
+                
                 if (!torrent.name || !torrent.files || torrent.files.length === 0) {
                     console.log("⏳ Waiting for torrent metadata...");
-                    await new Promise((resolve) => {
+                    
+                    // Add timeout for ready event
+                    const readyPromise = new Promise((resolve) => {
                         torrent.once('ready', resolve);
                     });
+                    
+                    const timeoutPromise = new Promise((_, reject) => {
+                        setTimeout(() => reject(new Error('Torrent ready timeout after 45 seconds')), 45000);
+                    });
+                    
+                    await Promise.race([readyPromise, timeoutPromise]);
                 }
                 
                 console.log(`✅ Torrent metadata received: ${torrent.name}`);
+                console.log(`📊 Torrent stats - Files: ${torrent.files.length}, Size: ${(torrent.length / 1024 / 1024).toFixed(2)} MB, Peers: ${torrent.numPeers}`);
                 
                 // ==========================================
                 // FIX 1: Apply WebTorrent Selection Bypass
@@ -201,8 +249,23 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                     const displayPercent = ((downloadedBytes / totalBytes) * 100).toFixed(2);
                     console.log(`📊 Batch Stream Progress: ${displayPercent}% | ` +
                                `Engine Speed: ${(torrent.downloadSpeed / 1024 / 1024).toFixed(2)} MB/s | ` +
-                               `Peers: ${torrent.numPeers}`);
+                               `Peers: ${torrent.numPeers} | ` +
+                               `Downloaded: ${(downloadedBytes / 1024 / 1024).toFixed(2)} MB / ${(totalBytes / 1024 / 1024).toFixed(2)} MB`);
+                    
+                    // Warning if no peers after some time
+                    if (torrent.numPeers === 0 && downloadedBytes === 0) {
+                        console.warn('⚠️ No peers connected yet. This may indicate network restrictions or unavailable torrent.');
+                    }
                 }, 5000);
+                
+                // Monitor peer connections
+                torrent.on('wire', (wire, addr) => {
+                    console.log(`🔗 Connected to peer: ${addr || 'unknown'}`);
+                });
+                
+                torrent.on('noPeers', (announceType) => {
+                    console.warn(`⚠️ No peers found via ${announceType}. Trying other trackers...`);
+                });
 
                 // ==========================================
                 // FIX 3: Sequential Upload Processing Loop
