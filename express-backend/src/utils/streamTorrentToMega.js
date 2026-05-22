@@ -8,18 +8,18 @@ import { Transform } from "stream";
 const client = new WebTorrent({
     dht: false,  // Disable Distributed Hash Table port-bindings
     utp: false,  // 🔒 DISABLE uTP (Forces clean, standard TCP stream connections only)
-    torrentPort: 0,  // CRITICAL: 0 = disable incoming connections completely (outbound only)
+    // Don't set torrentPort - let WebTorrent handle it dynamically
     tracker: {
         getAnnounceOpts: () => ({ 
-            numwant: 5,  // Reduced to 5 peers to limit connections and memory
+            numwant: 20,  // Request more peers initially to ensure we get some connections
             compact: 1    // Use compact peer format
         }),
         rtcConfig: false,      // Completely disable WebRTC tracking connections
         wrtc: false            // Disable WebRTC completely
     },
-    maxConns: 3,  // CRITICAL: Limit to 3 connections to prevent resource exhaustion on Render
-    downloadLimit: 2 * 1024 * 1024,  // Limit to 2 MB/s to prevent memory overflow
-    uploadLimit: 50 * 1024,  // Limit upload to 50 KB/s (minimal but present)
+    maxConns: 6,  // Balanced: enough for metadata + download, but not too many
+    downloadLimit: 1.5 * 1024 * 1024,  // Limit to 1.5 MB/s to prevent memory overflow
+    uploadLimit: 100 * 1024,  // 100 KB/s upload to maintain good peer relationships
     // Server-friendly settings for restricted environments
     natUpnp: false,  // Disable UPnP (not available on cloud servers)
     natPmp: false,   // Disable NAT-PMP (not available on cloud servers)
@@ -90,6 +90,8 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
 
     return new Promise((resolve, reject) => {
         console.log(`🧲 Starting cloud-stream torrent download for ID: ${id}`);
+        console.log(`🔍 Magnet link: ${magnetLink.substring(0, 100)}...`);
+        console.log(`⚙️ WebTorrent config: maxConns=${client.maxConns}, downloadLimit=${(client.downloadLimit / 1024 / 1024).toFixed(1)}MB/s`);
         
         let progressInterval = null;
         let torrentInstance = null;
@@ -103,14 +105,27 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
 
         // Add timeout for metadata fetching (critical for server environments)
         const metadataTimeout = setTimeout(() => {
-            if (!torrentInstance) {
-                const timeoutError = new Error('Torrent metadata fetch timeout after 60 seconds. This may indicate network restrictions or unavailable peers.');
+            if (!torrentInstance || !torrentInstance.ready) {
+                const timeoutError = new Error('Torrent metadata fetch timeout after 120 seconds. This may indicate network restrictions, unavailable peers, or dead torrent.');
                 console.error('❌ Metadata timeout:', timeoutError.message);
+                console.error('💡 Troubleshooting: Check if magnet link is valid and has active seeders');
+                
+                // Cleanup
+                if (torrentInstance) {
+                    try {
+                        torrentInstance.destroy();
+                    } catch (e) {
+                        console.error('Error destroying torrent on timeout:', e);
+                    }
+                }
+                
                 reject(timeoutError);
             }
-        }, 60000); // 60 second timeout
+        }, 120000); // Increased to 120 seconds for better chance of success
 
         // Stream directly without downloading to disk - prevents /tmp storage overflow
+        console.log(`📡 Adding torrent to WebTorrent client...`);
+        
         client.add(magnetLink, {
             store: function (chunkLength, storeOpts) {
                 customStoreInstance = new FreeTierChunkStore(chunkLength, storeOpts);
@@ -123,9 +138,14 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                 'udp://tracker.torrent.eu.org:451/announce',
                 'udp://tracker.moeking.me:6969/announce',
                 'https://tracker.nanoha.org:443/announce',
-                'https://tracker.lilithraws.org:443/announce'
+                'https://tracker.lilithraws.org:443/announce',
+                'udp://exodus.desync.com:6969/announce',
+                'udp://tracker.opentrackr.org:1337/announce',
+                'udp://open.demonii.com:1337/announce',
+                'udp://tracker.openbittorrent.com:6969/announce'
             ]
         }, (torrent) => {
+            console.log(`✅ Torrent added to client successfully`);
             clearTimeout(metadataTimeout);
             handleTorrent(torrent);
         });
@@ -138,6 +158,28 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                 reject(err);
             }
         });
+        
+        // Log when we start trying to connect to trackers
+        setTimeout(() => {
+            if (!torrentInstance) {
+                console.log(`⏳ Still waiting for metadata... (30s elapsed)`);
+                console.log(`💡 This is normal for some torrents. Trying to connect to trackers...`);
+            }
+        }, 30000);
+        
+        setTimeout(() => {
+            if (!torrentInstance) {
+                console.log(`⏳ Still waiting for metadata... (60s elapsed)`);
+                console.log(`⚠️ Taking longer than usual. Check if torrent has active seeders.`);
+            }
+        }, 60000);
+        
+        setTimeout(() => {
+            if (!torrentInstance) {
+                console.log(`⏳ Still waiting for metadata... (90s elapsed)`);
+                console.log(`⚠️ Last chance - will timeout in 30 seconds if no response.`);
+            }
+        }, 90000);
 
         async function handleTorrent(torrent) {
             try {
@@ -202,7 +244,9 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                     status: "downloading",
                     fileSize: totalBytes,
                     updatedAt: new Date(),
-                }).where(eq(fileDownloads.id, id));
+                }).where(eq(fileDownloads.id, id)).catch(err => {
+                    console.error('⚠️ Database update error (non-fatal):', err.message);
+                });
 
                 // ==========================================
                 // FIX 2: Centralized Cleanup System
