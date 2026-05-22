@@ -195,14 +195,14 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                 };
 
                 // Periodic logger monitoring continuous global upload scale progress
-                // progressInterval = setInterval(() => {
-                //     if (isFinalized) return;
+                progressInterval = setInterval(() => {
+                    if (isFinalized) return;
                     
-                //     const displayPercent = ((downloadedBytes / totalBytes) * 100).toFixed(2);
-                //     console.log(`📊 Batch Stream Progress: ${displayPercent}% | ` +
-                //                `Engine Speed: ${(torrent.downloadSpeed / 1024 / 1024).toFixed(2)} MB/s | ` +
-                //                `Peers: ${torrent.numPeers}`);
-                // }, 5000);
+                    const displayPercent = ((downloadedBytes / totalBytes) * 100).toFixed(2);
+                    console.log(`📊 Batch Stream Progress: ${displayPercent}% | ` +
+                               `Engine Speed: ${(torrent.downloadSpeed / 1024 / 1024).toFixed(2)} MB/s | ` +
+                               `Peers: ${torrent.numPeers}`);
+                }, 5000);
 
                 // ==========================================
                 // FIX 3: Sequential Upload Processing Loop
