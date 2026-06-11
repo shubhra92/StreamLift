@@ -1,27 +1,48 @@
 "use server";
 
-import { db, fileDownloads } from "../db";
+import { db, fileDownloads, workers } from "../db";
 import { eq, desc } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { workerStore } from "../lib/workerStore";
+
+async function resolveWorkerForTorrent(location: string): Promise<string | null> {
+  if (location === "all-workers") {
+    const allWorkers = await db.select().from(workers);
+    const candidates = allWorkers
+      .map((w) => ({ worker: w, state: workerStore.get(w.id) }))
+      .filter(({ state }) => state?.online)
+      .sort((a, b) => (a.state?.currentTask ? 1 : 0) - (b.state?.currentTask ? 1 : 0));
+    return candidates.length > 0 ? candidates[0].worker.id : null;
+  }
+  if (location.startsWith("worker-")) {
+    return location.replace("worker-", "");
+  }
+  return null;
+}
 
 export async function createTorrentDownload(
   magnetLink: string,
-  location: "server" | "mega",
-  fileName?: string,
-  fileIndices?: number[]
+  location: string,
+  fileIndices: number[],
+  meta: { fileName: string; fileSize: number; fileType: string }
 ) {
   try {
-    await db.insert(fileDownloads).values({
+    const workerId = await resolveWorkerForTorrent(location);
+
+    const [record] = await db.insert(fileDownloads).values({
       sourceUrl: magnetLink,
       location,
-      fileName: fileName || null,
+      workerId,
+      fileName: meta.fileName,
+      fileSize: meta.fileSize,
+      fileType: meta.fileType,
       status: "pending",
       downloadType: "torrent",
-      selectedFileIndices: fileIndices ? JSON.stringify(fileIndices) : null,
-    });
+      selectedFileIndices: fileIndices.length > 0 ? JSON.stringify(fileIndices) : null,
+    }).returning();
 
     revalidatePath("/torrents");
-    return { success: true, fileIndices };
+    return { success: true, data: record };
   } catch (error) {
     console.error("Failed to create torrent download:", error);
     return { success: false, message: "Failed to create torrent download" };

@@ -4,7 +4,8 @@ import { motion, AnimatePresence } from "motion/react";
 import { X, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { formatDate, formatFileSize, getStatusClass, getStatusVariant } from "./utils";
+import { formatDate, formatFileSize, getStatusClass } from "./utils";
+import { LocationLabel } from "./LocationLabel";
 import type { DownloadDetailsProps } from "./types";
 
 export function DownloadDetails({
@@ -42,18 +43,23 @@ export function DownloadDetails({
           <DetailItem label="File Type" value={download.fileType || "-"} />
           <div>
             <p className="text-muted-foreground text-xs mb-1">Status</p>
-            <Badge
-              // variant={getStatusVariant(download.status)}
-              className={getStatusClass(download.status)}
-            >
+            <Badge className={getStatusClass(download.status)}>
               {download.status}
             </Badge>
           </div>
-          <DetailItem label="Location" value={download.location || "-"} className="capitalize" />
+
+          {/* Location — resolves worker-{id} to worker name */}
+          <div>
+            <p className="text-muted-foreground text-xs mb-1">Location</p>
+            <p className="font-medium">
+              <LocationLabel location={download.location} />
+            </p>
+          </div>
+
           <DetailItem label="Location Path" value={download.locationPath || "-"} breakAll />
           <DetailItem label="Created At" value={formatDate(download.createdAt)} />
           <DetailItem label="Updated At" value={formatDate(download.updatedAt)} />
-          
+
           <div className="col-span-1 sm:col-span-2">
             <p className="text-muted-foreground text-xs mb-1">Source URL</p>
             <div className="flex items-start gap-2">
@@ -82,7 +88,7 @@ export function DownloadDetails({
             <p className="text-sm text-muted-foreground mb-2">
               Download Progress: {progress.percentFixed2 || "0.00"}%
             </p>
-            <div className="w-full bg-gray-200 rounded h-3"> {/* bg-gray-200 <= bg-muted */}
+            <div className="w-full bg-gray-200 rounded h-3">
               <motion.div
                 className="bg-green-600 h-3 rounded"
                 initial={{ width: 0 }}

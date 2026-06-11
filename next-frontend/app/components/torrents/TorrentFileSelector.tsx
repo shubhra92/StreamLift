@@ -25,7 +25,7 @@ interface TorrentMetadata {
 
 interface TorrentFileSelectorProps {
   metadata: TorrentMetadata;
-  onConfirm: (selectedIndices: number[]) => void;
+  onConfirm: (selectedIndices: number[], selectedFiles: TorrentFile[]) => void;
   onCancel: () => void;
   loading: boolean;
 }
@@ -160,7 +160,10 @@ export function TorrentFileSelector({
           Cancel
         </Button>
         <Button
-          onClick={() => onConfirm(Array.from(selectedIndices))}
+          onClick={() => {
+            const selected = metadata.files.filter(f => selectedIndices.has(f.index));
+            onConfirm(Array.from(selectedIndices), selected);
+          }}
           disabled={loading || selectedIndices.size === 0}
           className="flex-1 bg-blue-600 hover:bg-blue-700 cursor-pointer"
         >

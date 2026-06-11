@@ -5,6 +5,18 @@ import type { FileDownload } from "../db/schema";
 export default function useHomeService() {
     // POST method
     const startDownload = async ( fileDownload:FileDownload ) => {
+        // Worker downloads are handled by the worker itself via heartbeat polling.
+        // The download record is already in the DB with status "pending" and workerId set.
+        // The worker will pick it up on the next heartbeat and report progress directly.
+        const location = fileDownload.location ?? "";
+        if (location.startsWith("worker-") || location === "all-workers") {
+            return {
+                status: true,
+                message: "Download queued for worker",
+                data: { id: fileDownload.id },
+            };
+        }
+
         try {
             const response = await fetch(`/api/stream-download/${fileDownload.location}`,{
                 method: "POST",

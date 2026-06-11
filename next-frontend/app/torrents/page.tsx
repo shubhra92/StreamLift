@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { motion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { useProgress } from "../hooks/useProgress";
+import { useWorkerProgress } from "../hooks/useWorkerProgress";
 import { createTorrentDownload, getTorrentDownloads, deleteTorrentDownload, updateTorrentDownload } from "../actions/torrents";
 import type { FileDownload } from "../db/schema";
 import useTorrentService from "../service/torrentService";
@@ -13,6 +14,12 @@ import {
   EditDownloadModal,
 } from "../components/downloads";
 import { AddTorrentModal } from "../components/torrents/AddTorrentModal";
+import type { SelectedFilesMeta } from "../components/torrents/AddTorrentModal";
+
+function isWorkerLocation(location: string | null | undefined): boolean {
+  if (!location) return false;
+  return location.startsWith("worker-") || location === "all-workers";
+}
 
 export default function TorrentsPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -24,15 +31,57 @@ export default function TorrentsPage() {
   const torrentService = useTorrentService();
   const isFnEnd_fetchDownloads = useRef<boolean>(true);
   const isDBCallHapping = useRef<boolean>(false);
+  const workerPollRef = useRef<NodeJS.Timeout | null>(null);
 
-  const { progress, isDone, error } = useProgress(downloadingFileId);
+  const activeDownload = downloads.find((d) => d.id === downloadingFileId);
+  const isWorkerDownload = isWorkerLocation(activeDownload?.location);
+
+  // Express SSE — only for server/mega
+  const { progress: expressProgress, isDone: expressIsDone, error: expressError } = useProgress(
+    isWorkerDownload ? null : downloadingFileId
+  );
+
+  // Worker store polling — only for worker downloads
+  const { progress: workerProgress, isDone: workerIsDone } = useWorkerProgress(
+    isWorkerDownload ? (activeDownload?.workerId ?? null) : null,
+    isWorkerDownload ? downloadingFileId : null,
+    3000
+  );
+
+  const progress = isWorkerDownload ? workerProgress : expressProgress;
+  const isDone   = isWorkerDownload ? workerIsDone   : expressIsDone;
+  const error    = isWorkerDownload ? null            : expressError;
+
+  // Poll DB every 5s for worker downloads
+  useEffect(() => {
+    if (isWorkerDownload && downloadingFileId) {
+      if (workerPollRef.current) clearInterval(workerPollRef.current);
+      workerPollRef.current = setInterval(async () => {
+        const data = await getTorrentDownloads();
+        setDownloads(data);
+        const target = data.find((d) => d.id === downloadingFileId);
+        if (!target || target.status === "completed" || target.status === "failed") {
+          clearInterval(workerPollRef.current!);
+          workerPollRef.current = null;
+          setDownloadingFileId(null);
+        }
+      }, 5000);
+    } else {
+      if (workerPollRef.current) {
+        clearInterval(workerPollRef.current);
+        workerPollRef.current = null;
+      }
+    }
+    return () => {
+      if (workerPollRef.current) clearInterval(workerPollRef.current);
+    };
+  }, [isWorkerDownload, downloadingFileId]);
 
   const fetchDownloads = async () => {
     if (!isFnEnd_fetchDownloads.current) return null;
     isFnEnd_fetchDownloads.current = false;
 
     const data = await getTorrentDownloads();
-
     setDownloads(data);
 
     let targetFile = null;
@@ -40,36 +89,25 @@ export default function TorrentsPage() {
 
     for (const f of data) {
       if (!targetStatus.has(f.status!)) continue;
-
-      if (f.status === "downloading") {
-        targetFile = f;
-        break;
-      }
-      if (!targetFile) {
-        targetFile = f;
-        continue;
-      }
-
+      if (f.status === "downloading") { targetFile = f; break; }
+      if (!targetFile) { targetFile = f; continue; }
       const isOlder = new Date(f.updatedAt!) < new Date(targetFile.updatedAt!);
-      if (isOlder) {
-        targetFile = f;
-      }
+      if (isOlder) targetFile = f;
     }
 
     if (targetFile?.status === "pending") {
-      // Parse stored file indices from database
-      const fileIndices = targetFile.selectedFileIndices 
-        ? JSON.parse(targetFile.selectedFileIndices as string)
-        : undefined;
-      
-      const { status, message } = await torrentService.startDownload(targetFile, fileIndices);
-      if (!status) {
-        console.log(message);
-      } else {
+      // Worker downloads — just mark as tracking, worker picks it up via heartbeat
+      if (isWorkerLocation(targetFile.location)) {
         setDownloadingFileId(targetFile.id);
-        // Refetch to get updated file size and status from server
-        const updatedData = await getTorrentDownloads();
-        setDownloads(updatedData);
+      } else {
+        const { status, message } = await torrentService.startDownload(targetFile);
+        if (!status) {
+          console.log(message);
+        } else {
+          setDownloadingFileId(targetFile.id);
+          const updatedData = await getTorrentDownloads();
+          setDownloads(updatedData);
+        }
       }
     } else if (targetFile) {
       setDownloadingFileId(targetFile.id);
@@ -80,19 +118,16 @@ export default function TorrentsPage() {
     isFnEnd_fetchDownloads.current = true;
   };
 
-  // Status Update On Download Not Found
   useEffect(() => {
     if (error === "Download not found") {
       (async () => {
         if (!downloadingFileId || isDBCallHapping.current) return null;
-
         isDBCallHapping.current = true;
         await updateTorrentDownload(downloadingFileId, {
           status: "failed",
           errorMessage: "Download not found in server cache",
         });
         isDBCallHapping.current = false;
-
         fetchDownloads();
       })();
     }
@@ -100,20 +135,23 @@ export default function TorrentsPage() {
 
   useEffect(() => {
     if (downloadingFileId === null || isDone) {
-      console.log('📥 Refetching downloads - isDone:', isDone, 'downloadingFileId:', downloadingFileId);
       fetchDownloads();
     }
   }, [isDone]);
 
   const handleAddDownload = async (
     magnetLink: string,
-    location: "server" | "mega",
-    fileName?: string,
-    fileIndices?: number[]
+    location: string,
+    fileIndices: number[],
+    meta: SelectedFilesMeta
   ) => {
     setLoading(true);
     try {
-      await createTorrentDownload(magnetLink, location, fileName, fileIndices);
+      const result = await createTorrentDownload(magnetLink, location, fileIndices, meta);
+      if (!result.success) {
+        alert(result.message ?? "Failed to create download");
+        return;
+      }
       setIsModalOpen(false);
       fetchDownloads();
     } finally {
@@ -152,7 +190,7 @@ export default function TorrentsPage() {
 
   return (
     <main className="min-h-screen bg-background p-4 md:p-6">
-      <div className="max-w-4xl mx-auto">
+      <div className="max-w-5xl mx-auto">
         <motion.div
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
