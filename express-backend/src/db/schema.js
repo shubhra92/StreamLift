@@ -1,12 +1,12 @@
 import { pgTable, text, timestamp, integer, boolean, uuid, bigint } from 'drizzle-orm/pg-core';
 
-// Mega sessions table
 export const megaSessions = pgTable('mega_sessions', {
   id: uuid('id').defaultRandom().primaryKey(),
   email: text('email').notNull(),
   sessionData: text('session_data'), // JSON string of mega session
-  country: text('country'), // Country code from IP (e.g., 'US', 'GB', 'DE')
-  ipAddress: text('ip_address'), // IP address when session was created
+  country: text('country'),
+  ipAddress: text('ip_address'),
+  workerId: uuid('worker_id'),       // null = server session, set = worker-specific session
   isActive: boolean('is_active').default(true),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),

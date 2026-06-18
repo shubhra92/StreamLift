@@ -4,6 +4,7 @@ export const megaSessions = pgTable('mega_sessions', {
   id: uuid('id').defaultRandom().primaryKey(),
   email: text('email').notNull(),
   sessionData: text('session_data'),
+  workerId: uuid('worker_id'),   // null = server session, set = worker-specific session
   isActive: boolean('is_active').default(true),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
