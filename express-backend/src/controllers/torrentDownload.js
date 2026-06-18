@@ -6,30 +6,22 @@ import { eq } from "drizzle-orm";
 
 export async function torrentServerDownload(req, res) {
     try {
-        const { magnet_link, file_name, file_id, file_indices } = req.body;
+        const { magnet_link, file_name, file_id } = req.body;
+        let { file_indices } = req.body;
 
         if (!magnet_link) {
-            return res.status(400).send({
-                status: false,
-                message: "magnet_link is required"
-            });
+            return res.status(400).send({ status: false, message: "magnet_link is required" });
         }
 
-        // Validate magnet link format
         if (!magnet_link.startsWith('magnet:?')) {
-            return res.status(400).send({
-                status: false,
-                message: "Invalid magnet link format"
-            });
+            return res.status(400).send({ status: false, message: "Invalid magnet link format" });
         }
 
         if (progressMap.get(file_id)) {
             return res.status(200).send({
                 status: true,
                 message: "torrent download already started",
-                data: {
-                    fileStatusId: file_id
-                }
+                data: { fileStatusId: file_id }
             });
         }
 
@@ -37,13 +29,15 @@ export async function torrentServerDownload(req, res) {
 
         if (file_id) {
             [data] = await db.select().from(fileDownloads).where(eq(fileDownloads.id, file_id)).limit(1);
-            
-            // If file_id exists, use stored file_indices if not provided in request
+
+            // Use stored file_indices from DB if not provided in request
             if (data && !file_indices && data.selectedFileIndices) {
                 file_indices = JSON.parse(data.selectedFileIndices);
                 console.log(`📋 Using stored file indices: ${file_indices}`);
             }
         }
+
+        // Only create a new record if no existing record was found
         if (!file_id || !data) {
             [data] = await db.insert(fileDownloads).values({
                 location: "server",
@@ -56,62 +50,51 @@ export async function torrentServerDownload(req, res) {
 
         const id = data.id;
 
-        const progressDetail = {
-            "downloadedBytes": 0,
-            "totalBytes": null,
-            "percentFixed2": null,
-            "percent": null,
-        };
+        // Pre-fill progress with known fileSize if available from DB record
+        progressMap.set(id, {
+            downloadedBytes: 0,
+            totalBytes: data.fileSize ?? null,
+            percentFixed2: null,
+            percent: null,
+        });
 
-        progressMap.set(id, progressDetail);
+        // Use fileName from DB record (pre-filled by frontend) or fall back to request
+        const resolvedFileName = data.fileName || file_name;
 
-        serverTorrentDownload(id, magnet_link, { 
-            fileName: file_name,
-            fileIndices: file_indices 
+        serverTorrentDownload(id, magnet_link, {
+            fileName: resolvedFileName,
+            fileIndices: file_indices
         }).catch(console.error);
 
         return res.status(200).send({
             status: true,
             message: "torrent download started successfully",
-            data: {
-                fileStatusId: id
-            }
+            data: { fileStatusId: id }
         });
     } catch (error) {
         console.error("Error in torrentServerDownload:", error);
-        return res.status(500).send({
-            status: false,
-            details: error.message
-        });
+        return res.status(500).send({ status: false, details: error.message });
     }
 }
 
 export async function torrentMegaUpload(req, res) {
     try {
-        const { magnet_link, file_name, file_id, file_indices } = req.body;
+        const { magnet_link, file_name, file_id } = req.body;
+        let { file_indices } = req.body;
 
         if (!magnet_link) {
-            return res.status(400).send({
-                status: false,
-                message: "magnet_link is required"
-            });
+            return res.status(400).send({ status: false, message: "magnet_link is required" });
         }
 
-        // Validate magnet link format
         if (!magnet_link.startsWith('magnet:?')) {
-            return res.status(400).send({
-                status: false,
-                message: "Invalid magnet link format"
-            });
+            return res.status(400).send({ status: false, message: "Invalid magnet link format" });
         }
 
         if (progressMap.get(file_id)) {
             return res.status(200).send({
                 status: true,
                 message: "torrent download already started",
-                data: {
-                    fileStatusId: file_id
-                }
+                data: { fileStatusId: file_id }
             });
         }
 
@@ -119,13 +102,15 @@ export async function torrentMegaUpload(req, res) {
 
         if (file_id) {
             [data] = await db.select().from(fileDownloads).where(eq(fileDownloads.id, file_id)).limit(1);
-            
-            // If file_id exists, use stored file_indices if not provided in request
+
+            // Use stored file_indices from DB if not provided in request
             if (data && !file_indices && data.selectedFileIndices) {
                 file_indices = JSON.parse(data.selectedFileIndices);
                 console.log(`📋 Using stored file indices: ${file_indices}`);
             }
         }
+
+        // Only create a new record if no existing record was found
         if (!file_id || !data) {
             [data] = await db.insert(fileDownloads).values({
                 location: "mega",
@@ -138,33 +123,29 @@ export async function torrentMegaUpload(req, res) {
 
         const id = data.id;
 
-        const progressDetail = {
-            "downloadedBytes": 0,
-            "totalBytes": null,
-            "percentFixed2": null,
-            "percent": null,
-        };
-        
-        progressMap.set(id, progressDetail);
+        // Pre-fill progress with known fileSize if available from DB record
+        progressMap.set(id, {
+            downloadedBytes: 0,
+            totalBytes: data.fileSize ?? null,
+            percentFixed2: null,
+            percent: null,
+        });
 
-        streamTorrentToMega(id, magnet_link, { 
-            fileName: file_name,
-            fileIndices: file_indices 
+        // Use fileName from DB record (pre-filled by frontend) or fall back to request
+        const resolvedFileName = data.fileName || file_name;
+
+        streamTorrentToMega(id, magnet_link, {
+            fileName: resolvedFileName,
+            fileIndices: file_indices
         }).catch(console.error);
 
         return res.status(200).send({
             status: true,
             message: "torrent to MEGA upload started successfully",
-            data: {
-                fileStatusId: id
-            }
+            data: { fileStatusId: id }
         });
-
     } catch (error) {
         console.error("Error in torrentMegaUpload:", error);
-        return res.status(500).send({
-            status: false,
-            details: error.message
-        });
+        return res.status(500).send({ status: false, details: error.message });
     }
 }

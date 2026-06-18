@@ -3,22 +3,24 @@
 import type { FileDownload } from "../db/schema";
 
 export default function useTorrentService() {
-  // POST method
-  const startDownload = async (fileDownload: FileDownload, fileIndices?: number[]) => {
+  const startDownload = async (fileDownload: FileDownload) => {
     try {
+      // Parse file indices from the DB record (already stored during createTorrentDownload)
+      const fileIndices = fileDownload.selectedFileIndices
+        ? JSON.parse(fileDownload.selectedFileIndices as string)
+        : undefined;
+
       const response = await fetch(`/api/torrent-download/${fileDownload.location}`, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          file_id: fileDownload.id,
+          file_id:     fileDownload.id,
           magnet_link: fileDownload.sourceUrl,
-          file_name: fileDownload.fileName,
+          file_name:   fileDownload.fileName,
           file_indices: fileIndices,
         }),
       });
-      
+
       if (!response.ok) {
         const errMsg = await response.json();
         return {
@@ -30,11 +32,7 @@ export default function useTorrentService() {
       }
 
       const { data } = await response.json();
-      return {
-        status: true,
-        message: "torrent download started",
-        data: data,
-      };
+      return { status: true, message: "torrent download started", data };
     } catch (err: any) {
       return {
         status: false,
@@ -44,7 +42,5 @@ export default function useTorrentService() {
     }
   };
 
-  return {
-    startDownload,
-  };
+  return { startDownload };
 }

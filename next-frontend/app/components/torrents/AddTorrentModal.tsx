@@ -10,12 +10,36 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { TorrentFileSelector } from "./TorrentFileSelector";
+import { LocationSelect } from "../downloads/LocationSelect";
+
+export interface SelectedFilesMeta {
+  /** Display name: custom override or derived from selection */
+  fileName: string;
+  /** Total bytes of selected files */
+  fileSize: number;
+  /** File type of the primary selected file */
+  fileType: string;
+}
 
 interface AddTorrentModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (magnetLink: string, location: "server" | "mega", fileName?: string, fileIndices?: number[]) => Promise<void>;
+  onSubmit: (
+    magnetLink: string,
+    location: string,
+    fileIndices: number[],
+    meta: SelectedFilesMeta
+  ) => Promise<void>;
   loading: boolean;
+}
+
+interface TorrentFile {
+  index: number;
+  name: string;
+  path: string;
+  size: number;
+  sizeFormatted: string;
+  type: string;
 }
 
 interface TorrentMetadata {
@@ -23,7 +47,7 @@ interface TorrentMetadata {
   infoHash: string;
   totalSize: number;
   totalSizeFormatted: string;
-  files: any[];
+  files: TorrentFile[];
   fileCount: number;
 }
 
@@ -35,15 +59,14 @@ export function AddTorrentModal({
 }: AddTorrentModalProps) {
   const [step, setStep] = useState<"input" | "select">("input");
   const [magnetLink, setMagnetLink] = useState("");
-  const [fileName, setFileName] = useState("");
-  const [location, setLocation] = useState<"server" | "mega">("mega");
+  const [fileNameOverride, setFileNameOverride] = useState("");
+  const [location, setLocation] = useState("mega");
   const [metadata, setMetadata] = useState<TorrentMetadata | null>(null);
   const [fetchingMetadata, setFetchingMetadata] = useState(false);
 
   const handleFetchMetadata = async () => {
     if (!magnetLink) return;
-    
-    // Validate magnet link format
+
     if (!magnetLink.startsWith("magnet:?")) {
       alert("Please enter a valid magnet link (starts with magnet:?)");
       return;
@@ -58,7 +81,7 @@ export function AddTorrentModal({
       });
 
       const result = await response.json();
-      
+
       if (!result.status) {
         alert(result.message || "Failed to fetch torrent metadata");
         return;
@@ -73,15 +96,35 @@ export function AddTorrentModal({
     }
   };
 
-  const handleConfirmSelection = async (selectedIndices: number[]) => {
-    await onSubmit(magnetLink, location, fileName || undefined, selectedIndices);
+  const handleConfirmSelection = async (
+    selectedIndices: number[],
+    selectedFiles: TorrentFile[]
+  ) => {
+    // Derive metadata from the user's selection
+    const totalSize = selectedFiles.reduce((sum, f) => sum + f.size, 0);
+
+    // Name: custom override → single file name → torrent name
+    const derivedName =
+      fileNameOverride.trim() ||
+      (selectedFiles.length === 1 ? selectedFiles[0].name : metadata!.name);
+
+    // Type: primary file type (first selected file)
+    const derivedType = selectedFiles[0]?.type ?? "other";
+
+    const meta: SelectedFilesMeta = {
+      fileName: derivedName,
+      fileSize: totalSize,
+      fileType: derivedType,
+    };
+
+    await onSubmit(magnetLink, location, selectedIndices, meta);
     handleClose();
   };
 
   const handleClose = () => {
     setStep("input");
     setMagnetLink("");
-    setFileName("");
+    setFileNameOverride("");
     setLocation("mega");
     setMetadata(null);
     onClose();
@@ -95,7 +138,7 @@ export function AddTorrentModal({
             {step === "input" ? "Add New Torrent" : "Select Files to Download"}
           </DialogTitle>
         </DialogHeader>
-        
+
         <AnimatePresence mode="wait">
           {step === "input" ? (
             <motion.div
@@ -123,13 +166,13 @@ export function AddTorrentModal({
 
               <div>
                 <label className="text-sm text-muted-foreground mb-2 block">
-                  File Name (Optional)
+                  File Name Override (optional)
                 </label>
                 <input
                   type="text"
-                  placeholder="my-file.mp4"
-                  value={fileName}
-                  onChange={(e) => setFileName(e.target.value)}
+                  placeholder="Leave blank to use torrent file name"
+                  value={fileNameOverride}
+                  onChange={(e) => setFileNameOverride(e.target.value)}
                   className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                 />
               </div>
@@ -138,14 +181,7 @@ export function AddTorrentModal({
                 <label className="text-sm text-muted-foreground mb-2 block">
                   Storage Location
                 </label>
-                <select
-                  value={location}
-                  onChange={(e) => setLocation(e.target.value as "server" | "mega")}
-                  className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                >
-                  <option value="server">Server</option>
-                  <option value="mega">Mega (Recommended)</option>
-                </select>
+                <LocationSelect value={location} onChange={setLocation} />
                 <p className="text-xs text-muted-foreground mt-1">
                   MEGA recommended for persistent storage
                 </p>

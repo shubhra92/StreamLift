@@ -15,7 +15,27 @@ const client = new WebTorrent({
     }
 });
 
+const isServerDownloadEnabled = process.env.SERVER_DOWNLOAD_ENABLED ?? false
+
 export async function serverTorrentDownload(id, magnetLink, options = { fileName: null, fileIndices: null }) {
+    if (isServerDownloadEnabled !== "true") {
+        await db.update(fileDownloads).set({
+            status: "failed",
+            errorMessage: "server download not available",
+            updatedAt: new Date(),
+        }).where(eq(fileDownloads.id, id))
+
+        progressMap.set(id, {
+            "downloadedBytes": null,
+            "totalBytes": null,
+            "percentFixed2": null,
+            "percent": null,
+            "done": true
+        })
+
+        return null
+    }
+    
     const downloadDir = path.join(process.cwd(), 'downloads');
     
     if (!fs.existsSync(downloadDir)) {
@@ -149,14 +169,25 @@ export async function serverTorrentDownload(id, magnetLink, options = { fileName
                         percent: Math.round(progressFraction * 100),
                     });
 
-                    console.log(`📊 Batch Progress: ${percent}% | Speed: ${(torrent.downloadSpeed / 1024 / 1024).toFixed(2)} MB/s`);
+                    const memUsage = process.memoryUsage();
+                    const memUsedMB = (memUsage.heapUsed / 1024 / 1024).toFixed(1);
+                    const dlMB = (downloadedBytes / 1024 / 1024).toFixed(1);
+                    const totMB = (totalBytes / 1024 / 1024).toFixed(1);
+                    const speedMBs = (torrent.downloadSpeed / 1024 / 1024).toFixed(2);
+                    console.log(
+                        `📊 Progress: ${percent}% | ` +
+                        `Speed: ${speedMBs} MB/s | ` +
+                        `Peers: ${torrent.numPeers} | ` +
+                        `Downloaded: ${dlMB} MB / ${totMB} MB | ` +
+                        `Memory: ${memUsedMB} MB`
+                    );
                     
                     // Trigger completion when ALL bytes for our selected file group are present
-                    if (allSelectedFilesFinished /*downloadedBytes >= totalBytes*/ && !executionTriggered) {
+                    if (allSelectedFilesFinished && !executionTriggered) {
                         console.log("✅ All targeted file array structures reached 100%, completing...");
                         handleCompletion();
                     }
-                }, 2000);
+                }, 5000);
 
                 const handleCompletion = async () => {
                     if (executionTriggered) return;

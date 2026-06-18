@@ -8,6 +8,7 @@ import { TableCell, TableRow } from "@/components/ui/table";
 import { formatDate, formatFileSize, getStatusClass, getStatusVariant } from "./utils";
 import type { DownloadItemProps } from "./types";
 import { useEffect } from "react";
+import { LocationLabel } from "./LocationLabel";
 
 export function DownloadItem({
   index,
@@ -27,7 +28,6 @@ export function DownloadItem({
       handleUpdateDownlodingItem(index, download.id)
     }
   },[progress])
-
   return (
     <motion.tr
       initial={{ opacity: 0, y: 10 }}
@@ -76,7 +76,7 @@ export function DownloadItem({
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span>{download.fileSize ? formatFileSize(download.fileSize) : "-"}</span>
             <span>•</span>
-            <span className="capitalize">{download.location || "-"}</span>
+            <span className="capitalize"><LocationLabel location={download.location} /></span>
           </div>
           {isDownloading ? (
             <div className="w-full bg-gray-200 rounded h-2"> {/* bg-gray-200 <= bg-muted */}
@@ -106,7 +106,7 @@ export function DownloadItem({
         {download.fileSize ? formatFileSize(download.fileSize) : "-"}
       </TableCell>
       <TableCell className="hidden md:table-cell px-4 py-3 text-sm text-muted-foreground capitalize">
-        {download.location || "-"}
+        <LocationLabel location={download.location} />
       </TableCell>
       <TableCell className="hidden md:table-cell px-4 py-3">
         {isDownloading ? (

@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { LocationSelect } from "./LocationSelect";
 import type { AddDownloadModalProps } from "./types";
 
 export function AddDownloadModal({
@@ -19,11 +20,11 @@ export function AddDownloadModal({
 }: AddDownloadModalProps) {
   const [url, setUrl] = useState("");
   const [fileName, setFileName] = useState("");
-  const [location, setLocation] = useState<"server" | "mega">("server");
+  const [location, setLocation] = useState("server");
 
   const handleSubmit = async () => {
     if (!url) return;
-    await onSubmit(url, location, fileName || undefined);
+    await onSubmit(url, location as any, fileName || undefined);
     setUrl("");
     setFileName("");
     setLocation("server");
@@ -65,14 +66,7 @@ export function AddDownloadModal({
               className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
 
-            <select
-              value={location}
-              onChange={(e) => setLocation(e.target.value as "server" | "mega")}
-              className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              <option value="server">Server</option>
-              <option value="mega">Mega</option>
-            </select>
+            <LocationSelect value={location} onChange={setLocation} />
 
             <div className="flex flex-col-reverse sm:flex-row gap-3">
               <Button
