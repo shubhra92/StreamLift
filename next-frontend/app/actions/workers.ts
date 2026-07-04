@@ -17,6 +17,10 @@ export async function createWorker(data: {
 }): Promise<{ success: boolean; message?: string; data?: Worker }> {
   const guestId = await getGuestId();
 
+  if (!guestId) {
+    return { success: false, message: "Unauthorized" };
+  }
+
   if (!data.name?.trim()) {
     return { success: false, message: "Worker name is required" };
   }
@@ -34,11 +38,7 @@ export async function createWorker(data: {
   const [existing] = await db
     .select({ id: workers.id })
     .from(workers)
-    .where(
-      guestId
-        ? and(eq(workers.name, data.name.trim()), eq(workers.guestId, guestId))
-        : eq(workers.name, data.name.trim())
-    )
+    .where(and(eq(workers.name, data.name.trim()), eq(workers.guestId, guestId)))
     .limit(1);
 
   if (existing) {
@@ -72,10 +72,13 @@ export async function createWorker(data: {
 export async function getWorkers() {
   const guestId = await getGuestId();
 
+  // No authenticated guest — return nothing rather than leaking all workers
+  if (!guestId) return [];
+
   const allWorkers = await db
     .select()
     .from(workers)
-    .where(guestId ? eq(workers.guestId, guestId) : undefined)
+    .where(eq(workers.guestId, guestId))
     .orderBy(desc(workers.createdAt));
 
   return allWorkers.map((w) => {
@@ -92,14 +95,12 @@ export async function getWorkers() {
 export async function getWorkerById(workerId: string) {
   const guestId = await getGuestId();
 
+  if (!guestId) return null;
+
   const [worker] = await db
     .select()
     .from(workers)
-    .where(
-      guestId
-        ? and(eq(workers.id, workerId), eq(workers.guestId, guestId))
-        : eq(workers.id, workerId)
-    )
+    .where(and(eq(workers.id, workerId), eq(workers.guestId, guestId)))
     .limit(1);
 
   if (!worker) return null;
@@ -123,15 +124,15 @@ export async function deleteWorker(
 ): Promise<{ success: boolean; message: string }> {
   const guestId = await getGuestId();
 
+  if (!guestId) {
+    return { success: false, message: "Unauthorized" };
+  }
+
   // Ownership check — guest can only delete their own workers
   const [worker] = await db
     .select()
     .from(workers)
-    .where(
-      guestId
-        ? and(eq(workers.id, workerId), eq(workers.guestId, guestId))
-        : eq(workers.id, workerId)
-    )
+    .where(and(eq(workers.id, workerId), eq(workers.guestId, guestId)))
     .limit(1);
 
   if (!worker) {

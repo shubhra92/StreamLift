@@ -6,12 +6,12 @@ import { revalidatePath } from "next/cache";
 import { workerStore } from "../lib/workerStore";
 import { getGuestId } from "../lib/getGuestId";
 
-async function resolveWorkerForTorrent(location: string, guestId: string | null): Promise<string | null> {
+async function resolveWorkerForTorrent(location: string, guestId: string): Promise<string | null> {
   if (location === "all-workers") {
     const allWorkers = await db
       .select()
       .from(workers)
-      .where(guestId ? eq(workers.guestId, guestId) : undefined);
+      .where(eq(workers.guestId, guestId));
 
     const candidates = allWorkers
       .map((w) => ({ worker: w, state: workerStore.get(w.id) }))
@@ -33,6 +33,7 @@ export async function createTorrentDownload(
 ) {
   try {
     const guestId = await getGuestId();
+    if (!guestId) return { success: false, message: "Unauthorized" };
     const workerId = await resolveWorkerForTorrent(location, guestId);
 
     const [record] = await db.insert(fileDownloads).values({
@@ -59,15 +60,12 @@ export async function createTorrentDownload(
 export async function getTorrentDownloads() {
   try {
     const guestId = await getGuestId();
+    if (!guestId) return [];
 
     const downloads = await db
       .select()
       .from(fileDownloads)
-      .where(
-        guestId
-          ? and(eq(fileDownloads.downloadType, "torrent"), eq(fileDownloads.guestId, guestId))
-          : eq(fileDownloads.downloadType, "torrent")
-      )
+      .where(and(eq(fileDownloads.downloadType, "torrent"), eq(fileDownloads.guestId, guestId)))
       .orderBy(desc(fileDownloads.createdAt));
 
     return downloads;
@@ -80,15 +78,12 @@ export async function getTorrentDownloads() {
 export async function deleteTorrentDownload(id: string) {
   try {
     const guestId = await getGuestId();
+    if (!guestId) return { success: false, message: "Unauthorized" };
 
     const [download] = await db
       .select()
       .from(fileDownloads)
-      .where(
-        guestId
-          ? and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId))
-          : eq(fileDownloads.id, id)
-      )
+      .where(and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId)))
       .limit(1);
 
     if (!download) {
@@ -121,15 +116,12 @@ export async function updateTorrentDownload(
 ) {
   try {
     const guestId = await getGuestId();
+    if (!guestId) return { success: false, message: "Unauthorized" };
 
     const [download] = await db
       .select()
       .from(fileDownloads)
-      .where(
-        guestId
-          ? and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId))
-          : eq(fileDownloads.id, id)
-      )
+      .where(and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId)))
       .limit(1);
 
     if (!download) {

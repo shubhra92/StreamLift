@@ -10,13 +10,13 @@ import type { FileDownload } from "../db/schema";
 /** Resolve which workerId to assign based on the location string */
 async function resolveWorkerAssignment(
   location: string,
-  guestId: string | null
+  guestId: string
 ): Promise<{ workerId: string | null; error?: string }> {
   if (location === "all-workers") {
     const allWorkers = await db
       .select()
       .from(workers)
-      .where(guestId ? eq(workers.guestId, guestId) : undefined);
+      .where(eq(workers.guestId, guestId));
 
     const candidates = allWorkers
       .map((w) => ({ worker: w, state: workerStore.get(w.id) }))
@@ -34,11 +34,7 @@ async function resolveWorkerAssignment(
     const [worker] = await db
       .select()
       .from(workers)
-      .where(
-        guestId
-          ? and(eq(workers.id, workerId), eq(workers.guestId, guestId))
-          : eq(workers.id, workerId)
-      )
+      .where(and(eq(workers.id, workerId), eq(workers.guestId, guestId)))
       .limit(1);
     if (!worker) return { workerId: null, error: "Worker not found" };
     return { workerId: worker.id };
@@ -49,6 +45,7 @@ async function resolveWorkerAssignment(
 
 export async function createDownload(sourceUrl: string, location: string, fileName?: string) {
   const guestId = await getGuestId();
+  if (!guestId) throw new Error("Unauthorized");
   const { workerId, error } = await resolveWorkerAssignment(location, guestId);
   if (error) throw new Error(error);
 
@@ -67,15 +64,12 @@ export async function createDownload(sourceUrl: string, location: string, fileNa
 
 export async function getDownloads() {
   const guestId = await getGuestId();
+  if (!guestId) return [];
 
   const query = db
     .select()
     .from(fileDownloads)
-    .where(
-      guestId
-        ? and(eq(fileDownloads.downloadType, "http"), eq(fileDownloads.guestId, guestId))
-        : eq(fileDownloads.downloadType, "http")
-    )
+    .where(and(eq(fileDownloads.downloadType, "http"), eq(fileDownloads.guestId, guestId)))
     .orderBy(desc(fileDownloads.createdAt));
 
   return query;
@@ -83,15 +77,12 @@ export async function getDownloads() {
 
 export async function getDownloadById(fileId: string) {
   const guestId = await getGuestId();
+  if (!guestId) return undefined;
 
   const [download] = await db
     .select()
     .from(fileDownloads)
-    .where(
-      guestId
-        ? and(eq(fileDownloads.id, fileId), eq(fileDownloads.guestId, guestId))
-        : eq(fileDownloads.id, fileId)
-    )
+    .where(and(eq(fileDownloads.id, fileId), eq(fileDownloads.guestId, guestId)))
     .limit(1);
 
   return download;
@@ -99,15 +90,12 @@ export async function getDownloadById(fileId: string) {
 
 export async function deleteDownload(id: string) {
   const guestId = await getGuestId();
+  if (!guestId) return { success: false, message: "Unauthorized" };
 
   const [existing] = await db
     .select()
     .from(fileDownloads)
-    .where(
-      guestId
-        ? and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId))
-        : eq(fileDownloads.id, id)
-    );
+    .where(and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId)));
 
   if (!existing) return { success: false, message: "Download not found" };
   if (existing.status === "downloading") {
@@ -120,15 +108,12 @@ export async function deleteDownload(id: string) {
 
 export async function updateDownload(id: string, data: Partial<Omit<FileDownload, "id" | "createdAt" | "updatedAt">>) {
   const guestId = await getGuestId();
+  if (!guestId) return { success: false, message: "Unauthorized" };
 
   const [existing] = await db
     .select()
     .from(fileDownloads)
-    .where(
-      guestId
-        ? and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId))
-        : eq(fileDownloads.id, id)
-    );
+    .where(and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId)));
 
   if (!existing) {
     return { success: false, message: "Download not found" };
