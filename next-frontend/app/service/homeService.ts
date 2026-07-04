@@ -2,13 +2,21 @@
 
 import type { FileDownload } from "../db/schema";
 
+const serverDownloadEnabled = process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED === "true";
+
+/** Resolve "cloud" to the actual backend endpoint segment */
+function resolveLocation(location: string): string {
+    if (location === "cloud") return serverDownloadEnabled ? "server" : "mega";
+    return location;
+}
+
 export default function useHomeService() {
     // POST method
     const startDownload = async ( fileDownload:FileDownload ) => {
         // Worker downloads are handled by the worker itself via heartbeat polling.
         // The download record is already in the DB with status "pending" and workerId set.
         // The worker will pick it up on the next heartbeat and report progress directly.
-        const location = fileDownload.location ?? "";
+        const location = resolveLocation(fileDownload.location ?? "");
         if (location.startsWith("worker-") || location === "all-workers") {
             return {
                 status: true,
@@ -18,7 +26,7 @@ export default function useHomeService() {
         }
 
         try {
-            const response = await fetch(`/api/stream-download/${fileDownload.location}`,{
+            const response = await fetch(`/api/stream-download/${location}`,{
                 method: "POST",
                 headers: {
                     'content-type': 'application/json'

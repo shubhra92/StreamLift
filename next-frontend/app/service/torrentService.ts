@@ -2,6 +2,14 @@
 
 import type { FileDownload } from "../db/schema";
 
+const serverDownloadEnabled = process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED === "true";
+
+/** Resolve "cloud" to the actual backend endpoint segment */
+function resolveLocation(location: string): string {
+  if (location === "cloud") return serverDownloadEnabled ? "server" : "mega";
+  return location;
+}
+
 export default function useTorrentService() {
   const startDownload = async (fileDownload: FileDownload) => {
     try {
@@ -10,7 +18,9 @@ export default function useTorrentService() {
         ? JSON.parse(fileDownload.selectedFileIndices as string)
         : undefined;
 
-      const response = await fetch(`/api/torrent-download/${fileDownload.location}`, {
+      const location = resolveLocation(fileDownload.location ?? "");
+
+      const response = await fetch(`/api/torrent-download/${location}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({

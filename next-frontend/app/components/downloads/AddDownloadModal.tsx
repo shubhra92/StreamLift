@@ -20,20 +20,24 @@ export function AddDownloadModal({
 }: AddDownloadModalProps) {
   const [url, setUrl] = useState("");
   const [fileName, setFileName] = useState("");
-  const [location, setLocation] = useState("server");
+  const [location, setLocation] = useState(
+    process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED === "true" ? "server" : "mega"
+  );
+
+  const defaultLocation = process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED === "true" ? "server" : "mega";
 
   const handleSubmit = async () => {
     if (!url) return;
     await onSubmit(url, location as any, fileName || undefined);
     setUrl("");
     setFileName("");
-    setLocation("server");
+    setLocation(defaultLocation);
   };
 
   const handleClose = () => {
     setUrl("");
     setFileName("");
-    setLocation("server");
+    setLocation(defaultLocation);
     onClose();
   };
 
