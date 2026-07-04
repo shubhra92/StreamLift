@@ -3,6 +3,10 @@
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useEffect, useState } from "react";
 
+const serverDownloadEnabled = process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED === "true";
+const cloudLocation = serverDownloadEnabled ? "server" : "mega";
+const cloudLabel = serverDownloadEnabled ? "Cloud (Server)" : "Cloud";
+
 interface WorkerOption {
   id: string;
   name: string;
@@ -37,8 +41,21 @@ export function LocationSelect({ value, onChange, className }: LocationSelectPro
       });
   }, []);
 
+  // "cloud" is the UI value; resolve to the actual backend value on change
+  const handleChange = (val: string) => {
+    if (val === "cloud") {
+      onChange(cloudLocation);
+    } else {
+      onChange(val);
+    }
+  };
+
+  // Map the actual stored value back to "cloud" for display
+  const displayValue =
+    value === "mega" || value === "server" ? "cloud" : value;
+
   return (
-    <Select value={value} onValueChange={onChange}>
+    <Select value={displayValue} onValueChange={handleChange}>
       <SelectTrigger
         className={
           className ??
@@ -49,12 +66,8 @@ export function LocationSelect({ value, onChange, className }: LocationSelectPro
       </SelectTrigger>
 
       <SelectContent>
-        <SelectItem value="server">
-          Server
-        </SelectItem>
-
-        <SelectItem value="mega">
-          Mega
+        <SelectItem value="cloud">
+          {cloudLabel}
         </SelectItem>
 
         {workers.length > 0 && (

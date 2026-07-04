@@ -57,10 +57,11 @@ export function AddTorrentModal({
   onSubmit,
   loading,
 }: AddTorrentModalProps) {
+  const defaultLocation = process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED === "true" ? "server" : "mega";
   const [step, setStep] = useState<"input" | "select">("input");
   const [magnetLink, setMagnetLink] = useState("");
   const [fileNameOverride, setFileNameOverride] = useState("");
-  const [location, setLocation] = useState("mega");
+  const [location, setLocation] = useState(defaultLocation);
   const [metadata, setMetadata] = useState<TorrentMetadata | null>(null);
   const [fetchingMetadata, setFetchingMetadata] = useState(false);
 
@@ -125,7 +126,7 @@ export function AddTorrentModal({
     setStep("input");
     setMagnetLink("");
     setFileNameOverride("");
-    setLocation("mega");
+    setLocation(defaultLocation);
     setMetadata(null);
     onClose();
   };
