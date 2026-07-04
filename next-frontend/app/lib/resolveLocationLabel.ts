@@ -23,8 +23,8 @@ async function getWorkerNameCache(): Promise<Map<string, string>> {
 
 export async function resolveLocationLabel(location: string | null | undefined): Promise<string | null > {
   if (!location) return "—";
-  if (location === "server") return "Server";
-  if (location === "mega") return "Mega";
+  if (location === "server") return "Cloud (Server)";
+  if (location === "mega") return "Cloud";
   if (location === "all-workers") return "All Workers";
 
   if (location.startsWith("worker-")) {
@@ -40,8 +40,8 @@ export async function resolveLocationLabel(location: string | null | undefined):
 /** Synchronous version using cached data only (for render-time use) */
 export function resolveLocationLabelSync(location: string | null | undefined): string {
   if (!location) return "—";
-  if (location === "server") return "Server";
-  if (location === "mega") return "Mega";
+  if (location === "server") return "Cloud (Server)";
+  if (location === "mega") return "Cloud";
   if (location === "all-workers") return "All Workers";
 
   if (location.startsWith("worker-")) {

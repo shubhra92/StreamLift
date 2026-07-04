@@ -7,7 +7,7 @@ import { eq } from "drizzle-orm";
 const isServerDownloadEnabled = process.env.SERVER_DOWNLOAD_ENABLED ?? false
 
 
-export async function serverDownloadWithProgress(id, url, options = { fileName: null }) {
+export async function serverDownloadWithProgress(id, url, options = { fileName: null, guestId: null }) {
 
     if(isServerDownloadEnabled !== "true"){
          await db.update(fileDownloads).set({
@@ -49,7 +49,14 @@ export async function serverDownloadWithProgress(id, url, options = { fileName: 
     const [fileType, fileExtention] = response.headers.get("content-type")?.split("/")
     const filename = options.fileName ?? response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1] ?? `movie.${fileExtention}`
 
-    const filePath = path.join("downloads", filename);
+    // Scope the download folder to the guest when a guestId is available
+    const downloadDir = options.guestId
+        ? path.join("downloads", options.guestId)
+        : path.join("downloads");
+
+    fs.mkdirSync(downloadDir, { recursive: true });
+
+    const filePath = path.join(downloadDir, filename);
 
     const totalBytes = Number(response.headers.get("content-length")) || 0;
     let downloadedBytes = 0;

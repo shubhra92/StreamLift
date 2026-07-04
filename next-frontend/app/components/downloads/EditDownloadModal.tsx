@@ -79,8 +79,8 @@ export function EditDownloadModal({
               onChange={(e) => setLocation(e.target.value as "server" | "mega")}
               className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             >
-              <option value="server">Server</option>
-              <option value="mega">Mega</option>
+              <option value="server">Cloud (Server)</option>
+              <option value="mega">Cloud</option>
             </select>
 
             <div className="flex flex-col-reverse sm:flex-row gap-3">

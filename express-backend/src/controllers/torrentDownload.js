@@ -49,6 +49,7 @@ export async function torrentServerDownload(req, res) {
         }
 
         const id = data.id;
+        const guestId = data.guestId ?? null;
 
         // Pre-fill progress with known fileSize if available from DB record
         progressMap.set(id, {
@@ -63,7 +64,8 @@ export async function torrentServerDownload(req, res) {
 
         serverTorrentDownload(id, magnet_link, {
             fileName: resolvedFileName,
-            fileIndices: file_indices
+            fileIndices: file_indices,
+            guestId
         }).catch(console.error);
 
         return res.status(200).send({
@@ -122,6 +124,7 @@ export async function torrentMegaUpload(req, res) {
         }
 
         const id = data.id;
+        const guestId = data.guestId ?? null;
 
         // Pre-fill progress with known fileSize if available from DB record
         progressMap.set(id, {
@@ -136,7 +139,8 @@ export async function torrentMegaUpload(req, res) {
 
         streamTorrentToMega(id, magnet_link, {
             fileName: resolvedFileName,
-            fileIndices: file_indices
+            fileIndices: file_indices,
+            guestId
         }).catch(console.error);
 
         return res.status(200).send({

@@ -17,7 +17,7 @@ const client = new WebTorrent({
 
 const isServerDownloadEnabled = process.env.SERVER_DOWNLOAD_ENABLED ?? false
 
-export async function serverTorrentDownload(id, magnetLink, options = { fileName: null, fileIndices: null }) {
+export async function serverTorrentDownload(id, magnetLink, options = { fileName: null, fileIndices: null, guestId: null }) {
     if (isServerDownloadEnabled !== "true") {
         await db.update(fileDownloads).set({
             status: "failed",
@@ -36,7 +36,10 @@ export async function serverTorrentDownload(id, magnetLink, options = { fileName
         return null
     }
     
-    const downloadDir = path.join(process.cwd(), 'downloads');
+    // Scope the download directory to the guest when a guestId is provided
+    const downloadDir = options.guestId
+        ? path.join(process.cwd(), 'downloads', options.guestId)
+        : path.join(process.cwd(), 'downloads');
     
     if (!fs.existsSync(downloadDir)) {
         fs.mkdirSync(downloadDir, { recursive: true });

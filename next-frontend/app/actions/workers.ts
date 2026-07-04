@@ -5,6 +5,7 @@ import { workers, fileDownloads } from "../db/schema";
 import { desc, eq, and, inArray } from "drizzle-orm";
 import { workerStore, initializeWorkerState } from "../lib/workerStore";
 import { encryptCredentials, generateAuthToken } from "../lib/crypto";
+import { getGuestId } from "../lib/getGuestId";
 import type { Worker } from "../db/schema";
 
 export async function createWorker(data: {
@@ -14,7 +15,8 @@ export async function createWorker(data: {
   megaEmail?: string;
   megaPassword?: string;
 }): Promise<{ success: boolean; message?: string; data?: Worker }> {
-  // Validate
+  const guestId = await getGuestId();
+
   if (!data.name?.trim()) {
     return { success: false, message: "Worker name is required" };
   }
@@ -28,12 +30,17 @@ export async function createWorker(data: {
     return { success: false, message: "Mega email and password are required for Mega location" };
   }
 
-  // Check name uniqueness
+  // Name uniqueness check — scoped to guest so two guests can use the same name
   const [existing] = await db
     .select({ id: workers.id })
     .from(workers)
-    .where(eq(workers.name, data.name.trim()))
+    .where(
+      guestId
+        ? and(eq(workers.name, data.name.trim()), eq(workers.guestId, guestId))
+        : eq(workers.name, data.name.trim())
+    )
     .limit(1);
+
   if (existing) {
     return { success: false, message: "A worker with this name already exists" };
   }
@@ -47,6 +54,7 @@ export async function createWorker(data: {
   const [worker] = await db
     .insert(workers)
     .values({
+      guestId: guestId ?? undefined,
       name: data.name.trim(),
       downloadLocation: data.downloadLocation,
       computeType: data.computeType,
@@ -56,16 +64,18 @@ export async function createWorker(data: {
     })
     .returning();
 
-  // Initialize runtime state
   workerStore.set(worker.id, initializeWorkerState(worker.id));
 
   return { success: true, data: worker };
 }
 
 export async function getWorkers() {
+  const guestId = await getGuestId();
+
   const allWorkers = await db
     .select()
     .from(workers)
+    .where(guestId ? eq(workers.guestId, guestId) : undefined)
     .orderBy(desc(workers.createdAt));
 
   return allWorkers.map((w) => {
@@ -80,10 +90,16 @@ export async function getWorkers() {
 }
 
 export async function getWorkerById(workerId: string) {
+  const guestId = await getGuestId();
+
   const [worker] = await db
     .select()
     .from(workers)
-    .where(eq(workers.id, workerId))
+    .where(
+      guestId
+        ? and(eq(workers.id, workerId), eq(workers.guestId, guestId))
+        : eq(workers.id, workerId)
+    )
     .limit(1);
 
   if (!worker) return null;
@@ -105,23 +121,28 @@ export async function getWorkerById(workerId: string) {
 export async function deleteWorker(
   workerId: string
 ): Promise<{ success: boolean; message: string }> {
+  const guestId = await getGuestId();
+
+  // Ownership check — guest can only delete their own workers
   const [worker] = await db
     .select()
     .from(workers)
-    .where(eq(workers.id, workerId))
+    .where(
+      guestId
+        ? and(eq(workers.id, workerId), eq(workers.guestId, guestId))
+        : eq(workers.id, workerId)
+    )
     .limit(1);
 
   if (!worker) {
     return { success: false, message: "Worker not found" };
   }
 
-  // Block if worker has an active in-memory task
   const state = workerStore.get(workerId);
   if (state?.currentTask) {
     return { success: false, message: "Cannot delete a worker with an active download" };
   }
 
-  // Block if there are pending/downloading DB records assigned to this worker
   const activeDownloads = await db
     .select({ id: fileDownloads.id })
     .from(fileDownloads)
@@ -137,7 +158,6 @@ export async function deleteWorker(
     return { success: false, message: "Cannot delete a worker with active downloads" };
   }
 
-  // Unlink completed/failed downloads so the FK constraint doesn't block the delete
   await db
     .update(fileDownloads)
     .set({ workerId: null })

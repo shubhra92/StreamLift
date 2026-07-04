@@ -2,10 +2,27 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Download, Magnet, Cpu } from "lucide-react";
+import { Download, Magnet, Cpu, User } from "lucide-react";
+import { useEffect, useState } from "react";
+
+function useGuestInfo() {
+  const [shortId, setShortId] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/guest/me")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.guest?.shortId) setShortId(data.guest.shortId);
+      })
+      .catch(() => {});
+  }, []);
+
+  return shortId;
+}
 
 export function Navigation() {
   const pathname = usePathname();
+  const guestShortId = useGuestInfo();
 
   const isActive = (path: string) => pathname === path;
 
@@ -16,8 +33,8 @@ export function Navigation() {
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-bold">StreamLift</h1>
           </div>
-          
-          <div className="flex gap-1">
+
+          <div className="flex items-center gap-1">
             <Link
               href="/"
               className={`flex items-center gap-2 px-4 py-2 rounded-md transition-colors ${
@@ -30,7 +47,7 @@ export function Navigation() {
               <span className="hidden sm:inline">HTTP Downloads</span>
               <span className="sm:hidden">HTTP</span>
             </Link>
-            
+
             <Link
               href="/torrents"
               className={`flex items-center gap-2 px-4 py-2 rounded-md transition-colors ${
@@ -56,6 +73,16 @@ export function Navigation() {
               <span className="hidden sm:inline">Workers</span>
               <span className="sm:hidden">Workers</span>
             </Link>
+
+            {guestShortId && (
+              <div
+                title={`Guest session: ${guestShortId}`}
+                className="flex items-center gap-1.5 ml-2 px-3 py-1.5 rounded-full bg-muted text-muted-foreground text-xs border"
+              >
+                <User className="h-3 w-3" />
+                <span className="font-mono">{guestShortId}</span>
+              </div>
+            )}
           </div>
         </div>
       </div>

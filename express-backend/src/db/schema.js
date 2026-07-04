@@ -1,5 +1,16 @@
 import { pgTable, text, timestamp, integer, boolean, uuid, bigint } from 'drizzle-orm/pg-core';
 
+export const guests = pgTable('guests', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  token: text('token').notNull().unique(),
+  ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+  isActive: boolean('is_active').default(true),
+  lastSeenAt: timestamp('last_seen_at').defaultNow(),
+  createdAt: timestamp('created_at').defaultNow(),
+  expiresAt: timestamp('expires_at').notNull(),
+});
+
 export const megaSessions = pgTable('mega_sessions', {
   id: uuid('id').defaultRandom().primaryKey(),
   email: text('email').notNull(),
@@ -15,6 +26,7 @@ export const megaSessions = pgTable('mega_sessions', {
 // Workers table
 export const workers = pgTable('workers', {
   id: uuid('id').defaultRandom().primaryKey(),
+  guestId: uuid('guest_id').references(() => guests.id), // owning guest
   name: text('name').notNull().unique(),
   downloadLocation: text('download_location').notNull(), // 'local' | 'mega'
   computeType: text('compute_type').notNull(),           // 'low' | 'medium' | 'high'
@@ -32,6 +44,7 @@ export const workers = pgTable('workers', {
 // File downloads table
 export const fileDownloads = pgTable('file_downloads', {
   id: uuid('id').defaultRandom().primaryKey(),
+  guestId: uuid('guest_id').references(() => guests.id),   // owning guest
   sessionId: uuid('session_id').references(() => megaSessions.id),
   workerId: uuid('worker_id').references(() => workers.id), // assigned worker (nullable)
   fileName: text('file_name').default("default"),

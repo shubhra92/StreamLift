@@ -4,22 +4,26 @@ import { db, fileDownloads } from "../db";
 import { desc, eq, and } from "drizzle-orm";
 import { workerStore } from "../lib/workerStore";
 import { workers } from "../db/schema";
+import { getGuestId } from "../lib/getGuestId";
 import type { FileDownload } from "../db/schema";
 
 /** Resolve which workerId to assign based on the location string */
 async function resolveWorkerAssignment(
-  location: string
+  location: string,
+  guestId: string | null
 ): Promise<{ workerId: string | null; error?: string }> {
   if (location === "all-workers") {
-    // Pick the online worker with no current task (lowest load)
-    const allWorkers = await db.select().from(workers);
+    const allWorkers = await db
+      .select()
+      .from(workers)
+      .where(guestId ? eq(workers.guestId, guestId) : undefined);
+
     const candidates = allWorkers
       .map((w) => ({ worker: w, state: workerStore.get(w.id) }))
       .filter(({ state }) => state?.online)
       .sort((a, b) => (a.state?.currentTask ? 1 : 0) - (b.state?.currentTask ? 1 : 0));
 
     if (candidates.length === 0) {
-      // No online workers — queue it (workerId stays null, status pending)
       return { workerId: null };
     }
     return { workerId: candidates[0].worker.id };
@@ -30,7 +34,11 @@ async function resolveWorkerAssignment(
     const [worker] = await db
       .select()
       .from(workers)
-      .where(eq(workers.id, workerId))
+      .where(
+        guestId
+          ? and(eq(workers.id, workerId), eq(workers.guestId, guestId))
+          : eq(workers.id, workerId)
+      )
       .limit(1);
     if (!worker) return { workerId: null, error: "Worker not found" };
     return { workerId: worker.id };
@@ -40,10 +48,12 @@ async function resolveWorkerAssignment(
 }
 
 export async function createDownload(sourceUrl: string, location: string, fileName?: string) {
-  const { workerId, error } = await resolveWorkerAssignment(location);
+  const guestId = await getGuestId();
+  const { workerId, error } = await resolveWorkerAssignment(location, guestId);
   if (error) throw new Error(error);
 
   const [data] = await db.insert(fileDownloads).values({
+    guestId: guestId ?? undefined,
     sourceUrl,
     location,
     workerId,
@@ -56,29 +66,51 @@ export async function createDownload(sourceUrl: string, location: string, fileNa
 }
 
 export async function getDownloads() {
-  const downloads = await db
+  const guestId = await getGuestId();
+
+  const query = db
     .select()
     .from(fileDownloads)
-    .where(eq(fileDownloads.downloadType, "http"))
+    .where(
+      guestId
+        ? and(eq(fileDownloads.downloadType, "http"), eq(fileDownloads.guestId, guestId))
+        : eq(fileDownloads.downloadType, "http")
+    )
     .orderBy(desc(fileDownloads.createdAt));
 
-  return downloads;
+  return query;
 }
 
 export async function getDownloadById(fileId: string) {
+  const guestId = await getGuestId();
+
   const [download] = await db
     .select()
     .from(fileDownloads)
-    .where(eq(fileDownloads.id, fileId))
+    .where(
+      guestId
+        ? and(eq(fileDownloads.id, fileId), eq(fileDownloads.guestId, guestId))
+        : eq(fileDownloads.id, fileId)
+    )
     .limit(1);
 
   return download;
 }
 
 export async function deleteDownload(id: string) {
-  // Check if download is currently downloading
-  const [existing] = await db.select().from(fileDownloads).where(eq(fileDownloads.id, id));
-  if (existing?.status === "downloading") {
+  const guestId = await getGuestId();
+
+  const [existing] = await db
+    .select()
+    .from(fileDownloads)
+    .where(
+      guestId
+        ? and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId))
+        : eq(fileDownloads.id, id)
+    );
+
+  if (!existing) return { success: false, message: "Download not found" };
+  if (existing.status === "downloading") {
     return { success: false, message: "Cannot delete a downloading file" };
   }
 
@@ -86,23 +118,30 @@ export async function deleteDownload(id: string) {
   return { success: true };
 }
 
-export async function updateDownload(id: string, data: Partial<Omit<FileDownload, "id"|"createdAt"|"updatedAt">>) {
-  // Check if download is still pending (reject if it started downloading)
-  const [existing] = await db.select().from(fileDownloads).where(eq(fileDownloads.id, id));
+export async function updateDownload(id: string, data: Partial<Omit<FileDownload, "id" | "createdAt" | "updatedAt">>) {
+  const guestId = await getGuestId();
+
+  const [existing] = await db
+    .select()
+    .from(fileDownloads)
+    .where(
+      guestId
+        ? and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId))
+        : eq(fileDownloads.id, id)
+    );
+
   if (!existing) {
     return { success: false, message: "Download not found" };
   }
 
-  if(data.status === "failed" && data.errorMessage){
-    data = {
-      status: "failed",
-      errorMessage: data.errorMessage
-    }
+  if (data.status === "failed" && data.errorMessage) {
+    data = { status: "failed", errorMessage: data.errorMessage };
   } else if (existing.status !== "pending") {
     return { success: false, message: "Cannot edit a download that is no longer pending" };
   }
 
-  const [updated] = await db.update(fileDownloads)
+  const [updated] = await db
+    .update(fileDownloads)
     .set({ ...data, updatedAt: new Date() })
     .where(eq(fileDownloads.id, id))
     .returning();

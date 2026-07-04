@@ -7,8 +7,8 @@ import { Badge } from "@/components/ui/badge";
 export function LocationLabel({ location }: { location: string | null | undefined }) {
   const [label, setLabel] = useState<string | null>(() => {
     if (!location) return "—";
-    if (location === "server") return "Server";
-    if (location === "mega") return "Mega";
+    if (location === "server") return "Cloud (Server)";
+    if (location === "mega") return "Cloud";
     if (location === "all-workers") return "All Workers";
     if (location.startsWith("worker-")) return "Worker…";
     return location;

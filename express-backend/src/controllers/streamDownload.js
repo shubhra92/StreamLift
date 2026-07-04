@@ -33,6 +33,7 @@ export async function streamServerDownload(req, res){
         }
 
         const id = data.id;
+        const guestId = data.guestId ?? null;
         
         const progressDetail = {
             "downloadedBytes":0,
@@ -43,7 +44,7 @@ export async function streamServerDownload(req, res){
 
         progressMap.set(id, progressDetail);
 
-        serverDownloadWithProgress(id, source_url, {fileName: file_name}).catch(console.error)
+        serverDownloadWithProgress(id, source_url, { fileName: file_name, guestId }).catch(console.error)
 
         return res.status(200).send({
             status: true,
@@ -87,6 +88,7 @@ export async function streamMegaUpload(req, res) {
         }
 
         const id = data.id;
+        const guestId = data.guestId ?? null;
 
         const progressDetail = {
             "downloadedBytes": 0,
@@ -96,7 +98,7 @@ export async function streamMegaUpload(req, res) {
         }
         progressMap.set(id, progressDetail);
 
-        streamUrlToMega(id, source_url, {fileName: file_name}).catch(console.error)
+        streamUrlToMega(id, source_url, { fileName: file_name, guestId }).catch(console.error)
 
         return res.status(200).send({
             status: true,

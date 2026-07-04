@@ -5,6 +5,17 @@ import { db, fileDownloads } from "../db/index.js";
 import { eq } from "drizzle-orm";
 import { Transform } from "stream";
 
+/**
+ * Find an existing folder by name inside a Mega directory node,
+ * or create it if it doesn't exist. Returns the folder node.
+ */
+async function getOrCreateMegaFolder(parentNode, folderName) {
+    const children = Object.values(parentNode.children ?? {});
+    const existing = children.find(n => n.directory && n.name === folderName);
+    if (existing) return existing;
+    return parentNode.mkdir(folderName);
+}
+
 const client = new WebTorrent({
     dht: false,  // Disable Distributed Hash Table port-bindings
     utp: false,  // 🔒 DISABLE uTP (Forces clean, standard TCP stream connections only)
@@ -81,12 +92,17 @@ function FreeTierChunkStore(chunkLength, storeOpts) {
     };
 }
 
-export async function streamTorrentToMega(id, magnetLink, options = { fileName: null, fileIndices: null }) {
+export async function streamTorrentToMega(id, magnetLink, options = { fileName: null, fileIndices: null, guestId: null }) {
     const mega = await initMega();
     
     if (mega.ready && typeof mega.ready.then === 'function') {
         await mega.ready;
     }
+
+    // Resolve the upload target node — guest folder when guestId is present, root otherwise
+    const uploadTarget = options.guestId
+        ? await getOrCreateMegaFolder(mega.root, options.guestId)
+        : mega.root;
 
     return new Promise((resolve, reject) => {
         console.log(`🧲 Starting cloud-stream torrent download for ID: ${id}`);
@@ -249,8 +265,11 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                 const fileExtension = selectedFiles.length === 1 ? (selectedFiles[0].name.split('.').pop() || 'unknown') : 'mixed';
                 let downloadedBytes = 0;
 
+                // Build the locationPath stored in DB — just the filename, the guest folder is on Mega's side only
+                const locationPath = baseFileName;
+
                 await db.update(fileDownloads).set({
-                    locationPath: baseFileName,
+                    locationPath: locationPath,
                     fileName: baseFileName,
                     fileType: fileExtension,
                     status: "downloading",
@@ -415,7 +434,7 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                             }
                         });
 
-                        currentFileStream = mega.upload({
+                        currentFileStream = uploadTarget.upload({
                             name: targetUploadName,
                             size: currentFile.length,
                             // Add allowUploadBuffering to handle stream interruptions

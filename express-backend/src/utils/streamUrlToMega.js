@@ -29,7 +29,18 @@ async function fetchWithRetry(url, retries = 3, timeout = 30000) {
     }
 }
 
-export async function streamUrlToMega(id, url, options = { fileName: null }) {
+/**
+ * Find an existing folder by name inside a Mega directory node,
+ * or create it if it doesn't exist. Returns the folder node.
+ */
+async function getOrCreateFolder(parentNode, folderName) {
+    const children = Object.values(parentNode.children ?? {});
+    const existing = children.find(n => n.directory && n.name === folderName);
+    if (existing) return existing;
+    return parentNode.mkdir(folderName);
+}
+
+export async function streamUrlToMega(id, url, options = { fileName: null, guestId: null }) {
     // Get the initialized mega instance
     const mega = await initMega();
     
@@ -63,12 +74,17 @@ export async function streamUrlToMega(id, url, options = { fileName: null }) {
     const totalBytes = Number(response.headers.get("content-length")) || 0;
     let downloadedBytes = 0;
 
-    const fileStream = mega.upload({
+    // Resolve the upload target node — guest folder when guestId is present, root otherwise
+    const uploadTarget = options.guestId
+        ? await getOrCreateFolder(mega.root, options.guestId)
+        : mega.root;
+
+    const fileStream = uploadTarget.upload({
         name: filename,
         size: totalBytes
     })
 
-    //update db save file deatil status fro pending to downloading
+    //update db save file detail status from pending to downloading
     await db.update(fileDownloads).set({
         locationPath: filename,
         fileName:filename,

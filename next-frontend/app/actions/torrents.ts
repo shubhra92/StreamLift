@@ -1,13 +1,18 @@
 "use server";
 
 import { db, fileDownloads, workers } from "../db";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { workerStore } from "../lib/workerStore";
+import { getGuestId } from "../lib/getGuestId";
 
-async function resolveWorkerForTorrent(location: string): Promise<string | null> {
+async function resolveWorkerForTorrent(location: string, guestId: string | null): Promise<string | null> {
   if (location === "all-workers") {
-    const allWorkers = await db.select().from(workers);
+    const allWorkers = await db
+      .select()
+      .from(workers)
+      .where(guestId ? eq(workers.guestId, guestId) : undefined);
+
     const candidates = allWorkers
       .map((w) => ({ worker: w, state: workerStore.get(w.id) }))
       .filter(({ state }) => state?.online)
@@ -27,9 +32,11 @@ export async function createTorrentDownload(
   meta: { fileName: string; fileSize: number; fileType: string }
 ) {
   try {
-    const workerId = await resolveWorkerForTorrent(location);
+    const guestId = await getGuestId();
+    const workerId = await resolveWorkerForTorrent(location, guestId);
 
     const [record] = await db.insert(fileDownloads).values({
+      guestId: guestId ?? undefined,
       sourceUrl: magnetLink,
       location,
       workerId,
@@ -51,10 +58,16 @@ export async function createTorrentDownload(
 
 export async function getTorrentDownloads() {
   try {
+    const guestId = await getGuestId();
+
     const downloads = await db
       .select()
       .from(fileDownloads)
-      .where(eq(fileDownloads.downloadType, "torrent"))
+      .where(
+        guestId
+          ? and(eq(fileDownloads.downloadType, "torrent"), eq(fileDownloads.guestId, guestId))
+          : eq(fileDownloads.downloadType, "torrent")
+      )
       .orderBy(desc(fileDownloads.createdAt));
 
     return downloads;
@@ -66,10 +79,16 @@ export async function getTorrentDownloads() {
 
 export async function deleteTorrentDownload(id: string) {
   try {
+    const guestId = await getGuestId();
+
     const [download] = await db
       .select()
       .from(fileDownloads)
-      .where(eq(fileDownloads.id, id))
+      .where(
+        guestId
+          ? and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId))
+          : eq(fileDownloads.id, id)
+      )
       .limit(1);
 
     if (!download) {
@@ -77,10 +96,7 @@ export async function deleteTorrentDownload(id: string) {
     }
 
     if (download.status === "downloading") {
-      return {
-        success: false,
-        message: "Cannot delete a download in progress",
-      };
+      return { success: false, message: "Cannot delete a download in progress" };
     }
 
     await db.delete(fileDownloads).where(eq(fileDownloads.id, id));
@@ -104,10 +120,16 @@ export async function updateTorrentDownload(
   }
 ) {
   try {
+    const guestId = await getGuestId();
+
     const [download] = await db
       .select()
       .from(fileDownloads)
-      .where(eq(fileDownloads.id, id))
+      .where(
+        guestId
+          ? and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId))
+          : eq(fileDownloads.id, id)
+      )
       .limit(1);
 
     if (!download) {
@@ -115,18 +137,12 @@ export async function updateTorrentDownload(
     }
 
     if (download.status === "downloading" && (data.sourceUrl || data.location)) {
-      return {
-        success: false,
-        message: "Cannot edit a download in progress",
-      };
+      return { success: false, message: "Cannot edit a download in progress" };
     }
 
     await db
       .update(fileDownloads)
-      .set({
-        ...data,
-        updatedAt: new Date(),
-      })
+      .set({ ...data, updatedAt: new Date() })
       .where(eq(fileDownloads.id, id));
 
     revalidatePath("/torrents");
