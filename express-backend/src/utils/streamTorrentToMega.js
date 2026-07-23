@@ -43,23 +43,10 @@ const client = new WebTorrent({
 function FreeTierChunkStore(chunkLength, storeOpts) {
     this.chunkLength = chunkLength;
     this.chunks = [];
-    this.maxChunks = 30; // Increased from 10 to 30 to prevent premature eviction during streaming
+    this.maxChunks = 60; // Buffer for up to 60 chunks (~15MB at 256KB pieces)
 
     this.put = function (index, buf, cb) {
-        // Keep chunks localized strictly within active streaming allocations
         this.chunks[index] = buf;
-        
-        // AGGRESSIVE CLEANUP: Remove old chunks if we have too many
-        if (this.chunks.length > this.maxChunks) {
-            const oldestIndex = Math.max(0, index - this.maxChunks);
-            for (let i = oldestIndex; i < index - 10; i++) {  // Keep last 10 chunks safe
-                if (this.chunks[i]) {
-                    this.chunks[i] = null;
-                    delete this.chunks[i];
-                }
-            }
-        }
-        
         if (cb) cb(null);
     };
 
@@ -405,12 +392,17 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                     await new Promise((resolveFile, rejectFile) => {
                         let fileDownloadedBytes = 0;
                         
+                        let lastConsumedPiece = -1;
+                        const pieceLength = torrent.pieceLength || 262144; // default 256KB
+
+                        // Evict only pieces that are behind what the stream has actually consumed.
+                        // We calculate the last piece the stream has fully passed based on bytes read.
                         currentTrackingStream = new Transform({
-                            highWaterMark: 16 * 1024, // Reduced to 16KB backpressure gate (was 32KB)
+                            highWaterMark: 16 * 1024,
                             transform(chunk, encoding, callback) {
                                 downloadedBytes += chunk.length;
                                 fileDownloadedBytes += chunk.length;
-                                
+
                                 const percent = ((downloadedBytes / totalBytes) * 100).toFixed(2);
                                 progressMap.set(id, {
                                     downloadedBytes,
@@ -418,12 +410,23 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                                     percentFixed2: percent,
                                     percent: Math.round((downloadedBytes / totalBytes) * 100),
                                 });
-                                
+
+                                // Track which piece the stream has consumed up to
+                                const consumedPiece = Math.floor(
+                                    (currentFile.offset + fileDownloadedBytes) / pieceLength
+                                );
+                                // Evict pieces well behind the read head (keep a 30-piece buffer)
+                                if (customStoreInstance && consumedPiece > lastConsumedPiece + 30) {
+                                    for (let p = lastConsumedPiece + 1; p < consumedPiece - 30; p++) {
+                                        customStoreInstance.evict(p);
+                                    }
+                                    lastConsumedPiece = consumedPiece - 30;
+                                }
+
                                 this.push(chunk);
                                 callback();
                             },
                             flush(callback) {
-                                // Check if we got all the data
                                 if (fileDownloadedBytes < currentFile.length) {
                                     console.error(`⚠️ Stream ended early: got ${fileDownloadedBytes} / ${currentFile.length} bytes`);
                                     callback(new Error(`Incomplete download: ${fileDownloadedBytes} / ${currentFile.length} bytes`));
@@ -437,29 +440,11 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                         currentFileStream = uploadTarget.upload({
                             name: targetUploadName,
                             size: currentFile.length,
-                            // Add allowUploadBuffering to handle stream interruptions
                             allowUploadBuffering: true
                         });
 
-                        // Create read stream with explicit options to prevent premature ending
                         currentTorrentStream = currentFile.createReadStream({
-                            // Don't end stream on first error, retry
                             autoClose: false
-                        });
-
-                        // Track which pieces have been fully consumed by the stream
-                        let lastConsumedPiece = -1;
-                        
-                        // Only evict pieces that are well behind the current read position
-                        torrent.on('piece', (pieceIndex) => {
-                            if (customStoreInstance && !isFinalized) {
-                                // Only evict pieces that are at least 20 pieces behind
-                                // This ensures we don't evict data that's still being streamed
-                                if (pieceIndex > lastConsumedPiece + 20) {
-                                    customStoreInstance.evict(lastConsumedPiece);
-                                    lastConsumedPiece++;
-                                }
-                            }
                         });
                         
                         // Assemble the pipeline channels
