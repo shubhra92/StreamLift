@@ -111,7 +111,9 @@ function encodeBencode(value: BencodeValue): Uint8Array {
 // ---------------------------------------------------------------------------
 
 async function sha1Hex(buf: Uint8Array): Promise<string> {
-  const hashBuf = await crypto.subtle.digest("SHA-1", buf);
+  // crypto.subtle.digest requires a plain ArrayBuffer (not ArrayBufferLike)
+  const arrayBuf = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+  const hashBuf = await crypto.subtle.digest("SHA-1", arrayBuf);
   return Array.from(new Uint8Array(hashBuf))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("")
