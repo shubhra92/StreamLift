@@ -1,4 +1,4 @@
-/// BitTorrent peer wire protocol — TCP handshake + message framing.
+#![allow(dead_code, unused_imports, unused_variables)]
 ///
 /// BEP-3: https://www.bittorrent.org/beps/bep_0003.html
 /// BEP-10: Extension protocol (for ut_metadata)

@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports, unused_variables, unused_mut, unused_assignments)]
 /// Torrent metadata fetch via BEP-9 (ut_metadata extension).
 ///
 /// Connect to peers, request the info dict in pieces, verify SHA-1.
@@ -5,7 +6,7 @@
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use tokio::time::{timeout, Duration};
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use super::magnet::MagnetLink;
 use super::peer::{PeerConnection, PeerMessage};
@@ -178,7 +179,7 @@ async fn try_fetch_from_peer(
                 }
                 requested = true;
             }
-            PeerMessage::Extended { ext_id, payload } if requested => {
+            PeerMessage::Extended { ext_id: _, payload } if requested => {
                 // Metadata data response
                 // The peer responds with ext_id = the ID WE registered (1)
                 // because that's what we told them in our handshake

@@ -1,4 +1,4 @@
-/// In-memory piece store — mirrors FreeTierChunkStore from the Node backend.
+#![allow(dead_code, unused_imports, unused_variables)]
 ///
 /// Pieces are stored in a HashMap and evicted once they've been
 /// consumed by the upload pipeline (with a configurable buffer window).

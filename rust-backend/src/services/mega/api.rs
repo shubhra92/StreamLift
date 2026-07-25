@@ -116,7 +116,6 @@ impl MegaClient {
         email: &str,
         pw_key: &[u8; 16],
     ) -> Result<LoginResult> {
-        use sha2::Digest;
 
         let string_hash = compute_string_hash(email, pw_key)?;
 

@@ -11,7 +11,7 @@ use rand::RngCore;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use tokio::net::UdpSocket;
 use tokio::time::{timeout, Duration};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 const CONNECT_MAGIC: u64 = 0x41727101980;
 const ACTION_CONNECT: u32 = 0;
@@ -298,7 +298,7 @@ pub async fn announce_http(
 
 /// Parse a bencoded HTTP tracker response (compact format).
 fn parse_http_tracker_response(data: &[u8]) -> Result<Vec<Peer>> {
-    use super::metadata::BencodeValue;
+    
 
     let decoded = super::metadata::bencode_decode(data)?;
     

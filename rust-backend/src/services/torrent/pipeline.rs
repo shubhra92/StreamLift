@@ -1,14 +1,15 @@
+#![allow(dead_code, unused_imports, unused_variables, unused_mut)]
 /// Torrent download pipeline.
 
 use anyhow::{bail, Context, Result};
 use sqlx::PgPool;
 use tokio::io::AsyncWriteExt;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use uuid::Uuid;
 
 use super::magnet::MagnetLink;
-use super::metadata::{fetch_metadata, TorrentFile, TorrentMetadata};
-use super::tracker::{announce_all, generate_peer_id, Peer};
+use super::metadata::{TorrentFile, TorrentMetadata};
+use super::tracker::Peer;
 use super::peer::{PeerConnection, PeerMessage};
 use super::pieces::BLOCK_SIZE;
 use crate::services::mega::auth::MegaState;

@@ -1,15 +1,15 @@
+#![allow(dead_code, unused_imports, unused_variables, unused_mut)]
 /// BitTorrent wire protocol — robust message framing with buffered I/O.
 ///
 /// Handles partial reads, connection resets, and protocol violations gracefully.
 /// Uses a BufReader for efficient reading and a write buffer for batched sends.
 
 use anyhow::{bail, Context, Result};
-use bytes::{Bytes, BytesMut, Buf, BufMut};
+use bytes::Bytes;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
-use tracing::debug;
 
 const PROTOCOL_STR: &[u8] = b"BitTorrent protocol";
 const MAX_MESSAGE_SIZE: usize = 1 << 17; // 128KB — max piece block + overhead
@@ -102,13 +102,13 @@ impl WireConn {
             ext_bits[5] |= 0x10; // BEP-10
         }
 
-        let mut remote_extensions = [0u8; 8];
-        let mut remote_peer_id = [0u8; 20];
+        let mut remote_extensions;
+        let mut remote_peer_id;
 
         if we_initiate {
             // We send first, then read
             send_handshake(&mut writer, info_hash, our_peer_id, &ext_bits).await?;
-            let (re, rp, rh) = read_handshake(&mut reader, Some(info_hash)).await?;
+            let (re, rp, _rh) = read_handshake(&mut reader, Some(info_hash)).await?;
             remote_extensions = re;
             remote_peer_id = rp;
         } else {

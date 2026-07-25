@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports, unused_variables, unused_mut)]
 /// TCP Listener for incoming peer connections.
 
 use anyhow::{Context, Result};

@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports, unused_variables, unused_mut, unused_assignments)]
 /// StreamLift Torrent Engine — persistent, long-lived BitTorrent client.
 ///
 /// Runs for the entire server lifetime. Maintains peer connections,
@@ -197,7 +198,7 @@ impl TorrentEngine {
         progress_cb: impl Fn(u32) + Send + Sync + 'static,
     ) -> Result<Vec<(u32, Vec<u8>)>> {
         use tokio::sync::mpsc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        
 
         let session_arc = self.get_or_create_session(magnet).await;
 
@@ -374,9 +375,8 @@ impl TorrentEngine {
         session_arc: Arc<RwLock<TorrentSession>>,
     ) -> Result<TorrentMetadata> {
         use crate::services::torrent::tracker::announce_all;
-        use crate::services::torrent::metadata::{bencode_decode, parse_info_dict_public};
-        use wire::{Message, WireConn};
-        use sha1::{Digest, Sha1};
+        
+        use wire::WireConn;
         use tokio::time::timeout;
 
         info!("Fetching metadata for {} (engine)", magnet.info_hash_hex);
@@ -442,7 +442,7 @@ impl TorrentEngine {
         }
 
         match metadata_result {
-            Ok((info_dict, meta)) => {
+            Ok((_info_dict, meta)) => {
                 // Cache metadata
                 let mut session = session_arc.write().await;
                 session.metadata = Some(meta.clone());

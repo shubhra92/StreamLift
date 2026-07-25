@@ -1,4 +1,4 @@
-/// Piece download manager.
+#![allow(dead_code, unused_imports, unused_variables)]
 ///
 /// Coordinates requesting pieces from peers, verifying SHA-1 hashes,
 /// and storing verified pieces in the PieceStore.

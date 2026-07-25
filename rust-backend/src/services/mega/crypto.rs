@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports, unused_variables, unused_mut)]
 /// MEGA cryptography helpers.
 ///
 /// MEGA uses a somewhat unusual key derivation scheme:
