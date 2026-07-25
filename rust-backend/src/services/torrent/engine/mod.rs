@@ -126,64 +126,28 @@ impl TorrentEngine {
         self.do_fetch_metadata(magnet, session_arc).await
     }
 
-    /// Download a piece from the session's connected peers.
+    /// Download a single piece from the session's connected peers.
     pub async fn download_piece(&self, magnet: &MagnetLink, piece_idx: u32, piece_length: u32) -> Result<Vec<u8>> {
-        use wire::Message;
-        use tokio::time::timeout;
-
         let session_arc = self.get_or_create_session(magnet).await;
+        
+        // Ensure peers
+        {
+            let session = session_arc.read().await;
+            if session.peers.is_empty() {
+                drop(session);
+                self.reconnect_peers(magnet).await?;
+            }
+        }
+
         let mut session = session_arc.write().await;
         session.last_used = std::time::Instant::now();
 
-        // If no peers connected, reconnect
-        if session.peers.is_empty() {
-            drop(session);
-            self.reconnect_peers(magnet).await?;
-            session = session_arc.write().await;
-        }
-
-        const BLOCK_SIZE: u32 = 16384;
-        let num_blocks = (piece_length + BLOCK_SIZE - 1) / BLOCK_SIZE;
-
-        // Try each peer until one serves the piece
+        // Try each peer
         for peer in session.peers.iter_mut() {
-            // Send interested if not already
-            let _ = peer.conn.send_message(&Message::Interested).await;
-
-            // Request all blocks
-            let mut offset = 0u32;
-            while offset < piece_length {
-                let bl = BLOCK_SIZE.min(piece_length - offset);
-                if peer.conn.send_message(&Message::Request {
-                    index: piece_idx, begin: offset, length: bl,
-                }).await.is_err() {
-                    break;
-                }
-                offset += bl;
-            }
-            if offset < piece_length { continue; } // send failed
-
-            // Collect blocks
-            let mut piece_data = vec![0u8; piece_length as usize];
-            let mut got = 0u32;
-
-            for _ in 0..(num_blocks * 3 + 10) {
-                match timeout(Duration::from_secs(15), peer.conn.read_message(Duration::from_secs(15))).await {
-                    Ok(Ok(Some(Message::Piece { index, begin, data }))) if index == piece_idx => {
-                        let end = (begin as usize + data.len()).min(piece_data.len());
-                        piece_data[begin as usize..end].copy_from_slice(&data[..end - begin as usize]);
-                        got += 1;
-                        if got >= num_blocks { break; }
-                    }
-                    Ok(Ok(Some(Message::Unchoke))) => { peer.am_choked = false; }
-                    Ok(Ok(Some(Message::Choke))) => { peer.am_choked = true; break; }
-                    Ok(Ok(Some(_))) => continue,
-                    _ => break,
-                }
-            }
-
-            if got >= num_blocks {
-                return Ok(piece_data);
+            if peer.am_choked { continue; }
+            match download_piece_from_peer(peer, piece_idx, piece_length).await {
+                Ok(data) => return Ok(data),
+                Err(_) => continue,
             }
         }
 
@@ -687,7 +651,7 @@ fn parse_pex_message(payload: &[u8]) -> Option<Vec<std::net::SocketAddr>> {
 }
 
 /// Download a single piece from a specific peer.
-async fn download_piece_from_peer(
+pub async fn download_piece_from_peer(
     peer: &mut ConnectedPeer,
     piece_idx: u32,
     piece_length: u32,

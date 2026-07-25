@@ -12,6 +12,7 @@ use super::metadata::{TorrentFile, TorrentMetadata};
 use super::tracker::Peer;
 use super::peer::{PeerConnection, PeerMessage};
 use super::pieces::BLOCK_SIZE;
+use super::engine::download_piece_from_peer;
 use crate::services::mega::auth::MegaState;
 use crate::services::mega::upload::{get_or_create_folder, upload_stream_to_mega};
 use crate::services::progress_store::{Progress, ProgressStore};
@@ -132,25 +133,143 @@ async fn _stream_to_mega(
         mark_downloading(pool, id, file, total_bytes).await?;
 
         let file_offset = calculate_file_offset(&meta, file);
-        let file_bytes = download_file_via_engine(engine, &magnet, &meta, file_offset, file.size, progress, id, total_downloaded, total_bytes).await?;
+        let piece_length = meta.piece_length as u64;
+        let first_piece = (file_offset / piece_length) as u32;
+        let last_piece = ((file_offset + file_length_of(file, &meta)) / piece_length) as u32;
 
-        let file_size = file_bytes.len() as u64;
-        let stream = Box::pin(futures::stream::once(async { Ok::<_, std::io::Error>(bytes::Bytes::from(file_bytes)) }));
+        // Create a channel: torrent download produces bytes, MEGA upload consumes
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
+
+        // Convert receiver to a Stream for upload_stream_to_mega
+        let byte_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+
         let progress_clone = progress.clone();
         let base = total_downloaded;
         let total = total_bytes;
+        let file_size = file.size;
 
-        upload_stream_to_mega(&mut mega.client, http.clone(), &target_handle, &upload_name, file_size, &mega.master_key, stream, move |u| {
-            let mut p = progress_clone.entry(id).or_insert(Progress::initial());
-            p.update(base + u, total);
-        }).await.context("MEGA upload")?;
+        // Spawn torrent piece download (producer) — downloads pieces in order, sends bytes
+        let magnet_clone = magnet.clone();
+        let meta_clone = meta.clone();
+        let file_offset_copy = file_offset;
+        let file_size_copy = file.size;
+
+        // We can't pass &engine to a spawned task, so we'll download sequentially
+        // in the same task but interleave with the upload via the channel
+        let download_handle = {
+            let tx = tx;
+            let magnet_clone = magnet_clone;
+            let meta_clone = meta_clone;
+            
+            // Download pieces sequentially and feed to channel
+            // This runs in a separate task to allow MEGA upload to consume concurrently
+            let session_arc = engine.get_or_create_session(&magnet_clone).await;
+            
+            tokio::spawn(async move {
+                let piece_length = meta_clone.piece_length as u64;
+                let first_piece = (file_offset_copy / piece_length) as u32;
+                let last_piece = ((file_offset_copy + file_size_copy - 1) / piece_length) as u32;
+                let start_in_first = (file_offset_copy % piece_length) as usize;
+                let mut bytes_sent: u64 = 0;
+
+                // Initialize peers for piece download (send Interested, wait for Unchoke)
+                {
+                    let mut session = session_arc.write().await;
+                    for peer in session.peers.iter_mut() {
+                        let _ = peer.conn.send_message(&super::engine::wire::Message::Interested).await;
+                    }
+                    // Brief wait for unchoke
+                    for peer in session.peers.iter_mut() {
+                        for _ in 0..5 {
+                            match tokio::time::timeout(
+                                tokio::time::Duration::from_secs(2),
+                                peer.conn.read_message(tokio::time::Duration::from_secs(2)),
+                            ).await {
+                                Ok(Ok(Some(super::engine::wire::Message::Unchoke))) => {
+                                    peer.am_choked = false;
+                                    break;
+                                }
+                                Ok(Ok(Some(_))) => continue,
+                                _ => break,
+                            }
+                        }
+                    }
+                    let unchoked = session.peers.iter().filter(|p| !p.am_choked).count();
+                    tracing::info!("Streaming download: {} peers ({} unchoked)", session.peers.len(), unchoked);
+                }
+
+                for piece_idx in first_piece..=last_piece {
+                    let piece_start = piece_idx as u64 * piece_length;
+                    let piece_end = (piece_start + piece_length).min(meta_clone.total_size);
+                    let this_piece_len = (piece_end - piece_start) as u32;
+
+                    // Download piece from session peers
+                    let mut piece_data = None;
+                    for attempt in 0..3 {
+                        let mut session = session_arc.write().await;
+                        session.last_used = std::time::Instant::now();
+                        
+                        for peer in session.peers.iter_mut() {
+                            if peer.am_choked { continue; }
+                            match download_piece_from_peer(peer, piece_idx, this_piece_len).await {
+                                Ok(data) => { piece_data = Some(data); break; }
+                                Err(_) => continue,
+                            }
+                        }
+                        drop(session);
+                        if piece_data.is_some() { break; }
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    }
+
+                    let data = match piece_data {
+                        Some(d) => d,
+                        None => {
+                            let _ = tx.send(Err(std::io::Error::new(
+                                std::io::ErrorKind::Other, format!("Failed piece {piece_idx}")
+                            ))).await;
+                            return;
+                        }
+                    };
+
+                    // Extract file's portion from this piece
+                    let local_idx = (piece_idx - first_piece) as usize;
+                    let start = if local_idx == 0 { start_in_first } else { 0 };
+                    let file_bytes_so_far = if local_idx == 0 { 0 } else {
+                        (local_idx as u64 * piece_length) - start_in_first as u64
+                    };
+                    let remaining = file_size_copy - file_bytes_so_far.min(file_size_copy);
+                    let end = start + (remaining as usize).min(data.len() - start);
+                    
+                    if start >= end || start >= data.len() { continue; }
+                    let file_chunk = &data[start..end];
+
+                    if tx.send(Ok(bytes::Bytes::copy_from_slice(file_chunk))).await.is_err() {
+                        return;
+                    }
+                    bytes_sent += file_chunk.len() as u64;
+                }
+            })
+        };
+
+        // Run MEGA upload (consumer) — consumes byte stream from channel
+        upload_stream_to_mega(
+            &mut mega.client, http.clone(), &target_handle, &upload_name,
+            file_size, &mega.master_key, byte_stream,
+            move |uploaded| {
+                let mut p = progress_clone.entry(id).or_insert(Progress::initial());
+                p.update(base + uploaded, total);
+            },
+        ).await.context("MEGA upload")?;
+
+        // Wait for download task to finish
+        let _ = download_handle.await;
 
         total_downloaded += file.size;
     }
 
     mark_completed(pool, id).await?;
     progress.insert(id, Progress::complete(total_bytes));
-    info!("Torrent → MEGA complete ✅ id={id}");
+    info!("Torrent → MEGA streaming complete ✅ id={id}");
     Ok(())
 }
 
@@ -377,4 +496,8 @@ fn calculate_file_offset(meta: &TorrentMetadata, target: &TorrentFile) -> u64 {
     let mut offset = 0u64;
     for file in sorted { if file.index == target.index { return offset; } offset += file.size; }
     0
+}
+
+fn file_length_of(file: &TorrentFile, _meta: &TorrentMetadata) -> u64 {
+    file.size
 }
