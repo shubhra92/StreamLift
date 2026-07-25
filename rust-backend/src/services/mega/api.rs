@@ -84,11 +84,19 @@ impl MegaClient {
             .post(&url)
             .json(&body)
             .send()
-            .await?
-            .json::<Value>()
             .await?;
 
-        debug!("MEGA API ← {}", resp);
+        let status = resp.status();
+        let raw_body = resp.text().await?;
+        
+        if raw_body.is_empty() {
+            bail!("MEGA API returned empty response (HTTP {status}) for cmd: {}", cmd["a"]);
+        }
+
+        debug!("MEGA API ← {}", &raw_body[..raw_body.len().min(200)]);
+
+        let resp: Value = serde_json::from_str(&raw_body)
+            .map_err(|e| anyhow!("Parse MEGA response: {e} body={:?}", &raw_body[..raw_body.len().min(100)]))?;
 
         // Response is always an array
         let arr = resp
@@ -110,37 +118,60 @@ impl MegaClient {
     }
 
     /// Login with email + password key (u value from prepare_key hash).
-    /// Returns (session_id, encrypted_master_key, private_rsa_key_enc).
+    /// Login with email + password. Handles both v1 and v2 MEGA auth.
     pub async fn login(
         &mut self,
         email: &str,
-        pw_key: &[u8; 16],
+        password: &str,
     ) -> Result<LoginResult> {
+        // Step 1: Check account version
+        let us0_result = self.call(json!({"a": "us0", "user": email})).await?;
+        let version = us0_result["v"].as_i64().unwrap_or(1);
+        
+        tracing::info!("MEGA account version: v{version}");
 
-        let string_hash = compute_string_hash(email, pw_key)?;
+        let (pw_key, uh) = if version == 2 {
+            // V2: PBKDF2-SHA512
+            let salt_b64 = us0_result["s"].as_str()
+                .ok_or_else(|| anyhow!("No salt in us0 response"))?;
+            let salt = super::crypto::b64_decode(salt_b64)?;
+            
+            use hmac::Hmac;
+            use sha2::Sha512;
+            let mut derived = [0u8; 32];
+            pbkdf2::pbkdf2::<Hmac<Sha512>>(
+                password.as_bytes(),
+                &salt,
+                100000,
+                &mut derived,
+            ).map_err(|_| anyhow!("PBKDF2 failed"))?;
+            
+            let mut key = [0u8; 16];
+            key.copy_from_slice(&derived[..16]);
+            let uh = super::crypto::b64_encode(&derived[16..]);
+            (key, uh)
+        } else {
+            // V1: prepareKey + stringhash
+            let pw_key = super::crypto::prepare_key(password);
+            let uh = compute_string_hash(email, &pw_key)?;
+            (pw_key, uh)
+        };
 
-        let result = self
-            .call(json!({
-                "a": "us",
-                "user": email,
-                "uh": string_hash
-            }))
-            .await?;
+        // Step 2: Login
+        let result = self.call(json!({
+            "a": "us",
+            "user": email,
+            "uh": uh
+        })).await?;
 
-        let csid = result["csid"]
-            .as_str()
-            .ok_or_else(|| anyhow!("No csid in login response"))?
-            .to_string();
-        let privk = result["privk"]
-            .as_str()
-            .ok_or_else(|| anyhow!("No privk in login response"))?
-            .to_string();
-        let k = result["k"]
-            .as_str()
-            .ok_or_else(|| anyhow!("No k in login response"))?
-            .to_string();
+        let csid = result["csid"].as_str()
+            .ok_or_else(|| anyhow!("No csid"))?.to_string();
+        let privk = result["privk"].as_str()
+            .ok_or_else(|| anyhow!("No privk"))?.to_string();
+        let k = result["k"].as_str()
+            .ok_or_else(|| anyhow!("No k"))?.to_string();
 
-        Ok(LoginResult { csid, privk, k })
+        Ok(LoginResult { csid, privk, k, pw_key })
     }
 
     /// Fetch the user's file tree.
@@ -233,56 +264,68 @@ impl MegaClient {
 
 #[derive(Debug, Clone)]
 pub struct LoginResult {
-    /// Encrypted session ID (RSA-encrypted with user's private key)
     pub csid: String,
-    /// Encrypted private RSA key
     pub privk: String,
-    /// Encrypted master key (base64url)
     pub k: String,
+    pub pw_key: [u8; 16],
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Compute the MEGA "stringhash" used in login.
-/// This is an AES-128 CBC-MAC over the string, condensed to 8 bytes, base64url-encoded.
+/// Compute the MEGA "stringhash" for login.
+/// Algorithm (from megajs source):
+///   1. XOR-fold email bytes into 4 x 32-bit integers
+///   2. Convert to 16 bytes
+///   3. AES-ECB encrypt 16384 times with the password key
+///   4. Take bytes [0..4] + [8..12] → 8 bytes → base64url
 fn compute_string_hash(s: &str, key: &[u8; 16]) -> Result<String> {
     use super::crypto::b64_encode;
-    use aes::cipher::BlockEncrypt;
 
     let s_lower = s.to_lowercase();
     let bytes = s_lower.as_bytes();
 
-    // CBC-MAC: accumulate 16-byte blocks with XOR + AES encrypt
-    let mut mac = [0u8; 16];
-    let cipher = aes::Aes128::new_from_slice(key).map_err(|e| anyhow!("{e}"))?;
-
+    // Step 1: XOR-fold into 4 x i32
+    let mut h32: [i32; 4] = [0; 4];
     let mut i = 0;
-    while i < bytes.len() || i == 0 {
-        for j in 0..16 {
-            mac[j] ^= if i + j < bytes.len() { bytes[i + j] } else { 0 };
+    while i < bytes.len() {
+        let remaining = bytes.len() - i;
+        let slot = (i / 4) & 3;
+        if remaining < 4 {
+            // megajs: readIntBE(i, len) << (4-len)*8
+            let mut v: i32 = 0;
+            for k in 0..remaining {
+                v = (v << 8) | (bytes[i + k] as i32);
+            }
+            v <<= (4 - remaining as i32) * 8;
+            h32[slot] ^= v;
+        } else {
+            let v = i32::from_be_bytes([bytes[i], bytes[i+1], bytes[i+2], bytes[i+3]]);
+            h32[slot] ^= v;
         }
-        let mut block = aes::Block::clone_from_slice(&mac);
+        i += 4;
+    }
+
+    // Step 2: Convert to 16 bytes
+    let mut hash = [0u8; 16];
+    for (idx, &val) in h32.iter().enumerate() {
+        hash[idx*4..(idx+1)*4].copy_from_slice(&val.to_be_bytes());
+    }
+
+    // Step 3: AES-ECB encrypt 16384 times
+    let cipher = aes::Aes128::new_from_slice(key).map_err(|e| anyhow!("{e}"))?;
+    for _ in 0..16384 {
+        let mut block = aes::Block::clone_from_slice(&hash);
         cipher.encrypt_block(&mut block);
-        mac.copy_from_slice(&block);
-        if bytes.is_empty() {
-            break;
-        }
-        i += 16;
-        if i == 0 {
-            break;
-        }
+        hash.copy_from_slice(&block);
     }
 
-    // Condense 16 bytes → 8 bytes
-    let mut condensed = [0u8; 8];
-    for i in 0..4 {
-        condensed[i] = mac[i] ^ mac[i + 4];
-    }
-    for i in 0..4 {
-        condensed[i + 4] = mac[i + 8] ^ mac[i + 12];
-    }
+    // Step 4: Take bytes [0..4] + [8..12]
+    let mut result = [0u8; 8];
+    result[..4].copy_from_slice(&hash[0..4]);
+    result[4..].copy_from_slice(&hash[8..12]);
 
-    Ok(b64_encode(&condensed))
+    Ok(b64_encode(&result))
 }
 
 /// Encrypt file/folder attributes as MEGA expects:

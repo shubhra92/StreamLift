@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::api::MegaClient;
-use super::crypto::{decrypt_master_key, prepare_key};
+use super::crypto::decrypt_master_key;
 use crate::db::models::MegaSession;
 use crate::utils::ip_geo::{get_current_ip_info, IpInfo};
 
@@ -148,18 +148,9 @@ impl MegaManager {
             None => return Ok(None),
         };
 
-        // Reject if country mismatches current IP
-        if let Some(info) = ip_info {
-            if let Some(ref sc) = session.country {
-                if sc != &info.country {
-                    warn!(
-                        "Session country mismatch: session={sc}, current={} — forcing new login",
-                        info.country
-                    );
-                    return Ok(None);
-                }
-            }
-        }
+        // Note: Don't reject on country mismatch — reuse existing session
+        // regardless of IP country. MEGA blocks accounts that create too many sessions.
+        // The Express backend also reuses sessions across countries.
 
         Ok(Some(session))
     }
@@ -190,11 +181,10 @@ impl MegaManager {
     }
 
     async fn fresh_login(&self, ip_info: Option<&IpInfo>) -> Result<MegaState> {
-        let pw_key = prepare_key(&self.password);
         let mut mega_client = MegaClient::new(self.http.clone());
-        let login_result = mega_client.login(&self.email, &pw_key).await?;
+        let login_result = mega_client.login(&self.email, &self.password).await?;
 
-        let master_key = decrypt_master_key(&login_result.k, &pw_key)?;
+        let master_key = decrypt_master_key(&login_result.k, &login_result.pw_key)?;
         let sid = decrypt_session_id(&login_result.csid, &login_result.privk, &master_key)?;
         mega_client.sid = Some(sid.clone());
 
