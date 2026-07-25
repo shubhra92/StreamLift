@@ -48,8 +48,9 @@ pub async fn download_torrent_to_server(
     id: Uuid, magnet_str: String, file_name_hint: Option<String>,
     file_indices: Option<Vec<usize>>, _guest_id: Option<Uuid>,
     pool: PgPool, progress: ProgressStore, _http: reqwest::Client,
+    engine: std::sync::Arc<crate::services::torrent::engine::TorrentEngine>,
 ) {
-    if let Err(e) = _download_to_server(id, &magnet_str, file_name_hint.as_deref(), file_indices, &pool, &progress).await {
+    if let Err(e) = _download_to_server(id, &magnet_str, file_name_hint.as_deref(), file_indices, &pool, &progress, &engine).await {
         error!("torrent→server failed {id}: {e:#}");
         let _ = mark_failed(&pool, id, &e.to_string()).await;
         progress.insert(id, Progress::failed());
@@ -60,8 +61,9 @@ pub async fn stream_torrent_to_mega(
     id: Uuid, magnet_str: String, file_name_hint: Option<String>,
     file_indices: Option<Vec<usize>>, guest_id: Option<Uuid>,
     pool: PgPool, progress: ProgressStore, http: reqwest::Client, mega: MegaState,
+    engine: std::sync::Arc<crate::services::torrent::engine::TorrentEngine>,
 ) {
-    if let Err(e) = _stream_to_mega(id, &magnet_str, file_name_hint.as_deref(), file_indices, guest_id, &pool, &progress, &http, mega).await {
+    if let Err(e) = _stream_to_mega(id, &magnet_str, file_name_hint.as_deref(), file_indices, guest_id, &pool, &progress, &http, mega, &engine).await {
         error!("torrent→mega failed {id}: {e:#}");
         let _ = mark_failed(&pool, id, &e.to_string()).await;
         progress.insert(id, Progress::failed());
@@ -73,18 +75,17 @@ pub async fn stream_torrent_to_mega(
 async fn _download_to_server(
     id: Uuid, magnet_str: &str, file_name_hint: Option<&str>,
     file_indices: Option<Vec<usize>>, pool: &PgPool, progress: &ProgressStore,
+    engine: &crate::services::torrent::engine::TorrentEngine,
 ) -> Result<()> {
     let magnet = MagnetLink::parse(magnet_str)?;
-    let meta = fetch_metadata(&magnet).await.context("fetch metadata")?;
+    
+    // Use engine to get metadata (reuses cached sessions)
+    let meta = engine.fetch_metadata(&magnet).await.context("fetch metadata")?;
 
     let selected = select_files(&meta, file_indices.as_deref());
     let total_bytes: u64 = selected.iter().map(|f| f.size).sum();
     let download_dir = std::path::PathBuf::from("downloads");
     tokio::fs::create_dir_all(&download_dir).await?;
-
-    let peer_id = generate_peer_id();
-    let peers = announce_all(&magnet.trackers, &magnet.info_hash, &peer_id, 10).await;
-    if peers.is_empty() { bail!("No peers"); }
 
     let mut total_downloaded: u64 = 0;
     for file in &selected {
@@ -92,7 +93,7 @@ async fn _download_to_server(
         mark_downloading(pool, id, file, total_bytes).await?;
 
         let file_offset = calculate_file_offset(&meta, file);
-        let file_bytes = download_file_pieces(&peers, &magnet.info_hash, &peer_id, &meta, file_offset, file.size, progress, id, total_downloaded, total_bytes).await?;
+        let file_bytes = download_file_via_engine(engine, &magnet, &meta, file_offset, file.size, progress, id, total_downloaded, total_bytes).await?;
 
         let dest = download_dir.join(&out_name);
         tokio::fs::File::create(&dest).await?.write_all(&file_bytes).await?;
@@ -111,9 +112,10 @@ async fn _stream_to_mega(
     id: Uuid, magnet_str: &str, file_name_hint: Option<&str>,
     file_indices: Option<Vec<usize>>, guest_id: Option<Uuid>,
     pool: &PgPool, progress: &ProgressStore, http: &reqwest::Client, mut mega: MegaState,
+    engine: &crate::services::torrent::engine::TorrentEngine,
 ) -> Result<()> {
     let magnet = MagnetLink::parse(magnet_str)?;
-    let meta = fetch_metadata(&magnet).await.context("fetch metadata")?;
+    let meta = engine.fetch_metadata(&magnet).await.context("fetch metadata")?;
 
     let selected = select_files(&meta, file_indices.as_deref());
     let total_bytes: u64 = selected.iter().map(|f| f.size).sum();
@@ -123,17 +125,13 @@ async fn _stream_to_mega(
         None => mega.root_handle.clone(),
     };
 
-    let peer_id = generate_peer_id();
-    let peers = announce_all(&magnet.trackers, &magnet.info_hash, &peer_id, 10).await;
-    if peers.is_empty() { bail!("No peers"); }
-
     let mut total_downloaded: u64 = 0;
     for file in &selected {
         let upload_name = if selected.len() == 1 { file_name_hint.unwrap_or(&file.name).to_string() } else { file.name.clone() };
         mark_downloading(pool, id, file, total_bytes).await?;
 
         let file_offset = calculate_file_offset(&meta, file);
-        let file_bytes = download_file_pieces(&peers, &magnet.info_hash, &peer_id, &meta, file_offset, file.size, progress, id, total_downloaded, total_bytes).await?;
+        let file_bytes = download_file_via_engine(engine, &magnet, &meta, file_offset, file.size, progress, id, total_downloaded, total_bytes).await?;
 
         let file_size = file_bytes.len() as u64;
         let stream = Box::pin(futures::stream::once(async { Ok::<_, std::io::Error>(bytes::Bytes::from(file_bytes)) }));
@@ -214,17 +212,22 @@ async fn download_from_peer(
     addr: std::net::SocketAddr, info_hash: &[u8; 20], peer_id: &[u8; 20],
     pieces: &[u32], meta: &TorrentMetadata,
 ) -> Result<Vec<(u32, Vec<u8>)>> {
-    let mut conn = PeerConnection::connect(addr, info_hash, peer_id, false).await?;
+    let mut conn = PeerConnection::connect(addr, info_hash, peer_id, true).await?;
+    
+    // Send ext handshake + interested (matches what works for metadata)
+    conn.send_extended_handshake(1).await?;
     conn.send(&PeerMessage::Interested).await?;
 
-    // Wait for unchoke
-    for _ in 0..20 {
+    // Wait for unchoke (handle bitfield, ext handshake, etc)
+    let mut unchoked = false;
+    for _ in 0..30 {
         match timeout(Duration::from_secs(10), conn.recv()).await {
-            Ok(Ok(PeerMessage::Unchoke)) => break,
+            Ok(Ok(PeerMessage::Unchoke)) => { unchoked = true; break; }
             Ok(Ok(_)) => continue,
-            _ => bail!("unchoke timeout"),
+            _ => break,
         }
     }
+    if !unchoked { bail!("not unchoked"); }
 
     let mut results = Vec::new();
     for &piece_idx in pieces {
@@ -274,6 +277,91 @@ async fn download_one_piece(conn: &mut PeerConnection, idx: u32, len: u32, meta:
     let expected = &meta.piece_hashes[idx as usize * 20..(idx as usize + 1) * 20];
     if hash.as_slice() != expected { bail!("SHA-1 mismatch piece {idx}"); }
     Ok(data)
+}
+
+// ── Download via engine (reuses connected peers) ──────────────────────────────
+
+async fn download_file_via_engine(
+    engine: &crate::services::torrent::engine::TorrentEngine,
+    magnet: &MagnetLink,
+    meta: &TorrentMetadata,
+    file_offset: u64,
+    file_length: u64,
+    progress: &ProgressStore,
+    id: Uuid,
+    base_downloaded: u64,
+    total_bytes: u64,
+) -> Result<Vec<u8>> {
+    use sha1::{Digest, Sha1};
+
+    let piece_length = meta.piece_length as u64;
+    let first_piece = (file_offset / piece_length) as u32;
+    let last_piece = ((file_offset + file_length - 1) / piece_length) as u32;
+    let total_pieces = (last_piece - first_piece + 1) as usize;
+
+    info!("Downloading pieces {first_piece}..{last_piece} ({total_pieces} pieces)");
+
+    let mut downloaded: Vec<Option<Vec<u8>>> = vec![None; total_pieces];
+    let mut done = 0;
+
+    for piece_idx in first_piece..=last_piece {
+        let local_idx = (piece_idx - first_piece) as usize;
+        let piece_start = piece_idx as u64 * piece_length;
+        let piece_end = (piece_start + piece_length).min(meta.total_size);
+        let this_piece_len = (piece_end - piece_start) as u32;
+
+        // Try up to 3 times per piece
+        let mut piece_data = None;
+        for attempt in 0..3 {
+            match engine.download_piece(magnet, piece_idx, this_piece_len).await {
+                Ok(data) => {
+                    // Verify SHA-1
+                    let hash_offset = piece_idx as usize * 20;
+                    if hash_offset + 20 <= meta.piece_hashes.len() {
+                        let expected = &meta.piece_hashes[hash_offset..hash_offset + 20];
+                        let actual: [u8; 20] = Sha1::digest(&data).into();
+                        if actual.as_slice() == expected {
+                            piece_data = Some(data);
+                            break;
+                        }
+                    } else {
+                        piece_data = Some(data);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    if attempt < 2 {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            }
+        }
+
+        match piece_data {
+            Some(data) => {
+                downloaded[local_idx] = Some(data);
+                done += 1;
+                let mut p = progress.entry(id).or_insert(Progress::initial());
+                p.update(base_downloaded + (done as f64 / total_pieces as f64 * file_length as f64) as u64, total_bytes);
+                if done % 10 == 0 { info!("Progress: {done}/{total_pieces} pieces"); }
+            }
+            None => bail!("Failed to download piece {piece_idx} after 3 attempts"),
+        }
+    }
+
+    // Assemble file
+    let start_in_first = (file_offset % piece_length) as usize;
+    let mut file_data = Vec::with_capacity(file_length as usize);
+    for (i, p) in downloaded.iter().enumerate() {
+        let data = p.as_ref().unwrap();
+        let start = if i == 0 { start_in_first } else { 0 };
+        let remaining = file_length as usize - file_data.len();
+        let end = start + remaining.min(data.len() - start);
+        file_data.extend_from_slice(&data[start..end]);
+    }
+
+    info!("File assembled: {} bytes ✅", file_data.len());
+    Ok(file_data)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

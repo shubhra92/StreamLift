@@ -125,6 +125,123 @@ impl TorrentEngine {
         self.do_fetch_metadata(magnet, session_arc).await
     }
 
+    /// Download a piece from the session's connected peers.
+    pub async fn download_piece(&self, magnet: &MagnetLink, piece_idx: u32, piece_length: u32) -> Result<Vec<u8>> {
+        use wire::Message;
+        use tokio::time::timeout;
+
+        let session_arc = self.get_or_create_session(magnet).await;
+        let mut session = session_arc.write().await;
+        session.last_used = std::time::Instant::now();
+
+        // If no peers connected, reconnect
+        if session.peers.is_empty() {
+            drop(session);
+            self.reconnect_peers(magnet).await?;
+            session = session_arc.write().await;
+        }
+
+        const BLOCK_SIZE: u32 = 16384;
+        let num_blocks = (piece_length + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+        // Try each peer until one serves the piece
+        for peer in session.peers.iter_mut() {
+            // Send interested if not already
+            let _ = peer.conn.send_message(&Message::Interested).await;
+
+            // Request all blocks
+            let mut offset = 0u32;
+            while offset < piece_length {
+                let bl = BLOCK_SIZE.min(piece_length - offset);
+                if peer.conn.send_message(&Message::Request {
+                    index: piece_idx, begin: offset, length: bl,
+                }).await.is_err() {
+                    break;
+                }
+                offset += bl;
+            }
+            if offset < piece_length { continue; } // send failed
+
+            // Collect blocks
+            let mut piece_data = vec![0u8; piece_length as usize];
+            let mut got = 0u32;
+
+            for _ in 0..(num_blocks * 3 + 10) {
+                match timeout(Duration::from_secs(15), peer.conn.read_message(Duration::from_secs(15))).await {
+                    Ok(Ok(Some(Message::Piece { index, begin, data }))) if index == piece_idx => {
+                        let end = (begin as usize + data.len()).min(piece_data.len());
+                        piece_data[begin as usize..end].copy_from_slice(&data[..end - begin as usize]);
+                        got += 1;
+                        if got >= num_blocks { break; }
+                    }
+                    Ok(Ok(Some(Message::Unchoke))) => { peer.am_choked = false; }
+                    Ok(Ok(Some(Message::Choke))) => { peer.am_choked = true; break; }
+                    Ok(Ok(Some(_))) => continue,
+                    _ => break,
+                }
+            }
+
+            if got >= num_blocks {
+                return Ok(piece_data);
+            }
+        }
+
+        anyhow::bail!("No peer could serve piece {piece_idx}")
+    }
+
+    /// Reconnect to peers for a torrent session.
+    async fn reconnect_peers(&self, magnet: &MagnetLink) -> Result<()> {
+        use crate::services::torrent::tracker::announce_all;
+        use wire::WireConn;
+        use tokio::time::timeout;
+
+        let peers = announce_all(&magnet.trackers, &magnet.info_hash, &self.peer_id, 10).await;
+        let addrs: Vec<std::net::SocketAddr> = peers.iter().map(|p| p.addr()).collect();
+
+        let mut tasks = Vec::new();
+        for addr in addrs.iter().take(50) {
+            let addr = *addr;
+            let ih = magnet.info_hash;
+            let pid = self.peer_id;
+            tasks.push(tokio::spawn(async move {
+                timeout(Duration::from_secs(8), WireConn::connect(addr, &ih, &pid, true, Duration::from_secs(5)))
+                    .await.ok().and_then(|r| r.ok())
+            }));
+        }
+
+        let session_arc = self.get_or_create_session(magnet).await;
+        let mut session = session_arc.write().await;
+
+        for task in tasks {
+            if let Ok(Some(conn)) = task.await {
+                // Send ext handshake + interested
+                let mut c = conn;
+                let _ = c.send_ext_handshake(1).await;
+                let _ = c.send_message(&wire::Message::Interested).await;
+                session.peers.push(ConnectedPeer {
+                    conn: c, has_metadata: false, ut_metadata_id: None,
+                    metadata_size: 0, am_choked: true, has_pieces: std::collections::HashSet::new(),
+                });
+            }
+        }
+
+        // Wait for unchoke from new peers
+        for peer in session.peers.iter_mut() {
+            for _ in 0..10 {
+                match tokio::time::timeout(Duration::from_secs(3), peer.conn.read_message(Duration::from_secs(3))).await {
+                    Ok(Ok(Some(wire::Message::Unchoke))) => { peer.am_choked = false; break; }
+                    Ok(Ok(Some(_))) => continue,
+                    _ => break,
+                }
+            }
+        }
+
+        info!("Reconnected: {} peers ({} unchoked)",
+            session.peers.len(),
+            session.peers.iter().filter(|p| !p.am_choked).count());
+        Ok(())
+    }
+
     /// Internal: actually fetch metadata from peers.
     async fn do_fetch_metadata(
         &self,

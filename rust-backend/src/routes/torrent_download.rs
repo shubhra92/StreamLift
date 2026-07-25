@@ -162,9 +162,10 @@ pub async fn server_download(
     let (pool, progress, http) = (state.pool.clone(), state.progress.clone(), state.http.clone());
     let file_name = record.file_name.or(body.file_name.clone());
     let (magnet, indices) = (body.magnet_link.clone(), body.file_indices.clone());
+    let engine = state.torrent_engine.clone();
     tokio::spawn(async move {
         pipeline::download_torrent_to_server(
-            id, magnet, file_name, indices, record.guest_id, pool, progress, http,
+            id, magnet, file_name, indices, record.guest_id, pool, progress, http, engine,
         ).await;
     });
 
@@ -221,10 +222,11 @@ pub async fn mega_upload(
     let (pool, progress, http) = (state.pool.clone(), state.progress.clone(), state.http.clone());
     let file_name = record.file_name.or(body.file_name.clone());
     let (magnet, indices) = (body.magnet_link.clone(), body.file_indices.clone());
+    let engine = state.torrent_engine.clone();
     tokio::spawn(async move {
         pipeline::stream_torrent_to_mega(
             id, magnet, file_name, indices, record.guest_id,
-            pool, progress, http, mega_state,
+            pool, progress, http, mega_state, engine,
         ).await;
     });
 
