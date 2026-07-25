@@ -1,0 +1,21 @@
+# Compiled output
+/target/
+
+# Local package cache (like node_modules)
+/.cargo-home/
+
+# Environment variables (contains secrets)
+.env
+
+# Downloads folder (runtime)
+/downloads/
+
+# Debug/test scripts
+debug-*.mjs
+
+# OS files
+.DS_Store
+
+# Editor
+*.swp
+*.swo

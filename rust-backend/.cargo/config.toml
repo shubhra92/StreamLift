@@ -1,0 +1,7 @@
+[build]
+# All other project-specific build settings can go here
+
+# Note: CARGO_HOME cannot be set via config.toml (cargo restriction).
+# To use a local package cache, run:
+#   export CARGO_HOME="$(pwd)/.cargo-home"
+# Or use the provided script: ./use-local-cache.sh
