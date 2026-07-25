@@ -22,6 +22,7 @@ use services::mega::{
     new_shared_state,
 };
 use services::progress_store::{new_store, ProgressStore};
+use services::torrent::engine::TorrentEngine;
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ pub struct AppState {
     pub mega: SharedMegaState,
     pub http: reqwest::Client,
     pub is_ready: Arc<AtomicBool>,
+    pub torrent_engine: Arc<TorrentEngine>,
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -68,12 +70,17 @@ async fn main() -> Result<()> {
     let mega_state = new_shared_state();
     let is_ready = Arc::new(AtomicBool::new(false));
 
+    // Start torrent engine (persistent, long-lived)
+    let torrent_engine = TorrentEngine::start().await
+        .expect("Failed to start torrent engine");
+
     let state = AppState {
         pool: pool.clone(),
         progress,
         mega: mega_state.clone(),
         http: http.clone(),
         is_ready: is_ready.clone(),
+        torrent_engine,
     };
 
     // CORS — same as express cors() with default options (all origins)

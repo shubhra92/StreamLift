@@ -160,6 +160,7 @@ impl PeerConnection {
             .write_all(&bytes)
             .await
             .context("peer send")?;
+        self.stream.flush().await.context("peer flush")?;
         Ok(())
     }
 
@@ -196,13 +197,8 @@ impl PeerConnection {
     /// Send an Extended handshake (BEP-10 message id 0).
     /// `extensions_dict` is a bencoded dict describing supported extensions.
     pub async fn send_extended_handshake(&mut self, ut_metadata_id: u8) -> Result<()> {
-        // Build a more complete extended handshake that peers expect:
-        // - m: supported extension messages
-        // - metadata_size: 0 (we don't have metadata yet, we're requesting it)
-        // - reqq: request queue depth (250 is standard)
-        // - v: client name
         let payload = format!(
-            "d1:md11:ut_metadatai{}ee13:metadata_sizei0e4:reqqi250e1:v17:StreamLift/0.1.0e",
+            "d1:md11:ut_metadatai{}e6:ut_pexi2ee13:metadata_sizei0e4:reqqi250e1:v16:StreamLift/0.1.0e",
             ut_metadata_id
         );
         self.send(&PeerMessage::Extended {

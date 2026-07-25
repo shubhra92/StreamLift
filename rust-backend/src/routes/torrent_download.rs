@@ -5,7 +5,6 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::services::progress_store::Progress;
-use crate::services::torrent::metadata::fetch_metadata;
 use crate::services::torrent::magnet::MagnetLink;
 use crate::services::torrent::pipeline;
 use crate::AppState;
@@ -90,7 +89,10 @@ async fn upsert_torrent_record(
 
 // ── POST /api/torrent-download/metadata ──────────────────────────────────────
 
-pub async fn get_metadata(Json(body): Json<TorrentRequest>) -> impl IntoResponse {
+pub async fn get_metadata(
+    State(state): State<AppState>,
+    Json(body): Json<TorrentRequest>,
+) -> impl IntoResponse {
     if let Some(r) = validate_magnet(&body.magnet_link) { return r; }
 
     let magnet = match MagnetLink::parse(&body.magnet_link) {
@@ -99,9 +101,10 @@ pub async fn get_metadata(Json(body): Json<TorrentRequest>) -> impl IntoResponse
             Json(json!({ "status": false, "message": e.to_string() }))).into_response(),
     };
 
+    // Use the persistent engine (cached sessions, reused connections)
     match tokio::time::timeout(
         std::time::Duration::from_secs(90),
-        fetch_metadata(&magnet),
+        state.torrent_engine.fetch_metadata(&magnet),
     ).await {
         Ok(Ok(meta)) => (StatusCode::OK, Json(json!({
             "status": true,

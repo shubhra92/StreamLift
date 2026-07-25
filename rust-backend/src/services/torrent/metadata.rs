@@ -12,7 +12,7 @@ use super::peer::{PeerConnection, PeerMessage};
 use super::tracker::{announce_all, generate_peer_id, Peer};
 use crate::utils::format::{format_bytes, get_file_type};
 
-const PEER_TIMEOUT: Duration = Duration::from_secs(8);
+const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 const METADATA_PIECE_SIZE: usize = 16 * 1024; // 16 KB
 
 /// A file entry from torrent metadata.
@@ -105,22 +105,22 @@ async fn fetch_metadata_from_peers(
         let pid = peer_id;
         tokio::spawn(async move {
             match timeout(
-                Duration::from_secs(20),
+                Duration::from_secs(45),
                 try_fetch_from_peer(peer.addr(), &ih, &pid),
             ).await {
                 Ok(Ok(data)) => { let _ = tx.send(data).await; }
                 Ok(Err(e)) => info!("Peer {} failed: {}", peer.addr(), e),
-                Err(_) => info!("Peer {} timed out (20s)", peer.addr()),
+                Err(_) => info!("Peer {} timed out (45s)", peer.addr()),
             }
         });
     }
     drop(tx);
 
-    // Wait for the first successful result (up to 25s)
-    match timeout(Duration::from_secs(25), rx.recv()).await {
+    // Wait for the first successful result (up to 50s per attempt)
+    match timeout(Duration::from_secs(50), rx.recv()).await {
         Ok(Some(data)) => Ok(data),
         Ok(None) => bail!("All peers failed to provide metadata"),
-        Err(_) => bail!("Metadata fetch timed out (25s)"),
+        Err(_) => bail!("Metadata fetch timed out"),
     }
 }
 
@@ -141,9 +141,9 @@ async fn try_fetch_from_peer(
 
     info!("Peer {addr}: connected, has extensions ✅");
 
-    // Send our extended handshake immediately
-    conn.send_extended_handshake(1).await
-        .context("send ext handshake")?;
+    // Send interested + extended handshake immediately (like WebTorrent)
+    conn.send(&PeerMessage::Interested).await.context("send interested")?;
+    conn.send_extended_handshake(1).await.context("send ext handshake")?;
 
     // Now enter message loop: handle bitfield, have, extended handshake, metadata pieces
     let mut peer_ut_id: Option<u8> = None;
@@ -168,19 +168,7 @@ async fn try_fetch_from_peer(
                 pieces = vec![None; num_pieces];
                 info!("Peer {addr}: metadata_size={metadata_size}, pieces={num_pieces}");
 
-                // Drain any pending messages (bitfield, have) before requesting
-                // Some peers send bitfield right after ext handshake
-                loop {
-                    match timeout(Duration::from_millis(200), conn.recv()).await {
-                        Ok(Ok(PeerMessage::Bitfield(_))) => continue,
-                        Ok(Ok(PeerMessage::Have(_))) => continue,
-                        Ok(Ok(PeerMessage::Unchoke)) => continue,
-                        Ok(Ok(PeerMessage::KeepAlive)) => continue,
-                        _ => break, // timeout or error = no more pending messages
-                    }
-                }
-
-                // Now request metadata pieces
+                // Request metadata pieces immediately (no drain, no delay)
                 for i in 0..num_pieces {
                     let dict = format!("d8:msg_typei0e5:piecei{}ee", i);
                     conn.send(&PeerMessage::Extended {

@@ -175,8 +175,9 @@ impl WireConn {
 
     /// Send our BEP-10 extended handshake.
     pub async fn send_ext_handshake(&mut self, ut_metadata_id: u8) -> Result<()> {
+        // Advertise ut_metadata AND ut_pex
         let payload = format!(
-            "d1:md11:ut_metadatai{}ee13:metadata_sizei0e4:reqqi250e1:v17:StreamLift/0.1.0e",
+            "d1:md11:ut_metadatai{}e6:ut_pexi2ee13:metadata_sizei0e4:reqqi250e1:v16:StreamLift/0.1.0e",
             ut_metadata_id
         );
         self.send_message(&Message::Extended {
