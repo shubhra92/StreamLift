@@ -100,7 +100,7 @@ pub async fn get_metadata(Json(body): Json<TorrentRequest>) -> impl IntoResponse
     };
 
     match tokio::time::timeout(
-        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(90),
         fetch_metadata(&magnet),
     ).await {
         Ok(Ok(meta)) => (StatusCode::OK, Json(json!({

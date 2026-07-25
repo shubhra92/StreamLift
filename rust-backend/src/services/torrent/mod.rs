@@ -1,3 +1,4 @@
+pub mod engine;
 pub mod magnet;
 pub mod metadata;
 pub mod peer;

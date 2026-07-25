@@ -11,7 +11,7 @@ use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use tracing::debug;
 
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
 const MSG_TIMEOUT: Duration = Duration::from_secs(30);
 const PROTOCOL_STR: &[u8] = b"BitTorrent protocol";
 
@@ -178,6 +178,12 @@ impl PeerConnection {
             return Ok(PeerMessage::KeepAlive);
         }
 
+        // Sanity check
+        if length > 262144 {
+            tracing::warn!("Message too large: {} bytes (len_buf={:?})", length, len_buf);
+            bail!("Message too large: {} bytes (likely corrupt stream)", length);
+        }
+
         let mut payload = vec![0u8; length];
         timeout(MSG_TIMEOUT, self.stream.read_exact(&mut payload))
             .await
@@ -190,9 +196,13 @@ impl PeerConnection {
     /// Send an Extended handshake (BEP-10 message id 0).
     /// `extensions_dict` is a bencoded dict describing supported extensions.
     pub async fn send_extended_handshake(&mut self, ut_metadata_id: u8) -> Result<()> {
-        // BEP-10: extended handshake is ext_id=0 with a bencoded dict payload
+        // Build a more complete extended handshake that peers expect:
+        // - m: supported extension messages
+        // - metadata_size: 0 (we don't have metadata yet, we're requesting it)
+        // - reqq: request queue depth (250 is standard)
+        // - v: client name
         let payload = format!(
-            "d1:md11:ut_metadatai{}ee1:v9:StreamLifte",
+            "d1:md11:ut_metadatai{}ee13:metadata_sizei0e4:reqqi250e1:v17:StreamLift/0.1.0e",
             ut_metadata_id
         );
         self.send(&PeerMessage::Extended {

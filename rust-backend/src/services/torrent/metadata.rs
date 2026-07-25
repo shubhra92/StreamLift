@@ -45,25 +45,44 @@ pub struct TorrentMetadata {
     pub piece_length: u32,
     #[serde(rename = "pieceCount")]
     pub piece_count: u32,
+    /// Raw SHA-1 hashes for all pieces (20 bytes each, flattened)
+    #[serde(skip)]
+    pub piece_hashes: Vec<u8>,
 }
 
 /// Fetch torrent metadata from a magnet link.
 pub async fn fetch_metadata(magnet: &MagnetLink) -> Result<TorrentMetadata> {
     let peer_id = generate_peer_id();
 
-    info!("Announcing to {} trackers...", magnet.trackers.len());
-    let peers = announce_all(&magnet.trackers, &magnet.info_hash, &peer_id, 30).await;
+    // Retry up to 3 times with fresh tracker announces
+    for attempt in 1..=3 {
+        info!("Metadata fetch attempt {attempt}/3...");
 
-    if peers.is_empty() {
-        bail!("No peers found from trackers");
+        let peers = announce_all(&magnet.trackers, &magnet.info_hash, &peer_id, 5).await;
+        if peers.is_empty() {
+            if attempt < 3 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+            bail!("No peers found from trackers");
+        }
+
+        info!("Got {} peers, trying metadata fetch...", peers.len());
+
+        match fetch_metadata_from_peers(peers, &magnet.info_hash, &peer_id).await {
+            Ok(info_dict) => return parse_info_dict(&info_dict, &magnet.info_hash_hex),
+            Err(e) => {
+                if attempt < 3 {
+                    info!("Attempt {attempt} failed: {e}, retrying...");
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                } else {
+                    return Err(e);
+                }
+            }
+        }
     }
 
-    info!("Got {} peers, fetching metadata...", peers.len());
-
-    // Try peers concurrently (up to 5 at a time) with aggressive timeout
-    let info_dict = fetch_metadata_from_peers(peers, &magnet.info_hash, &peer_id).await?;
-
-    parse_info_dict(&info_dict, &magnet.info_hash_hex)
+    bail!("All metadata fetch attempts failed")
 }
 
 /// Try multiple peers concurrently to fetch metadata.
@@ -78,8 +97,8 @@ async fn fetch_metadata_from_peers(
     let info_hash = *info_hash;
     let peer_id = *peer_id;
 
-    // Spawn concurrent peer attempts (try all, max 15)
-    let max_concurrent = peers.len().min(15);
+    // Spawn concurrent peer attempts (try ALL peers)
+    let max_concurrent = peers.len().min(50);
     for peer in peers.into_iter().take(max_concurrent) {
         let tx = tx.clone();
         let ih = info_hash;
@@ -149,7 +168,19 @@ async fn try_fetch_from_peer(
                 pieces = vec![None; num_pieces];
                 info!("Peer {addr}: metadata_size={metadata_size}, pieces={num_pieces}");
 
-                // Request all metadata pieces
+                // Drain any pending messages (bitfield, have) before requesting
+                // Some peers send bitfield right after ext handshake
+                loop {
+                    match timeout(Duration::from_millis(200), conn.recv()).await {
+                        Ok(Ok(PeerMessage::Bitfield(_))) => continue,
+                        Ok(Ok(PeerMessage::Have(_))) => continue,
+                        Ok(Ok(PeerMessage::Unchoke)) => continue,
+                        Ok(Ok(PeerMessage::KeepAlive)) => continue,
+                        _ => break, // timeout or error = no more pending messages
+                    }
+                }
+
+                // Now request metadata pieces
                 for i in 0..num_pieces {
                     let dict = format!("d8:msg_typei0e5:piecei{}ee", i);
                     conn.send(&PeerMessage::Extended {
@@ -160,16 +191,16 @@ async fn try_fetch_from_peer(
                 requested = true;
             }
             PeerMessage::Extended { ext_id, payload } if requested => {
-                // Metadata data response (ext_id should be 1 = our ut_metadata id)
-                if let Some(peer_id) = peer_ut_id {
-                    if ext_id == 1 { // We registered ut_metadata as ext_id 1
-                        if let Some((idx, data)) = parse_metadata_data(&payload) {
-                            if idx < num_pieces && pieces[idx].is_none() {
-                                pieces[idx] = Some(data);
-                                received += 1;
-                                if received == num_pieces {
-                                    break;
-                                }
+                // Metadata data response
+                // The peer responds with ext_id = the ID WE registered (1)
+                // because that's what we told them in our handshake
+                if let Some(_peer_id) = peer_ut_id {
+                    if let Some((idx, data)) = parse_metadata_data(&payload) {
+                        if idx < num_pieces && pieces[idx].is_none() {
+                            pieces[idx] = Some(data);
+                            received += 1;
+                            if received == num_pieces {
+                                break;
                             }
                         }
                     }
@@ -229,6 +260,11 @@ fn parse_metadata_data(payload: &[u8]) -> Option<(usize, Vec<u8>)> {
 }
 
 // ── Info dict parsing ─────────────────────────────────────────────────────────
+
+/// Parse info dict bytes into TorrentMetadata. Public for use by the engine session.
+pub fn parse_info_dict_public(info_dict: &[u8], info_hash_hex: &str) -> Result<TorrentMetadata> {
+    parse_info_dict(info_dict, info_hash_hex)
+}
 
 fn parse_info_dict(info_dict: &[u8], info_hash_hex: &str) -> Result<TorrentMetadata> {
     let decoded = bencode_decode(info_dict)?;
@@ -308,6 +344,7 @@ fn parse_info_dict(info_dict: &[u8], info_hash_hex: &str) -> Result<TorrentMetad
         files,
         piece_length,
         piece_count,
+        piece_hashes: pieces_bytes.to_vec(),
     })
 }
 

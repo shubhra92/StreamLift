@@ -30,16 +30,14 @@ impl Peer {
     }
 }
 
-/// Announce to all trackers in `urls` and collect unique peers.
-/// Tries UDP and HTTP trackers concurrently, returns when we have `min_peers`.
+/// Announce to all trackers and collect unique peers.
+/// Returns as soon as we have `min_peers` — doesn't wait for all trackers.
 pub async fn announce_all(
     urls: &[String],
     info_hash: &[u8; 20],
     peer_id: &[u8; 20],
     min_peers: usize,
 ) -> Vec<Peer> {
-    let mut all_peers: Vec<Peer> = Vec::new();
-
     // Add well-known public trackers as fallback
     let mut all_urls: Vec<String> = urls.to_vec();
     let fallback_trackers = vec![
@@ -57,25 +55,51 @@ pub async fn announce_all(
         }
     }
 
-    for url in &all_urls {
-        let result = if url.starts_with("udp://") {
-            announce_udp(url, info_hash, peer_id).await
-        } else if url.starts_with("http://") || url.starts_with("https://") {
-            announce_http(url, info_hash, peer_id).await
-        } else {
-            continue;
-        };
+    // Announce to ALL trackers concurrently, collect results as they arrive
+    use tokio::sync::mpsc;
+    let (tx, mut rx) = mpsc::channel::<Vec<Peer>>(all_urls.len());
 
-        match result {
-            Ok(peers) => {
-                info!("Tracker {} → {} peers", url, peers.len());
+    for url in all_urls {
+        let tx = tx.clone();
+        let ih = *info_hash;
+        let pid = *peer_id;
+        tokio::spawn(async move {
+            let result = if url.starts_with("udp://") {
+                announce_udp(&url, &ih, &pid).await
+            } else if url.starts_with("http://") || url.starts_with("https://") {
+                announce_http(&url, &ih, &pid).await
+            } else {
+                return;
+            };
+            match result {
+                Ok(peers) if !peers.is_empty() => {
+                    info!("Tracker {} → {} peers", url, peers.len());
+                    let _ = tx.send(peers).await;
+                }
+                Ok(_) => debug!("Tracker {url}: 0 peers"),
+                Err(e) => debug!("Tracker {url} failed: {e}"),
+            }
+        });
+    }
+    drop(tx);
+
+    // Collect peers until we have enough or all trackers responded (max 10s wait)
+    let mut all_peers: Vec<Peer> = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() { break; }
+
+        match timeout(remaining, rx.recv()).await {
+            Ok(Some(peers)) => {
                 all_peers.extend(peers);
                 all_peers.dedup_by(|a, b| a.ip == b.ip && a.port == b.port);
                 if all_peers.len() >= min_peers {
-                    return all_peers;
+                    break;
                 }
             }
-            Err(e) => debug!("Tracker {url} failed: {e}"),
+            _ => break, // timeout or channel closed
         }
     }
 
