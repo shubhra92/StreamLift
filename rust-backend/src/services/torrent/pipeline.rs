@@ -301,59 +301,56 @@ async fn download_file_via_engine(
 
     info!("Downloading pieces {first_piece}..{last_piece} ({total_pieces} pieces)");
 
-    let mut downloaded: Vec<Option<Vec<u8>>> = vec![None; total_pieces];
-    let mut done = 0;
+    // Build piece request list
+    let piece_requests: Vec<(u32, u32)> = (first_piece..=last_piece)
+        .map(|idx| {
+            let start = idx as u64 * piece_length;
+            let end = (start + piece_length).min(meta.total_size);
+            (idx, (end - start) as u32)
+        })
+        .collect();
 
-    for piece_idx in first_piece..=last_piece {
-        let local_idx = (piece_idx - first_piece) as usize;
-        let piece_start = piece_idx as u64 * piece_length;
-        let piece_end = (piece_start + piece_length).min(meta.total_size);
-        let this_piece_len = (piece_end - piece_start) as u32;
+    // Download all pieces in parallel
+    let progress_clone = progress.clone();
+    let file_len = file_length;
+    let base = base_downloaded;
+    let total = total_bytes;
+    let tp = total_pieces;
+    let pieces_done = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let pieces_done_clone = pieces_done.clone();
 
-        // Try up to 3 times per piece
-        let mut piece_data = None;
-        for attempt in 0..3 {
-            match engine.download_piece(magnet, piece_idx, this_piece_len).await {
-                Ok(data) => {
-                    // Verify SHA-1
-                    let hash_offset = piece_idx as usize * 20;
-                    if hash_offset + 20 <= meta.piece_hashes.len() {
-                        let expected = &meta.piece_hashes[hash_offset..hash_offset + 20];
-                        let actual: [u8; 20] = Sha1::digest(&data).into();
-                        if actual.as_slice() == expected {
-                            piece_data = Some(data);
-                            break;
-                        }
-                    } else {
-                        piece_data = Some(data);
-                        break;
-                    }
-                }
-                Err(e) => {
-                    if attempt < 2 {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                    }
-                }
+    let results = engine.download_pieces_parallel(
+        magnet,
+        piece_requests,
+        move |_per_peer_count| {
+            // Use global atomic counter instead of per-peer count
+            let done = pieces_done_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let downloaded = base + (done as f64 / tp as f64 * file_len as f64) as u64;
+            let mut p = progress_clone.entry(id).or_insert(Progress::initial());
+            p.update(downloaded, total);
+        },
+    ).await?;
+
+    // Verify SHA-1 for each piece
+    let mut verified: Vec<(u32, Vec<u8>)> = Vec::with_capacity(results.len());
+    for (idx, data) in results {
+        let hash_offset = idx as usize * 20;
+        if hash_offset + 20 <= meta.piece_hashes.len() {
+            let expected = &meta.piece_hashes[hash_offset..hash_offset + 20];
+            let actual: [u8; 20] = Sha1::digest(&data).into();
+            if actual.as_slice() != expected {
+                bail!("SHA-1 mismatch piece {idx}");
             }
         }
-
-        match piece_data {
-            Some(data) => {
-                downloaded[local_idx] = Some(data);
-                done += 1;
-                let mut p = progress.entry(id).or_insert(Progress::initial());
-                p.update(base_downloaded + (done as f64 / total_pieces as f64 * file_length as f64) as u64, total_bytes);
-                if done % 10 == 0 { info!("Progress: {done}/{total_pieces} pieces"); }
-            }
-            None => bail!("Failed to download piece {piece_idx} after 3 attempts"),
-        }
+        verified.push((idx, data));
     }
 
-    // Assemble file
+    // Sort by piece index and assemble file
+    verified.sort_by_key(|(idx, _)| *idx);
+
     let start_in_first = (file_offset % piece_length) as usize;
     let mut file_data = Vec::with_capacity(file_length as usize);
-    for (i, p) in downloaded.iter().enumerate() {
-        let data = p.as_ref().unwrap();
+    for (i, (_, data)) in verified.iter().enumerate() {
         let start = if i == 0 { start_in_first } else { 0 };
         let remaining = file_length as usize - file_data.len();
         let end = start + remaining.min(data.len() - start);

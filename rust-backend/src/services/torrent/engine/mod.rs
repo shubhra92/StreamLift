@@ -189,6 +189,131 @@ impl TorrentEngine {
         anyhow::bail!("No peer could serve piece {piece_idx}")
     }
 
+    /// Download multiple pieces in parallel from all connected peers.
+    pub async fn download_pieces_parallel(
+        &self,
+        magnet: &MagnetLink,
+        piece_requests: Vec<(u32, u32)>, // (piece_idx, piece_length)
+        progress_cb: impl Fn(u32) + Send + Sync + 'static,
+    ) -> Result<Vec<(u32, Vec<u8>)>> {
+        use tokio::sync::mpsc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let session_arc = self.get_or_create_session(magnet).await;
+
+        // Ensure we have peers
+        {
+            let session = session_arc.read().await;
+            if session.peers.is_empty() {
+                drop(session);
+                self.reconnect_peers(magnet).await?;
+            }
+        }
+
+        // Take peers out for parallel work
+        let mut peers: Vec<ConnectedPeer> = {
+            let mut session = session_arc.write().await;
+            session.last_used = std::time::Instant::now();
+            std::mem::take(&mut session.peers)
+        };
+
+        if peers.is_empty() {
+            anyhow::bail!("No peers for download");
+        }
+
+        let num_peers = peers.len();
+        let total_pieces = piece_requests.len();
+        info!("Parallel download: {} pieces across {} peers", total_pieces, num_peers);
+
+        // Shared piece queue
+        let queue = Arc::new(tokio::sync::Mutex::new(
+            std::collections::VecDeque::from(piece_requests)
+        ));
+        let progress_cb = Arc::new(progress_cb);
+
+        // Result channel
+        let (tx, mut rx) = mpsc::channel::<(u32, Vec<u8>)>(64);
+
+        // Spawn a worker per peer
+        let mut handles = Vec::new();
+        for mut peer in peers.drain(..) {
+            let queue = queue.clone();
+            let tx = tx.clone();
+            let progress_cb = progress_cb.clone();
+
+            handles.push(tokio::spawn(async move {
+                use wire::Message;
+                use tokio::time::{timeout, Duration};
+                const BLOCK_SIZE: u32 = 16384;
+
+                let mut pieces_done = 0u32;
+
+                // Send interested once at the start
+                let _ = peer.conn.send_message(&Message::Interested).await;
+
+                // Wait for unchoke before starting
+                for _ in 0..10 {
+                    match timeout(Duration::from_secs(5), peer.conn.read_message(Duration::from_secs(5))).await {
+                        Ok(Ok(Some(Message::Unchoke))) => { peer.am_choked = false; break; }
+                        Ok(Ok(Some(_))) => continue,
+                        _ => break,
+                    }
+                }
+
+                if peer.am_choked {
+                    // Can't download if choked — return piece if we took one
+                    return peer;
+                }
+
+                loop {
+                    let item = { queue.lock().await.pop_front() };
+                    let (piece_idx, piece_len) = match item {
+                        Some(i) => i,
+                        None => break,
+                    };
+
+                    match download_piece_from_peer(&mut peer, piece_idx, piece_len).await {
+                        Ok(data) => {
+                            pieces_done += 1;
+                            progress_cb(pieces_done);
+                            if tx.send((piece_idx, data)).await.is_err() { break; }
+                        }
+                        Err(_) => {
+                            queue.lock().await.push_back((piece_idx, piece_len));
+                            break;
+                        }
+                    }
+                }
+                peer
+            }));
+        }
+        drop(tx);
+
+        // Collect results
+        let mut results: Vec<(u32, Vec<u8>)> = Vec::with_capacity(total_pieces);
+        while let Some(r) = rx.recv().await {
+            results.push(r);
+        }
+
+        // Return surviving peers to session
+        let mut surviving = Vec::new();
+        for h in handles {
+            if let Ok(peer) = h.await {
+                surviving.push(peer);
+            }
+        }
+        {
+            let mut session = session_arc.write().await;
+            session.peers = surviving;
+        }
+
+        if results.len() < total_pieces {
+            anyhow::bail!("Only got {}/{} pieces", results.len(), total_pieces);
+        }
+
+        Ok(results)
+    }
+
     /// Reconnect to peers for a torrent session.
     async fn reconnect_peers(&self, magnet: &MagnetLink) -> Result<()> {
         use crate::services::torrent::tracker::announce_all;
@@ -559,4 +684,59 @@ fn parse_pex_message(payload: &[u8]) -> Option<Vec<std::net::SocketAddr>> {
         }
     }
     Some(peers)
+}
+
+/// Download a single piece from a specific peer.
+async fn download_piece_from_peer(
+    peer: &mut ConnectedPeer,
+    piece_idx: u32,
+    piece_length: u32,
+) -> Result<Vec<u8>> {
+    use wire::Message;
+    use tokio::time::{timeout, Duration};
+
+    const BLOCK_SIZE: u32 = 16384;
+    let num_blocks = (piece_length + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    // Pipeline: send ALL block requests immediately
+    let mut offset = 0u32;
+    while offset < piece_length {
+        let bl = BLOCK_SIZE.min(piece_length - offset);
+        peer.conn.send_message(&Message::Request {
+            index: piece_idx,
+            begin: offset,
+            length: bl,
+        }).await.context("send request")?;
+        offset += bl;
+    }
+
+    // Collect all blocks (peer sends them back-to-back since we pipelined requests)
+    let mut piece_data = vec![0u8; piece_length as usize];
+    let mut got = 0u32;
+
+    for _ in 0..(num_blocks as usize * 2 + 5) {
+        match timeout(Duration::from_secs(30), peer.conn.read_message(Duration::from_secs(30))).await {
+            Ok(Ok(Some(Message::Piece { index, begin, data }))) if index == piece_idx => {
+                let end = (begin as usize + data.len()).min(piece_data.len());
+                piece_data[begin as usize..end].copy_from_slice(&data[..end - begin as usize]);
+                got += 1;
+                if got >= num_blocks { break; }
+            }
+            Ok(Ok(Some(Message::Unchoke))) => { peer.am_choked = false; }
+            Ok(Ok(Some(Message::Choke))) => {
+                peer.am_choked = true;
+                anyhow::bail!("choked");
+            }
+            Ok(Ok(Some(_))) => continue,
+            Ok(Ok(None)) => anyhow::bail!("disconnected"),
+            Ok(Err(e)) => anyhow::bail!("read error: {e}"),
+            Err(_) => anyhow::bail!("timeout"),
+        }
+    }
+
+    if got < num_blocks {
+        anyhow::bail!("incomplete: {got}/{num_blocks} blocks");
+    }
+
+    Ok(piece_data)
 }
