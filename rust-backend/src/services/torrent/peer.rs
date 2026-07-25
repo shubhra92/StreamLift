@@ -190,17 +190,14 @@ impl PeerConnection {
     /// Send an Extended handshake (BEP-10 message id 0).
     /// `extensions_dict` is a bencoded dict describing supported extensions.
     pub async fn send_extended_handshake(&mut self, ut_metadata_id: u8) -> Result<()> {
-        // Bencode: {"m":{"ut_metadata":1},"metadata_size":0}
-        // We'll build a minimal handshake saying we support ut_metadata as extension 1
+        // BEP-10: extended handshake is ext_id=0 with a bencoded dict payload
         let payload = format!(
             "d1:md11:ut_metadatai{}ee1:v9:StreamLifte",
             ut_metadata_id
         );
-        let mut msg_payload = vec![0u8]; // ext_id = 0 for handshake
-        msg_payload.extend_from_slice(payload.as_bytes());
         self.send(&PeerMessage::Extended {
             ext_id: 0,
-            payload: Bytes::from(msg_payload),
+            payload: Bytes::from(payload.into_bytes()),
         })
         .await
     }

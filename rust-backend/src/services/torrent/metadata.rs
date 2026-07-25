@@ -1,25 +1,19 @@
 /// Torrent metadata fetch via BEP-9 (ut_metadata extension).
 ///
-/// This is what lets us get the torrent info dict from just a magnet link,
-/// by connecting to peers and requesting the info dict in pieces.
-///
-/// BEP-9: https://www.bittorrent.org/beps/bep_0009.html
-/// BEP-10: https://www.bittorrent.org/beps/bep_0010.html
+/// Connect to peers, request the info dict in pieces, verify SHA-1.
 
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use tokio::time::{timeout, Duration};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::magnet::MagnetLink;
 use super::peer::{PeerConnection, PeerMessage};
-use super::tracker::{announce_all, generate_peer_id};
+use super::tracker::{announce_all, generate_peer_id, Peer};
 use crate::utils::format::{format_bytes, get_file_type};
 
-const METADATA_TIMEOUT: Duration = Duration::from_secs(120);
+const PEER_TIMEOUT: Duration = Duration::from_secs(8);
 const METADATA_PIECE_SIZE: usize = 16 * 1024; // 16 KB
-const UT_METADATA_REQUEST: u8 = 0;
-const UT_METADATA_DATA: u8 = 1;
 
 /// A file entry from torrent metadata.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -47,202 +41,188 @@ pub struct TorrentMetadata {
     pub files: Vec<TorrentFile>,
     #[serde(rename = "fileCount")]
     pub file_count: usize,
-    /// Piece length in bytes
     #[serde(rename = "pieceLength")]
     pub piece_length: u32,
-    /// Number of pieces
     #[serde(rename = "pieceCount")]
     pub piece_count: u32,
 }
 
 /// Fetch torrent metadata from a magnet link.
-/// Tries up to `max_peers` peers before giving up.
 pub async fn fetch_metadata(magnet: &MagnetLink) -> Result<TorrentMetadata> {
     let peer_id = generate_peer_id();
 
-    // Get peers from trackers
     info!("Announcing to {} trackers...", magnet.trackers.len());
-    let peers = announce_all(&magnet.trackers, &magnet.info_hash, &peer_id, 5).await;
+    let peers = announce_all(&magnet.trackers, &magnet.info_hash, &peer_id, 30).await;
 
     if peers.is_empty() {
-        // Try DHT fallback or hardcoded bootstrap peers
-        bail!("No peers found from trackers — DHT not yet implemented");
+        bail!("No peers found from trackers");
     }
 
-    info!("Got {} peers, trying to fetch metadata...", peers.len());
+    info!("Got {} peers, fetching metadata...", peers.len());
 
-    // Try each peer until we get the metadata
-    let result = timeout(
-        METADATA_TIMEOUT,
-        try_peers_for_metadata(peers, &magnet.info_hash, &peer_id),
-    )
-    .await
-    .context("metadata fetch timeout")?;
+    // Try peers concurrently (up to 5 at a time) with aggressive timeout
+    let info_dict = fetch_metadata_from_peers(peers, &magnet.info_hash, &peer_id).await?;
 
-    match result {
-        Some(info_dict) => parse_info_dict(&info_dict, &magnet.info_hash_hex),
-        None => bail!("Could not fetch metadata from any peer"),
-    }
+    parse_info_dict(&info_dict, &magnet.info_hash_hex)
 }
 
-async fn try_peers_for_metadata(
-    peers: Vec<super::tracker::Peer>,
+/// Try multiple peers concurrently to fetch metadata.
+async fn fetch_metadata_from_peers(
+    peers: Vec<Peer>,
     info_hash: &[u8; 20],
     peer_id: &[u8; 20],
-) -> Option<Vec<u8>> {
-    for peer in peers {
-        match fetch_metadata_from_peer(peer.addr(), info_hash, peer_id).await {
-            Ok(data) => return Some(data),
-            Err(e) => debug!("Peer {} failed: {e}", peer.addr()),
-        }
+) -> Result<Vec<u8>> {
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1);
+    let info_hash = *info_hash;
+    let peer_id = *peer_id;
+
+    // Spawn concurrent peer attempts (try all, max 15)
+    let max_concurrent = peers.len().min(15);
+    for peer in peers.into_iter().take(max_concurrent) {
+        let tx = tx.clone();
+        let ih = info_hash;
+        let pid = peer_id;
+        tokio::spawn(async move {
+            match timeout(
+                Duration::from_secs(20),
+                try_fetch_from_peer(peer.addr(), &ih, &pid),
+            ).await {
+                Ok(Ok(data)) => { let _ = tx.send(data).await; }
+                Ok(Err(e)) => info!("Peer {} failed: {}", peer.addr(), e),
+                Err(_) => info!("Peer {} timed out (20s)", peer.addr()),
+            }
+        });
     }
-    None
+    drop(tx);
+
+    // Wait for the first successful result (up to 25s)
+    match timeout(Duration::from_secs(25), rx.recv()).await {
+        Ok(Some(data)) => Ok(data),
+        Ok(None) => bail!("All peers failed to provide metadata"),
+        Err(_) => bail!("Metadata fetch timed out (25s)"),
+    }
 }
 
-/// Connect to one peer and fetch the metadata info dict via ut_metadata.
-async fn fetch_metadata_from_peer(
+/// Try to fetch metadata from a single peer.
+async fn try_fetch_from_peer(
     addr: std::net::SocketAddr,
     info_hash: &[u8; 20],
     peer_id: &[u8; 20],
 ) -> Result<Vec<u8>> {
-    debug!("Connecting to peer {addr} for metadata...");
+    info!("Trying peer {addr}...");
 
-    let mut conn = PeerConnection::connect(addr, info_hash, peer_id, true)
-        .await
-        .context("peer connect")?;
+    let mut conn = PeerConnection::connect(addr, info_hash, peer_id, true).await
+        .context("handshake failed")?;
 
     if !conn.supports_extensions() {
-        bail!("Peer does not support BEP-10 extensions");
+        bail!("No BEP-10 support");
     }
 
-    // Send extended handshake
-    conn.send_extended_handshake(1).await?; // register ut_metadata as ext id 1
+    info!("Peer {addr}: connected, has extensions ✅");
 
-    // Wait for peer's extended handshake to learn:
-    //   - their ut_metadata extension ID
-    //   - the metadata_size
-    let (peer_ut_metadata_id, metadata_size) =
-        wait_for_ext_handshake(&mut conn).await?;
+    // Send our extended handshake immediately
+    conn.send_extended_handshake(1).await
+        .context("send ext handshake")?;
 
-    if metadata_size == 0 {
-        bail!("Peer reported metadata_size=0");
-    }
+    // Now enter message loop: handle bitfield, have, extended handshake, metadata pieces
+    let mut peer_ut_id: Option<u8> = None;
+    let mut metadata_size: usize = 0;
+    let mut num_pieces: usize = 0;
+    let mut pieces: Vec<Option<Vec<u8>>> = Vec::new();
+    let mut received: usize = 0;
+    let mut requested = false;
 
-    let num_pieces = (metadata_size + METADATA_PIECE_SIZE - 1) / METADATA_PIECE_SIZE;
-    let mut pieces: Vec<Option<Vec<u8>>> = vec![None; num_pieces];
+    for _ in 0..100 {
+        let msg = timeout(PEER_TIMEOUT, conn.recv()).await
+            .context("msg timeout")??;
 
-    // Request all pieces
-    for i in 0..num_pieces {
-        request_metadata_piece(&mut conn, peer_ut_metadata_id, i).await?;
-    }
-
-    // Collect responses
-    let mut received = 0;
-    loop {
-        let msg = conn.recv().await?;
         match msg {
-            PeerMessage::Extended { ext_id, payload } => {
-                if ext_id == 1 {
-                    // ut_metadata message
-                    if let Some((piece_index, data)) = parse_ut_metadata_data(&payload) {
-                        if piece_index < num_pieces && pieces[piece_index].is_none() {
-                            pieces[piece_index] = Some(data);
-                            received += 1;
-                            debug!("Metadata piece {piece_index}/{num_pieces} received");
-                        }
-                        if received == num_pieces {
-                            break;
+            PeerMessage::Extended { ext_id: 0, payload } => {
+                // Peer's extended handshake
+                let (ut_id, msize) = parse_ext_handshake(&payload)?;
+                peer_ut_id = Some(ut_id);
+                metadata_size = msize;
+                if metadata_size == 0 { bail!("metadata_size=0"); }
+                num_pieces = (metadata_size + METADATA_PIECE_SIZE - 1) / METADATA_PIECE_SIZE;
+                pieces = vec![None; num_pieces];
+                info!("Peer {addr}: metadata_size={metadata_size}, pieces={num_pieces}");
+
+                // Request all metadata pieces
+                for i in 0..num_pieces {
+                    let dict = format!("d8:msg_typei0e5:piecei{}ee", i);
+                    conn.send(&PeerMessage::Extended {
+                        ext_id: ut_id,
+                        payload: bytes::Bytes::from(dict.into_bytes()),
+                    }).await?;
+                }
+                requested = true;
+            }
+            PeerMessage::Extended { ext_id, payload } if requested => {
+                // Metadata data response (ext_id should be 1 = our ut_metadata id)
+                if let Some(peer_id) = peer_ut_id {
+                    if ext_id == 1 { // We registered ut_metadata as ext_id 1
+                        if let Some((idx, data)) = parse_metadata_data(&payload) {
+                            if idx < num_pieces && pieces[idx].is_none() {
+                                pieces[idx] = Some(data);
+                                received += 1;
+                                if received == num_pieces {
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
             }
-            _ => {} // ignore other messages
+            // Ignore bitfield, have, unchoke, etc.
+            PeerMessage::Bitfield(_) | PeerMessage::Have(_) |
+            PeerMessage::Unchoke | PeerMessage::Choke |
+            PeerMessage::Interested | PeerMessage::NotInterested |
+            PeerMessage::KeepAlive => {}
+            _ => {}
         }
     }
 
-    // Assemble the info dict
-    let info_dict: Vec<u8> = pieces
-        .into_iter()
-        .flatten()
-        .flatten()
-        .collect();
-
-    // Verify SHA-1 hash of info dict matches info_hash
-    use sha1::{Digest, Sha1};
-    let mut hasher = Sha1::new();
-    hasher.update(&info_dict);
-    let computed: [u8; 20] = hasher.finalize().into();
-    if &computed != info_hash {
-        bail!("Info dict SHA-1 mismatch — corrupt metadata");
+    if received < num_pieces {
+        bail!("Incomplete: {received}/{num_pieces} pieces");
     }
 
-    info!("Metadata verified ✅ ({} bytes)", info_dict.len());
+    // Assemble and verify
+    let info_dict: Vec<u8> = pieces.into_iter().flatten().flatten().collect();
+
+    use sha1::{Digest, Sha1};
+    let hash: [u8; 20] = Sha1::digest(&info_dict).into();
+    if &hash != info_hash {
+        bail!("SHA-1 mismatch");
+    }
+
+    info!("Metadata verified ✅ ({} bytes from {addr})", info_dict.len());
     Ok(info_dict)
 }
 
-async fn wait_for_ext_handshake(
-    conn: &mut PeerConnection,
-) -> Result<(u8, usize)> {
-    // Wait for the peer's extended handshake (ext_id=0)
-    for _ in 0..20 {
-        let msg = conn.recv().await?;
-        if let PeerMessage::Extended { ext_id: 0, payload } = msg {
-            return parse_ext_handshake_payload(&payload);
-        }
-    }
-    bail!("Never received extended handshake from peer")
-}
-
-fn parse_ext_handshake_payload(payload: &[u8]) -> Result<(u8, usize)> {
-    // Payload is a bencoded dict; we need to extract:
-    //   m.ut_metadata (their extension ID for ut_metadata)
-    //   metadata_size
+/// Parse the peer's extended handshake payload (bencoded dict).
+fn parse_ext_handshake(payload: &[u8]) -> Result<(u8, usize)> {
     let decoded = bencode_decode(payload)?;
 
-    let m = decoded
-        .get("m")
-        .ok_or_else(|| anyhow::anyhow!("No 'm' in ext handshake"))?;
-
-    let ut_id = m
-        .get("ut_metadata")
+    let m = decoded.get("m").ok_or_else(|| anyhow::anyhow!("No 'm' in ext handshake"))?;
+    let ut_id = m.get("ut_metadata")
         .and_then(|v| v.as_integer())
         .ok_or_else(|| anyhow::anyhow!("No ut_metadata in 'm'"))? as u8;
 
-    let metadata_size = decoded
-        .get("metadata_size")
+    let metadata_size = decoded.get("metadata_size")
         .and_then(|v| v.as_integer())
         .unwrap_or(0) as usize;
 
     Ok((ut_id, metadata_size))
 }
 
-async fn request_metadata_piece(
-    conn: &mut PeerConnection,
-    peer_ext_id: u8,
-    piece: usize,
-) -> Result<()> {
-    // ut_metadata request: {"msg_type":0,"piece":<index>}
-    let dict = format!("d8:msg_typei0e5:piecei{}ee", piece);
-    let payload = bytes::Bytes::from(dict.into_bytes());
-    conn.send(&PeerMessage::Extended {
-        ext_id: peer_ext_id,
-        payload,
-    })
-    .await
-}
-
-/// Parse a ut_metadata data message.
-/// Returns (piece_index, data_bytes).
-fn parse_ut_metadata_data(payload: &[u8]) -> Option<(usize, Vec<u8>)> {
-    // Payload is: bencoded_dict || raw_data
-    // The bencoded dict ends at the first 'e' that closes the top-level dict
-    // We need to find where the bencoded part ends
+/// Parse a ut_metadata data response. Returns (piece_index, data).
+fn parse_metadata_data(payload: &[u8]) -> Option<(usize, Vec<u8>)> {
+    // Payload: bencoded_dict + raw_data
     let (dict, data_offset) = find_bencode_end(payload)?;
-    
     let msg_type = dict.get("msg_type")?.as_integer()?;
-    if msg_type != UT_METADATA_DATA as i64 {
-        return None;
-    }
+    if msg_type != 1 { return None; } // 1 = data
     let piece = dict.get("piece")?.as_integer()? as usize;
     let data = payload[data_offset..].to_vec();
     Some((piece, data))
@@ -253,59 +233,45 @@ fn parse_ut_metadata_data(payload: &[u8]) -> Option<(usize, Vec<u8>)> {
 fn parse_info_dict(info_dict: &[u8], info_hash_hex: &str) -> Result<TorrentMetadata> {
     let decoded = bencode_decode(info_dict)?;
 
-    let name = decoded
-        .get("name")
+    let name = decoded.get("name")
         .and_then(|v| v.as_bytes())
         .map(|b| String::from_utf8_lossy(b).to_string())
         .ok_or_else(|| anyhow::anyhow!("No 'name' in info dict"))?;
 
-    let piece_length = decoded
-        .get("piece length")
+    let piece_length = decoded.get("piece length")
         .and_then(|v| v.as_integer())
-        .ok_or_else(|| anyhow::anyhow!("No 'piece length' in info dict"))? as u32;
+        .ok_or_else(|| anyhow::anyhow!("No 'piece length'"))? as u32;
 
-    let pieces_bytes = decoded
-        .get("pieces")
+    let pieces_bytes = decoded.get("pieces")
         .and_then(|v| v.as_bytes())
-        .ok_or_else(|| anyhow::anyhow!("No 'pieces' in info dict"))?;
+        .ok_or_else(|| anyhow::anyhow!("No 'pieces'"))?;
 
     let piece_count = (pieces_bytes.len() / 20) as u32;
 
-    // Determine files
-    let files: Vec<TorrentFile>;
-    let total_size: u64;
-
-    if let Some(files_list) = decoded.get("files") {
-        // Multi-file torrent
-        let file_list = files_list
-            .as_list()
-            .ok_or_else(|| anyhow::anyhow!("'files' is not a list"))?;
+    let (files, total_size) = if let Some(files_list) = decoded.get("files") {
+        let file_list = files_list.as_list()
+            .ok_or_else(|| anyhow::anyhow!("'files' not a list"))?;
 
         let mut result = Vec::new();
-        let mut running_total: u64 = 0;
+        let mut total: u64 = 0;
 
-        for (i, file_entry) in file_list.iter().enumerate() {
-            let length = file_entry
-                .get("length")
+        for (i, entry) in file_list.iter().enumerate() {
+            let length = entry.get("length")
                 .and_then(|v| v.as_integer())
                 .unwrap_or(0) as u64;
 
-            let path_parts: Vec<String> = file_entry
-                .get("path")
+            let path_parts: Vec<String> = entry.get("path")
                 .and_then(|v| v.as_list())
-                .map(|parts| {
-                    parts
-                        .iter()
-                        .filter_map(|p| p.as_bytes())
-                        .map(|b| String::from_utf8_lossy(b).to_string())
-                        .collect()
-                })
+                .map(|parts| parts.iter()
+                    .filter_map(|p| p.as_bytes())
+                    .map(|b| String::from_utf8_lossy(b).to_string())
+                    .collect())
                 .unwrap_or_default();
 
             let path = path_parts.join("/");
             let file_name = path_parts.last().cloned().unwrap_or_default();
 
-            running_total += length;
+            total += length;
             result.push(TorrentFile {
                 index: i,
                 name: file_name.clone(),
@@ -316,27 +282,22 @@ fn parse_info_dict(info_dict: &[u8], info_hash_hex: &str) -> Result<TorrentMetad
             });
         }
 
-        // Sort largest first (matches JS behavior)
         result.sort_by(|a, b| b.size.cmp(&a.size));
-        total_size = running_total;
-        files = result;
+        (result, total)
     } else {
-        // Single-file torrent
-        let length = decoded
-            .get("length")
+        let length = decoded.get("length")
             .and_then(|v| v.as_integer())
-            .ok_or_else(|| anyhow::anyhow!("No 'length' in single-file info dict"))? as u64;
+            .ok_or_else(|| anyhow::anyhow!("No 'length'"))? as u64;
 
-        total_size = length;
-        files = vec![TorrentFile {
+        (vec![TorrentFile {
             index: 0,
             name: name.clone(),
             path: name.clone(),
             size: length,
             size_formatted: format_bytes(length),
             file_type: get_file_type(&name).to_string(),
-        }];
-    }
+        }], length)
+    };
 
     Ok(TorrentMetadata {
         name,
@@ -352,7 +313,6 @@ fn parse_info_dict(info_dict: &[u8], info_hash_hex: &str) -> Result<TorrentMetad
 
 // ── Minimal bencode parser ────────────────────────────────────────────────────
 
-/// A simple bencode value type.
 #[derive(Debug, Clone)]
 pub enum BencodeValue {
     Integer(i64),
@@ -376,44 +336,36 @@ impl BencodeValue {
     }
 }
 
-fn bencode_decode(data: &[u8]) -> Result<BencodeValue> {
+pub fn bencode_decode(data: &[u8]) -> Result<BencodeValue> {
     let (val, _) = decode_value(data, 0)?;
     Ok(val)
 }
 
 fn decode_value(data: &[u8], pos: usize) -> Result<(BencodeValue, usize)> {
-    if pos >= data.len() {
-        bail!("Unexpected end of bencode data");
-    }
+    if pos >= data.len() { bail!("Unexpected end of bencode"); }
     match data[pos] {
         b'i' => decode_integer(data, pos),
         b'l' => decode_list(data, pos),
         b'd' => decode_dict(data, pos),
         b'0'..=b'9' => decode_bytes(data, pos),
-        b => bail!("Unknown bencode type: {b}"),
+        b => bail!("Unknown bencode type: {}", b as char),
     }
 }
 
 fn decode_integer(data: &[u8], pos: usize) -> Result<(BencodeValue, usize)> {
     let end = data[pos..].iter().position(|&b| b == b'e')
-        .ok_or_else(|| anyhow::anyhow!("Unterminated integer"))?
-        + pos;
+        .ok_or_else(|| anyhow::anyhow!("Unterminated integer"))? + pos;
     let s = std::str::from_utf8(&data[pos + 1..end])?;
-    let n: i64 = s.parse()?;
-    Ok((BencodeValue::Integer(n), end + 1))
+    Ok((BencodeValue::Integer(s.parse()?), end + 1))
 }
 
 fn decode_bytes(data: &[u8], pos: usize) -> Result<(BencodeValue, usize)> {
     let colon = data[pos..].iter().position(|&b| b == b':')
-        .ok_or_else(|| anyhow::anyhow!("No colon in byte string"))?
-        + pos;
-    let len_s = std::str::from_utf8(&data[pos..colon])?;
-    let len: usize = len_s.parse()?;
+        .ok_or_else(|| anyhow::anyhow!("No colon"))? + pos;
+    let len: usize = std::str::from_utf8(&data[pos..colon])?.parse()?;
     let start = colon + 1;
     let end = start + len;
-    if end > data.len() {
-        bail!("Byte string out of bounds");
-    }
+    if end > data.len() { bail!("Byte string out of bounds"); }
     Ok((BencodeValue::Bytes(data[start..end].to_vec()), end))
 }
 
@@ -435,7 +387,7 @@ fn decode_dict(data: &[u8], pos: usize) -> Result<(BencodeValue, usize)> {
         let (key_val, next) = decode_bytes(data, cur)?;
         let key = match key_val {
             BencodeValue::Bytes(b) => String::from_utf8_lossy(&b).to_string(),
-            _ => bail!("Dict key not a byte string"),
+            _ => bail!("Dict key not bytes"),
         };
         let (val, next2) = decode_value(data, next)?;
         map.insert(key, val);
@@ -444,8 +396,7 @@ fn decode_dict(data: &[u8], pos: usize) -> Result<(BencodeValue, usize)> {
     Ok((BencodeValue::Dict(map), cur + 1))
 }
 
-/// Find where a bencoded value ends; returns (decoded_dict, byte_offset_after_dict).
+/// Find where a top-level bencoded dict ends. Returns (value, offset_after_dict).
 fn find_bencode_end(data: &[u8]) -> Option<(BencodeValue, usize)> {
-    let (val, end) = decode_dict(data, 0).ok()?;
-    Some((val, end))
+    decode_dict(data, 0).ok()
 }

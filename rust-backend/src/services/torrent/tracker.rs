@@ -31,7 +31,7 @@ impl Peer {
 }
 
 /// Announce to all trackers in `urls` and collect unique peers.
-/// Returns as soon as we have `min_peers` or have tried all trackers.
+/// Tries UDP and HTTP trackers concurrently, returns when we have `min_peers`.
 pub async fn announce_all(
     urls: &[String],
     info_hash: &[u8; 20],
@@ -40,22 +40,43 @@ pub async fn announce_all(
 ) -> Vec<Peer> {
     let mut all_peers: Vec<Peer> = Vec::new();
 
-    for url in urls {
-        if url.starts_with("udp://") {
-            match announce_udp(url, info_hash, peer_id).await {
-                Ok(peers) => {
-                    info!("Tracker {} → {} peers", url, peers.len());
-                    all_peers.extend(peers);
-                    // Deduplicate
-                    all_peers.dedup_by(|a, b| a.ip == b.ip && a.port == b.port);
-                    if all_peers.len() >= min_peers {
-                        return all_peers;
-                    }
-                }
-                Err(e) => warn!("Tracker {url} failed: {e}"),
-            }
+    // Add well-known public trackers as fallback
+    let mut all_urls: Vec<String> = urls.to_vec();
+    let fallback_trackers = vec![
+        "udp://tracker.opentrackr.org:1337/announce",
+        "udp://open.stealth.si:80/announce",
+        "udp://tracker.torrent.eu.org:451/announce",
+        "udp://exodus.desync.com:6969/announce",
+        "udp://tracker.openbittorrent.com:6969/announce",
+        "https://tracker.nanoha.org:443/announce",
+        "https://tracker.lilithraws.org:443/announce",
+    ];
+    for t in fallback_trackers {
+        if !all_urls.iter().any(|u| u == t) {
+            all_urls.push(t.to_string());
         }
-        // HTTP trackers are handled separately (BEP-3) — TODO
+    }
+
+    for url in &all_urls {
+        let result = if url.starts_with("udp://") {
+            announce_udp(url, info_hash, peer_id).await
+        } else if url.starts_with("http://") || url.starts_with("https://") {
+            announce_http(url, info_hash, peer_id).await
+        } else {
+            continue;
+        };
+
+        match result {
+            Ok(peers) => {
+                info!("Tracker {} → {} peers", url, peers.len());
+                all_peers.extend(peers);
+                all_peers.dedup_by(|a, b| a.ip == b.ip && a.port == b.port);
+                if all_peers.len() >= min_peers {
+                    return all_peers;
+                }
+            }
+            Err(e) => debug!("Tracker {url} failed: {e}"),
+        }
     }
 
     all_peers
@@ -209,4 +230,90 @@ pub fn generate_peer_id() -> [u8; 20] {
     id[..prefix.len()].copy_from_slice(prefix);
     rand::thread_rng().fill_bytes(&mut id[prefix.len()..]);
     id
+}
+
+// ── HTTP/HTTPS tracker announce (BEP-3) ───────────────────────────────────────
+
+/// Announce to an HTTP/HTTPS tracker.
+/// BEP-3: GET /announce?info_hash=...&peer_id=...&port=...&uploaded=0&downloaded=0&left=0&compact=1
+pub async fn announce_http(
+    tracker_url: &str,
+    info_hash: &[u8; 20],
+    peer_id: &[u8; 20],
+) -> Result<Vec<Peer>> {
+    // URL-encode info_hash and peer_id (percent-encoding for raw bytes)
+    let ih_encoded = percent_encode_bytes(info_hash);
+    let pid_encoded = percent_encode_bytes(peer_id);
+
+    let url = format!(
+        "{}{}info_hash={}&peer_id={}&port=6881&uploaded=0&downloaded=0&left=0&compact=1&numwant=50",
+        tracker_url,
+        if tracker_url.contains('?') { "&" } else { "?" },
+        ih_encoded,
+        pid_encoded
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?;
+
+    let resp = timeout(Duration::from_secs(10), client.get(&url).send())
+        .await
+        .context("HTTP tracker timeout")?
+        .context("HTTP tracker request")?;
+
+    if !resp.status().is_success() {
+        bail!("HTTP tracker returned {}", resp.status());
+    }
+
+    let body = resp.bytes().await.context("read tracker response")?;
+
+    // Parse bencoded response
+    parse_http_tracker_response(&body)
+}
+
+/// Parse a bencoded HTTP tracker response (compact format).
+fn parse_http_tracker_response(data: &[u8]) -> Result<Vec<Peer>> {
+    use super::metadata::BencodeValue;
+
+    let decoded = super::metadata::bencode_decode(data)?;
+    
+    // Check for failure
+    if let Some(reason) = decoded.get("failure reason") {
+        if let Some(msg) = reason.as_bytes() {
+            bail!("Tracker failure: {}", String::from_utf8_lossy(msg));
+        }
+    }
+
+    // Extract compact peers (6 bytes each: 4 IP + 2 port)
+    let peers_data = decoded.get("peers")
+        .and_then(|v| v.as_bytes())
+        .ok_or_else(|| anyhow::anyhow!("No 'peers' in tracker response"))?;
+
+    let mut peers = Vec::new();
+    for chunk in peers_data.chunks_exact(6) {
+        let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
+        let port = u16::from_be_bytes([chunk[4], chunk[5]]);
+        if port > 0 {
+            peers.push(Peer { ip, port });
+        }
+    }
+
+    Ok(peers)
+}
+
+/// Percent-encode raw bytes for URL query parameters.
+fn percent_encode_bytes(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 3);
+    for &b in bytes {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(b as char);
+            }
+            _ => {
+                encoded.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    encoded
 }
