@@ -170,7 +170,6 @@ async fn _stream_to_mega(
                 let first_piece = (file_offset_copy / piece_length) as u32;
                 let last_piece = ((file_offset_copy + file_size_copy - 1) / piece_length) as u32;
                 let start_in_first = (file_offset_copy % piece_length) as usize;
-                let mut bytes_sent: u64 = 0;
 
                 // Initialize peers for piece download (send Interested, wait for Unchoke)
                 {
@@ -246,7 +245,6 @@ async fn _stream_to_mega(
                     if tx.send(Ok(bytes::Bytes::copy_from_slice(file_chunk))).await.is_err() {
                         return;
                     }
-                    bytes_sent += file_chunk.len() as u64;
                 }
             })
         };
