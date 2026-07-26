@@ -5,9 +5,14 @@ import { motion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { useProgress } from "./hooks/useProgress";
 import { useWorkerProgress } from "./hooks/useWorkerProgress";
-import { createDownload, getDownloads, deleteDownload, updateDownload } from "./actions/downloads";
+import { useDownloads } from "./hooks/useDownloads";
+import { useWorkers } from "./hooks/useWorkers";
+import { createDownload, deleteDownload, updateDownload, claimDownload } from "./actions/downloads";
 import type { FileDownload } from "./db/schema";
+import type { IDBFileDownload } from "./lib/idb/schema";
 import useHomeService from "./service/homeService";
+import WorkerClient from "./lib/sync-worker/workerClient";
+import { OfflineBanner } from "./components/OfflineBanner";
 import {
   DownloadList,
   DownloadDetails,
@@ -20,102 +25,91 @@ function isWorkerLocation(location: string | null | undefined): boolean {
   return location.startsWith("worker-") || location === "all-workers";
 }
 
+function toFileDownload(row: IDBFileDownload): FileDownload {
+  return {
+    ...row,
+    createdAt: row.createdAt ? new Date(row.createdAt) : null,
+    updatedAt: row.updatedAt ? new Date(row.updatedAt) : null,
+  };
+}
+
 export default function Home() {
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [downloads, setDownloads] = useState<FileDownload[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
   const [editingFile, setEditingFile] = useState<FileDownload | null>(null);
-  const homeService = useHomeService();
-  const isFnEnd_fetchDownloads = useRef<boolean>(true);
-  const isDBCallHapping = useRef<boolean>(false);
-  const workerPollRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Determine if the active download is a worker download
+  const { downloads: idbDownloads, networkStatus, syncNow } = useDownloads();
+  const downloads = idbDownloads.map(toFileDownload);
+  const { workers } = useWorkers({ enabled: isModalOpen });
+  const client = useRef(WorkerClient.getInstance());
+
+  const homeService = useHomeService();
+  const isFnEnd = useRef(true);
+  const isDBCallActive = useRef(false);
+
   const activeDownload = downloads.find((d) => d.id === downloadingFileId);
   const isWorkerDownload = isWorkerLocation(activeDownload?.location);
 
-  // Express SSE/polling — only for server/mega downloads
-  const { progress: expressProgress, isDone: expressIsDone, error: expressError } = useProgress(
-    isWorkerDownload ? null : downloadingFileId
-  );
+  // ── Progress tracking — both backed by SharedWorker ──────────────────────
+  // Only one of these is active at a time based on download type.
+  // The SharedWorker opens ONE SSE / poll across all tabs.
+  const { progress: expressProgress, isDone: expressIsDone, error: expressError } =
+    useProgress(isWorkerDownload ? null : downloadingFileId);
 
-  // Worker store polling — only for worker downloads
   const { progress: workerProgress, isDone: workerIsDone } = useWorkerProgress(
     isWorkerDownload ? (activeDownload?.workerId ?? null) : null,
-    isWorkerDownload ? downloadingFileId : null,
-    3000
+    isWorkerDownload ? downloadingFileId : null
   );
 
-  // Unified progress and isDone for the UI
   const progress = isWorkerDownload ? workerProgress : expressProgress;
   const isDone   = isWorkerDownload ? workerIsDone   : expressIsDone;
   const error    = isWorkerDownload ? null            : expressError;
 
-  // Poll DB every 5s for worker downloads to detect completion/failure
-  useEffect(() => {
-    if (isWorkerDownload && downloadingFileId) {
-      if (workerPollRef.current) clearInterval(workerPollRef.current);
-      workerPollRef.current = setInterval(async () => {
-        const data = await getDownloads();
-        setDownloads(data);
-        const target = data.find((d) => d.id === downloadingFileId);
-        if (!target || target.status === "completed" || target.status === "failed") {
-          clearInterval(workerPollRef.current!);
-          workerPollRef.current = null;
-          setDownloadingFileId(null);
-        }
-      }, 5000);
-    } else {
-      if (workerPollRef.current) {
-        clearInterval(workerPollRef.current);
-        workerPollRef.current = null;
-      }
+  // ── Start / track active download ────────────────────────────────────────
+  const startActiveDownload = async (data: FileDownload[]) => {
+    if (!isFnEnd.current) return;
+    // Already tracking — don't re-evaluate to avoid multiple API calls
+    if (downloadingFileId) {
+      isFnEnd.current = true;
+      return;
     }
-    return () => {
-      if (workerPollRef.current) clearInterval(workerPollRef.current);
-    };
-  }, [isWorkerDownload, downloadingFileId]);
+    isFnEnd.current = false;
 
-  const fetchDownloads = async () => {
-    if (!isFnEnd_fetchDownloads.current) return null;
-    isFnEnd_fetchDownloads.current = false;
-
-    const data = await getDownloads();
-    setDownloads(data);
-
-    let targetFile = null;
+    let targetFile: FileDownload | null = null;
     const targetStatus = new Set(["downloading", "pending"]);
 
     for (const f of data) {
       if (!targetStatus.has(f.status!)) continue;
-
-      if (f.status === "downloading") {
-        targetFile = f;
-        break;
-      }
-      if (!targetFile) {
-        targetFile = f;
-        continue;
-      }
-
-      const isOlder = new Date(f.updatedAt!) < new Date(targetFile.updatedAt!);
-      if (isOlder) {
-        targetFile = f;
-      }
+      if (f.status === "downloading") { targetFile = f; break; }
+      if (!targetFile) { targetFile = f; continue; }
+      if (new Date(f.updatedAt!) < new Date(targetFile.updatedAt!)) targetFile = f;
     }
 
     if (targetFile?.status === "pending") {
-      const { status, message } = await homeService.startDownload(targetFile);
-      if (!status) {
-        console.log(message);
-      } else {
+      if (isWorkerLocation(targetFile.location)) {
+        // Worker downloads: don't claim — the worker picks up 'pending' rows
+        // via heartbeat. Just track the download locally.
         setDownloadingFileId(targetFile.id);
-        // For non-worker downloads, refetch to get updated file size from Express
-        if (!isWorkerLocation(targetFile.location)) {
-          const updatedData = await getDownloads();
-          setDownloads(updatedData);
+      } else {
+        // Non-worker (Express) downloads: atomically claim before calling Express
+        // so only one tab starts the download.
+        const claim = await claimDownload(targetFile.id);
+        if (!claim.success) {
+          // Another tab already claimed it — just track it
+          setDownloadingFileId(targetFile.id);
+          isFnEnd.current = true;
+          return;
+        }
+        const { status, message } = await homeService.startDownload(targetFile);
+        if (!status) {
+          console.log(message);
+          // Revert claim back to pending so it can be retried
+          await updateDownload(targetFile.id, { status: "pending" });
+        } else {
+          setDownloadingFileId(targetFile.id);
+          syncNow();
         }
       }
     } else if (targetFile) {
@@ -124,37 +118,52 @@ export default function Home() {
       setDownloadingFileId(null);
     }
 
-    isFnEnd_fetchDownloads.current = true;
+    isFnEnd.current = true;
   };
 
-  // Handle Express "Download not found" error (non-worker only)
+  // Re-evaluate when IDB data changes
+  useEffect(() => {
+    if (downloads.length > 0) void startActiveDownload(downloads);
+  }, [idbDownloads]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Handle progress error (Express down / download not found)
   useEffect(() => {
     if (error === "Download not found") {
       (async () => {
-        if (!downloadingFileId || isDBCallHapping.current) return null;
-        isDBCallHapping.current = true;
+        if (!downloadingFileId || isDBCallActive.current) return;
+        isDBCallActive.current = true;
         await updateDownload(downloadingFileId, {
           status: "failed",
           errorMessage: "Download not found in server cache",
         });
-        isDBCallHapping.current = false;
-        fetchDownloads();
+        isDBCallActive.current = false;
+        syncNow();
+        setDownloadingFileId(null);
       })();
     }
-  }, [error]);
+  }, [error]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // When download finishes, sync IDB to pick up final status from DB
   useEffect(() => {
-    if (downloadingFileId === null || isDone) {
-      fetchDownloads();
+    if (isDone) {
+      setDownloadingFileId(null);
+      // Reset cursor so delta query picks up the completed/failed status
+      // unconditionally regardless of timestamp precision
+      void import("./lib/idb/IDBStore").then(({ setCursor }) => {
+        void setCursor("downloads_cursor", new Date(0).toISOString());
+      });
+      syncNow();
     }
-  }, [isDone]);
+  }, [isDone]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Handlers ─────────────────────────────────────────────────────────────
 
   const handleAddDownload = async (url: string, location: string, fileName?: string) => {
     setLoading(true);
     try {
       await createDownload(url, location, fileName);
       setIsModalOpen(false);
-      fetchDownloads();
+      syncNow();
     } finally {
       setLoading(false);
     }
@@ -163,7 +172,12 @@ export default function Home() {
   const handleDelete = async (id: string) => {
     const result = await deleteDownload(id);
     if (result.success) {
-      fetchDownloads();
+      if (id === downloadingFileId) {
+        client.current.stopTracking();
+        setDownloadingFileId(null);
+      }
+      await client.current.deleteDownload(id);
+      syncNow();
     } else {
       alert(result.message);
     }
@@ -178,7 +192,7 @@ export default function Home() {
       const result = await updateDownload(id, data);
       if (result.success) {
         setEditingFile(null);
-        fetchDownloads();
+        syncNow();
       } else {
         alert(result.message);
       }
@@ -188,7 +202,6 @@ export default function Home() {
   };
 
   const selectedDownload = downloads.find((d) => d.id === selectedId);
-  const selectedIsWorker = isWorkerLocation(selectedDownload?.location);
 
   return (
     <main className="min-h-screen bg-background p-4 md:p-6">
@@ -210,9 +223,11 @@ export default function Home() {
           </Button>
         </motion.div>
 
+        <OfflineBanner networkStatus={networkStatus} />
+
         <DownloadList
           downloads={downloads}
-          setDownloads={setDownloads}
+          setDownloads={() => {}}
           downloadingFileId={downloadingFileId}
           progress={progress}
           onSelect={setSelectedId}
@@ -235,6 +250,7 @@ export default function Home() {
         onClose={() => setIsModalOpen(false)}
         onSubmit={handleAddDownload}
         loading={loading}
+        workers={workers}
       />
 
       <EditDownloadModal

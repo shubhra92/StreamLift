@@ -1,50 +1,74 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { motion } from "motion/react";
+import { useState, useEffect } from "react";import { motion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { WorkerList } from "../components/workers/WorkerList";
 import { WorkerDetails } from "../components/workers/WorkerDetails";
 import { AddWorkerModal } from "../components/workers/AddWorkerModal";
 import { useWorkerStatus } from "../hooks/useWorkerStatus";
-import useWorkerService from "../service/workerService";
-import type { CreateWorkerData } from "../service/workerService";
+import { useWorkers } from "../hooks/useWorkers";
+import { createWorker, deleteWorker } from "../actions/workers";
+import { OfflineBanner } from "../components/OfflineBanner";
+import WorkerClient from "../lib/sync-worker/workerClient";
 import type { WorkerWithStatus } from "../components/workers/types";
+import type { CreateWorkerData } from "../service/workerService";
+import useWorkerService from "../service/workerService";
+import type { IDBWorker } from "../lib/idb/schema";
+
+/** Convert IDB row → WorkerWithStatus (string dates → Date objects) */
+function toWorkerWithStatus(w: IDBWorker): WorkerWithStatus {
+  return {
+    ...w,
+    createdAt: w.createdAt ? new Date(w.createdAt) : null,
+    updatedAt: w.updatedAt ? new Date(w.updatedAt) : null,
+  };
+}
 
 export default function WorkersPage() {
-  const [workers, setWorkers] = useState<WorkerWithStatus[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  // ── IDB-backed data + sync ────────────────────────────────────────────────
+  const { workers: idbWorkers, networkStatus, syncNow } = useWorkers();
+  const [workers, setWorkers] = useState<WorkerWithStatus[]>([]);
+
+  // Keep workers list in sync with IDB data
+  useEffect(() => {
+    setWorkers(idbWorkers.map(toWorkerWithStatus));
+  }, [idbWorkers]);
 
   const workerService = useWorkerService();
   const { status: workerStatus } = useWorkerStatus(selectedId);
 
-  const fetchWorkers = useCallback(async () => {
-    const result = await workerService.getWorkers();
-    if (result.success) {
-      setWorkers(result.data ?? []);
-      setFetchError(null);
-    } else {
-      setFetchError(result.message ?? "Failed to load workers");
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
+  // Option A: when SSE fires for the selected worker, patch that entry in the
+  // list immediately — no waiting for the next 15s sync cycle.
   useEffect(() => {
-    fetchWorkers();
-    // Refresh list every 15s so online status stays current
-    const interval = setInterval(fetchWorkers, 15000);
-    return () => clearInterval(interval);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!selectedId || !workerStatus) return;
+    setWorkers((prev) =>
+      prev.map((w) =>
+        w.id === selectedId
+          ? {
+              ...w,
+              online:        workerStatus.online,
+              ipAddress:     workerStatus.ipAddress,
+              lastHeartbeat: workerStatus.lastHeartbeat,
+            }
+          : w
+      )
+    );
+  }, [selectedId, workerStatus]);
 
   const handleCreateWorker = async (data: CreateWorkerData) => {
     setLoading(true);
     try {
-      const result = await workerService.createWorker(data);
+      const result = await createWorker(data);
       if (result.success) {
         setIsModalOpen(false);
-        await fetchWorkers();
+        // Invalidate location label cache so new worker name appears immediately
+        const { invalidateWorkerNameCache } = await import("../lib/resolveLocationLabel");
+        invalidateWorkerNameCache();
+        syncNow();
       } else {
         alert(result.message ?? "Failed to create worker");
       }
@@ -54,10 +78,14 @@ export default function WorkersPage() {
   };
 
   const handleDeleteWorker = async (workerId: string) => {
-    const result = await workerService.deleteWorker(workerId);
+    const result = await deleteWorker(workerId);
     if (result.success) {
       if (selectedId === workerId) setSelectedId(null);
-      await fetchWorkers();
+      // Invalidate location label cache so deleted worker name disappears
+      const { invalidateWorkerNameCache } = await import("../lib/resolveLocationLabel");
+      invalidateWorkerNameCache();
+      await WorkerClient.getInstance().deleteWorker(workerId);
+      syncNow();
     } else {
       alert(result.message ?? "Failed to delete worker");
     }
@@ -84,7 +112,6 @@ export default function WorkersPage() {
   return (
     <main className="min-h-screen bg-background p-4 md:p-6">
       <div className="max-w-4xl mx-auto">
-        {/* Header */}
         <motion.div
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -104,11 +131,8 @@ export default function WorkersPage() {
           </Button>
         </motion.div>
 
-        {fetchError && (
-          <p className="text-sm text-destructive mb-4">{fetchError}</p>
-        )}
+        <OfflineBanner networkStatus={networkStatus} />
 
-        {/* Worker List */}
         <WorkerList
           workers={workers}
           selectedId={selectedId}
@@ -117,7 +141,6 @@ export default function WorkersPage() {
           onCopyScript={handleCopyScript}
         />
 
-        {/* Worker Details */}
         {selectedWorker && (
           <WorkerDetails
             worker={selectedWorker}
@@ -127,7 +150,6 @@ export default function WorkersPage() {
         )}
       </div>
 
-      {/* Create Worker Modal */}
       <AddWorkerModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}

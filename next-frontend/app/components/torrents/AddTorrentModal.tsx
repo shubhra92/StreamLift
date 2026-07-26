@@ -33,6 +33,7 @@ interface AddTorrentModalProps {
     meta: SelectedFilesMeta
   ) => Promise<void>;
   loading: boolean;
+  workers?: { id: string; name: string; online: boolean }[];
 }
 
 interface TorrentFile {
@@ -58,6 +59,7 @@ export function AddTorrentModal({
   onClose,
   onSubmit,
   loading,
+  workers = [],
 }: AddTorrentModalProps) {
   const defaultLocation =
     process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED === "true" ? "server" : "mega";
@@ -259,7 +261,7 @@ export function AddTorrentModal({
                 <label className="text-sm text-muted-foreground mb-2 block">
                   Storage Location
                 </label>
-                <LocationSelect value={location} onChange={setLocation} />
+                <LocationSelect value={location} onChange={setLocation} workers={workers} />
                 <p className="text-xs text-muted-foreground mt-1">
                   MEGA recommended for persistent storage
                 </p>

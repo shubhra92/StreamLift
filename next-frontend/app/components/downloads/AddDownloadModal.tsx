@@ -17,6 +17,7 @@ export function AddDownloadModal({
   onClose,
   onSubmit,
   loading,
+  workers = [],
 }: AddDownloadModalProps) {
   const [url, setUrl] = useState("");
   const [fileName, setFileName] = useState("");
@@ -70,7 +71,7 @@ export function AddDownloadModal({
               className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
 
-            <LocationSelect value={location} onChange={setLocation} />
+            <LocationSelect value={location} onChange={setLocation} workers={workers} />
 
             <div className="flex flex-col-reverse sm:flex-row gap-3">
               <Button

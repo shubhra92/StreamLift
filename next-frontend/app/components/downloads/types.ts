@@ -42,6 +42,7 @@ export interface AddDownloadModalProps {
   onClose: () => void;
   onSubmit: (url: string, location: "server" | "mega", fileName?: string) => Promise<void>;
   loading: boolean;
+  workers?: { id: string; name: string; online: boolean }[];
 }
 
 export interface EditDownloadModalProps {

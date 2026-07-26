@@ -1,2 +1,6 @@
 .kiro
 .vscode
+
+**/debug-*
+
+**/.DS_Store

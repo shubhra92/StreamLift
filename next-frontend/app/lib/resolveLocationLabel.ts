@@ -1,27 +1,45 @@
-// Cache worker names so we don't fetch on every render
-let workerNameCache: Map<string, string> | null = null;
-let cacheExpiry = 0;
+/**
+ * Resolves a location string to a human-readable label.
+ *
+ * For worker-{id} locations, looks up the worker name from IndexedDB
+ * instead of making a network call — IDB is always up to date from
+ * the SyncManager/SharedWorker sync.
+ */
 
+import { getAllWorkers } from "@/app/lib/idb/IDBStore";
+
+// In-memory cache of workerId → name, populated from IDB
+// This avoids repeated IDB reads on every render of every download row.
+let workerNameCache: Map<string, string> | null = null;
+
+/**
+ * Populate the cache from IDB. IDB is the source of truth —
+ * no network call needed.
+ */
 async function getWorkerNameCache(): Promise<Map<string, string>> {
-  if (workerNameCache && Date.now() < cacheExpiry) return workerNameCache;
+  if (workerNameCache) return workerNameCache;
 
   try {
-    const res = await fetch("/api/worker/list");
-    if (!res.ok) return workerNameCache ?? new Map();
-    const result = await res.json();
+    const workers = await getAllWorkers();
     const map = new Map<string, string>();
-    for (const w of result.data ?? []) {
+    for (const w of workers) {
       map.set(w.id, w.name);
     }
     workerNameCache = map;
-    cacheExpiry = Date.now() + 30_000; // cache for 30s
     return map;
   } catch {
     return workerNameCache ?? new Map();
   }
 }
 
-export async function resolveLocationLabel(location: string | null | undefined): Promise<string | null > {
+/** Invalidate the in-memory cache — call after workers are created/deleted */
+export function invalidateWorkerNameCache(): void {
+  workerNameCache = null;
+}
+
+export async function resolveLocationLabel(
+  location: string | null | undefined
+): Promise<string | null> {
   if (!location) return "—";
   if (location === "server") return "Cloud (Server)";
   if (location === "mega") return "Cloud";
@@ -31,14 +49,16 @@ export async function resolveLocationLabel(location: string | null | undefined):
     const workerId = location.replace("worker-", "");
     const cache = await getWorkerNameCache();
     const name = cache.get(workerId);
-    return name ? `Worker: ${name}` :  null //`Worker: ${workerId.slice(0, 8)}…`;
+    return name ? `Worker: ${name}` : null;
   }
 
   return location;
 }
 
 /** Synchronous version using cached data only (for render-time use) */
-export function resolveLocationLabelSync(location: string | null | undefined): string {
+export function resolveLocationLabelSync(
+  location: string | null | undefined
+): string {
   if (!location) return "—";
   if (location === "server") return "Cloud (Server)";
   if (location === "mega") return "Cloud";
@@ -51,8 +71,4 @@ export function resolveLocationLabelSync(location: string | null | undefined): s
   }
 
   return location;
-}
-
-export function invalidateWorkerNameCache() {
-  workerNameCache = null;
 }

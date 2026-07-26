@@ -25,6 +25,36 @@ async function resolveWorkerForTorrent(location: string, guestId: string): Promi
   return null;
 }
 
+/**
+ * Atomically claim a pending torrent download.
+ * See claimDownload in downloads.ts for full explanation.
+ */
+export async function claimTorrentDownload(
+  id: string
+): Promise<{ success: boolean; data?: typeof fileDownloads.$inferSelect }> {
+  try {
+    const guestId = await getGuestId();
+    if (!guestId) return { success: false };
+
+    const [claimed] = await db
+      .update(fileDownloads)
+      .set({ status: "downloading", updatedAt: new Date() })
+      .where(
+        and(
+          eq(fileDownloads.id, id),
+          eq(fileDownloads.guestId, guestId),
+          eq(fileDownloads.status, "pending")
+        )
+      )
+      .returning();
+
+    if (!claimed) return { success: false };
+    return { success: true, data: claimed };
+  } catch {
+    return { success: false };
+  }
+}
+
 export async function createTorrentDownload(
   magnetLink: string,
   location: string,
@@ -57,21 +87,40 @@ export async function createTorrentDownload(
   }
 }
 
-export async function getTorrentDownloads() {
+export interface TorrentDeltaSyncResult {
+  data: (typeof fileDownloads.$inferSelect)[];
+  syncedAt: string;
+}
+
+export async function getTorrentDownloads(
+  since?: string
+): Promise<TorrentDeltaSyncResult> {
   try {
     const guestId = await getGuestId();
-    if (!guestId) return [];
+    if (!guestId) return { data: [], syncedAt: new Date().toISOString() };
+
+    const syncedAt = new Date().toISOString();
+
+    const conditions: ReturnType<typeof eq>[] = [
+      eq(fileDownloads.downloadType, "torrent"),
+      eq(fileDownloads.guestId, guestId),
+    ];
+
+    if (since) {
+      const { gte } = await import("drizzle-orm");
+      conditions.push(gte(fileDownloads.updatedAt, new Date(since)));
+    }
 
     const downloads = await db
       .select()
       .from(fileDownloads)
-      .where(and(eq(fileDownloads.downloadType, "torrent"), eq(fileDownloads.guestId, guestId)))
+      .where(and(...conditions))
       .orderBy(desc(fileDownloads.createdAt));
 
-    return downloads;
+    return { data: downloads, syncedAt };
   } catch (error) {
     console.error("Failed to fetch torrent downloads:", error);
-    return [];
+    return { data: [], syncedAt: new Date().toISOString() };
   }
 }
 
@@ -128,7 +177,9 @@ export async function updateTorrentDownload(
       return { success: false, message: "Download not found" };
     }
 
-    if (download.status === "downloading" && (data.sourceUrl || data.location)) {
+    // Allow marking as failed from any status
+    const isFailed = data.status === "failed";
+    if (!isFailed && download.status === "downloading" && (data.sourceUrl || data.location)) {
       return { success: false, message: "Cannot edit a download in progress" };
     }
 

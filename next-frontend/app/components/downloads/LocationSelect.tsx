@@ -1,13 +1,12 @@
 "use client";
 
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useEffect, useState } from "react";
 
 const serverDownloadEnabled = process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED === "true";
 const cloudLocation = serverDownloadEnabled ? "server" : "mega";
 const cloudLabel = serverDownloadEnabled ? "Cloud (Server)" : "Cloud";
 
-interface WorkerOption {
+export interface WorkerOption {
   id: string;
   name: string;
   online: boolean;
@@ -17,30 +16,11 @@ interface LocationSelectProps {
   value: string;
   onChange: (value: string) => void;
   className?: string;
+  /** Workers list — passed from parent (comes from useWorkers/IDB, not fetched here) */
+  workers?: WorkerOption[];
 }
 
-export function LocationSelect({ value, onChange, className }: LocationSelectProps) {
-  const [workers, setWorkers] = useState<WorkerOption[]>([]);
-
-  useEffect(() => {
-    fetch("/api/worker/list")
-      .then((r) => r.json())
-      .then((result) => {
-        if (result.success && Array.isArray(result.data)) {
-          setWorkers(
-            result.data.map((w: any) => ({
-              id: w.id,
-              name: w.name,
-              online: w.online,
-            }))
-          );
-        }
-      })
-      .catch(() => {
-        // silently ignore — workers section just won't show
-      });
-  }, []);
-
+export function LocationSelect({ value, onChange, className, workers = [] }: LocationSelectProps) {
   // "cloud" is the UI value; resolve to the actual backend value on change
   const handleChange = (val: string) => {
     if (val === "cloud") {
@@ -86,10 +66,9 @@ export function LocationSelect({ value, onChange, className }: LocationSelectPro
                 >
                   <div className="flex items-center gap-2">
                     <span
-                      className={`h-2.5 w-2.5 rounded-full ${w.online
-                          ? "bg-green-500"
-                          : "bg-gray-400"
-                        }`}
+                      className={`h-2.5 w-2.5 rounded-full ${
+                        w.online ? "bg-green-500" : "bg-gray-400"
+                      }`}
                     />
                     <span>{w.name}</span>
                   </div>
@@ -100,5 +79,5 @@ export function LocationSelect({ value, onChange, className }: LocationSelectPro
         )}
       </SelectContent>
     </Select>
-  )
+  );
 }

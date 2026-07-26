@@ -3,8 +3,7 @@
 import { db } from "../db";
 import { workers, fileDownloads } from "../db/schema";
 import { desc, eq, and, inArray } from "drizzle-orm";
-import { workerStore, initializeWorkerState } from "../lib/workerStore";
-import { encryptCredentials, generateAuthToken } from "../lib/crypto";
+import { workerStore, initializeWorkerState } from "../lib/workerStore";import { encryptCredentials, generateAuthToken } from "../lib/crypto";
 import { getGuestId } from "../lib/getGuestId";
 import type { Worker } from "../db/schema";
 
@@ -69,27 +68,51 @@ export async function createWorker(data: {
   return { success: true, data: worker };
 }
 
-export async function getWorkers() {
+/** Lightweight runtime status — only live fields from workerStore, no DB fields */
+export interface WorkerRuntimeStatus {
+  online: boolean;
+  ipAddress: string | null;
+  lastHeartbeat: string | null;
+}
+
+export interface WorkerDeltaSyncResult {
+  /** Delta: only DB rows whose updatedAt >= since (may be empty if nothing changed) */
+  data: ReturnType<typeof buildWorkerWithStatus>[];
+  syncedAt: string;
+}
+
+function buildWorkerWithStatus(w: Worker) {
+  // online/ipAddress/lastHeartbeat are not reliable from a server action
+  // (module isolation from API routes). SyncManager fetches runtimeStatus
+  // separately via /api/worker/runtime-status route.
+  return { ...w };
+}
+
+export async function getWorkers(since?: string): Promise<WorkerDeltaSyncResult> {
   const guestId = await getGuestId();
+  if (!guestId) {
+    return { data: [], syncedAt: new Date().toISOString() };
+  }
 
-  // No authenticated guest — return nothing rather than leaking all workers
-  if (!guestId) return [];
+  const syncedAt = new Date().toISOString();
 
-  const allWorkers = await db
+  // Delta query — only changed DB rows
+  const deltaConditions = [eq(workers.guestId, guestId)];
+  if (since) {
+    const { gte } = await import("drizzle-orm");
+    deltaConditions.push(gte(workers.updatedAt, new Date(since)));
+  }
+
+  const deltaWorkers = await db
     .select()
     .from(workers)
-    .where(eq(workers.guestId, guestId))
+    .where(and(...deltaConditions))
     .orderBy(desc(workers.createdAt));
 
-  return allWorkers.map((w) => {
-    const state = workerStore.get(w.id);
-    return {
-      ...w,
-      online: state?.online ?? false,
-      ipAddress: state?.ipAddress ?? null,
-      lastHeartbeat: state?.lastHeartbeat ?? null,
-    };
-  });
+  return {
+    data: deltaWorkers.map(buildWorkerWithStatus),
+    syncedAt,
+  };
 }
 
 export async function getWorkerById(workerId: string) {

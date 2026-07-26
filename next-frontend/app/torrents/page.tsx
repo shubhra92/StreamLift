@@ -5,9 +5,19 @@ import { motion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { useProgress } from "../hooks/useProgress";
 import { useWorkerProgress } from "../hooks/useWorkerProgress";
-import { createTorrentDownload, getTorrentDownloads, deleteTorrentDownload, updateTorrentDownload } from "../actions/torrents";
+import { useTorrents } from "../hooks/useTorrents";
+import { useWorkers } from "../hooks/useWorkers";
+import {
+  createTorrentDownload,
+  deleteTorrentDownload,
+  updateTorrentDownload,
+  claimTorrentDownload,
+} from "../actions/torrents";
 import type { FileDownload } from "../db/schema";
+import type { IDBFileDownload } from "../lib/idb/schema";
 import useTorrentService from "../service/torrentService";
+import WorkerClient from "../lib/sync-worker/workerClient";
+import { OfflineBanner } from "../components/OfflineBanner";
 import {
   DownloadList,
   DownloadDetails,
@@ -21,92 +31,81 @@ function isWorkerLocation(location: string | null | undefined): boolean {
   return location.startsWith("worker-") || location === "all-workers";
 }
 
+function toFileDownload(row: IDBFileDownload): FileDownload {
+  return {
+    ...row,
+    createdAt: row.createdAt ? new Date(row.createdAt) : null,
+    updatedAt: row.updatedAt ? new Date(row.updatedAt) : null,
+  };
+}
+
 export default function TorrentsPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [downloads, setDownloads] = useState<FileDownload[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
   const [editingFile, setEditingFile] = useState<FileDownload | null>(null);
+
+  const { downloads: idbDownloads, networkStatus, syncNow } = useTorrents();
+  const downloads = idbDownloads.map(toFileDownload);
+  const { workers } = useWorkers({ enabled: isModalOpen });
+  const client = useRef(WorkerClient.getInstance());
+
   const torrentService = useTorrentService();
-  const isFnEnd_fetchDownloads = useRef<boolean>(true);
-  const isDBCallHapping = useRef<boolean>(false);
-  const workerPollRef = useRef<NodeJS.Timeout | null>(null);
+  const isFnEnd = useRef(true);
+  const isDBCallActive = useRef(false);
 
   const activeDownload = downloads.find((d) => d.id === downloadingFileId);
   const isWorkerDownload = isWorkerLocation(activeDownload?.location);
 
-  // Express SSE — only for server/mega
-  const { progress: expressProgress, isDone: expressIsDone, error: expressError } = useProgress(
-    isWorkerDownload ? null : downloadingFileId
-  );
+  // SharedWorker-backed progress — one connection across all tabs
+  const { progress: expressProgress, isDone: expressIsDone, error: expressError } =
+    useProgress(isWorkerDownload ? null : downloadingFileId);
 
-  // Worker store polling — only for worker downloads
   const { progress: workerProgress, isDone: workerIsDone } = useWorkerProgress(
     isWorkerDownload ? (activeDownload?.workerId ?? null) : null,
-    isWorkerDownload ? downloadingFileId : null,
-    3000
+    isWorkerDownload ? downloadingFileId : null
   );
 
   const progress = isWorkerDownload ? workerProgress : expressProgress;
   const isDone   = isWorkerDownload ? workerIsDone   : expressIsDone;
   const error    = isWorkerDownload ? null            : expressError;
 
-  // Poll DB every 5s for worker downloads
-  useEffect(() => {
-    if (isWorkerDownload && downloadingFileId) {
-      if (workerPollRef.current) clearInterval(workerPollRef.current);
-      workerPollRef.current = setInterval(async () => {
-        const data = await getTorrentDownloads();
-        setDownloads(data);
-        const target = data.find((d) => d.id === downloadingFileId);
-        if (!target || target.status === "completed" || target.status === "failed") {
-          clearInterval(workerPollRef.current!);
-          workerPollRef.current = null;
-          setDownloadingFileId(null);
-        }
-      }, 5000);
-    } else {
-      if (workerPollRef.current) {
-        clearInterval(workerPollRef.current);
-        workerPollRef.current = null;
-      }
-    }
-    return () => {
-      if (workerPollRef.current) clearInterval(workerPollRef.current);
-    };
-  }, [isWorkerDownload, downloadingFileId]);
+  const startActiveDownload = async (data: FileDownload[]) => {
+    if (!isFnEnd.current) return;
+    if (downloadingFileId) { isFnEnd.current = true; return; }
+    isFnEnd.current = false;
 
-  const fetchDownloads = async () => {
-    if (!isFnEnd_fetchDownloads.current) return null;
-    isFnEnd_fetchDownloads.current = false;
-
-    const data = await getTorrentDownloads();
-    setDownloads(data);
-
-    let targetFile = null;
+    let targetFile: FileDownload | null = null;
     const targetStatus = new Set(["downloading", "pending"]);
 
     for (const f of data) {
       if (!targetStatus.has(f.status!)) continue;
       if (f.status === "downloading") { targetFile = f; break; }
       if (!targetFile) { targetFile = f; continue; }
-      const isOlder = new Date(f.updatedAt!) < new Date(targetFile.updatedAt!);
-      if (isOlder) targetFile = f;
+      if (new Date(f.updatedAt!) < new Date(targetFile.updatedAt!)) targetFile = f;
     }
 
     if (targetFile?.status === "pending") {
-      // Worker downloads — just mark as tracking, worker picks it up via heartbeat
       if (isWorkerLocation(targetFile.location)) {
+        // Worker downloads: don't claim — worker picks up 'pending' via heartbeat
         setDownloadingFileId(targetFile.id);
       } else {
+        // Non-worker: atomically claim before calling Express
+        const claim = await claimTorrentDownload(targetFile.id);
+        if (!claim.success) {
+          // Another tab claimed it — just track
+          setDownloadingFileId(targetFile.id);
+          isFnEnd.current = true;
+          return;
+        }
         const { status, message } = await torrentService.startDownload(targetFile);
         if (!status) {
           console.log(message);
+          await updateTorrentDownload(targetFile.id, { status: "pending" });
         } else {
           setDownloadingFileId(targetFile.id);
-          const updatedData = await getTorrentDownloads();
-          setDownloads(updatedData);
+          syncNow();
         }
       }
     } else if (targetFile) {
@@ -115,29 +114,38 @@ export default function TorrentsPage() {
       setDownloadingFileId(null);
     }
 
-    isFnEnd_fetchDownloads.current = true;
+    isFnEnd.current = true;
   };
+
+  useEffect(() => {
+    if (downloads.length > 0) void startActiveDownload(downloads);
+  }, [idbDownloads]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (error === "Download not found") {
       (async () => {
-        if (!downloadingFileId || isDBCallHapping.current) return null;
-        isDBCallHapping.current = true;
+        if (!downloadingFileId || isDBCallActive.current) return;
+        isDBCallActive.current = true;
         await updateTorrentDownload(downloadingFileId, {
           status: "failed",
           errorMessage: "Download not found in server cache",
         });
-        isDBCallHapping.current = false;
-        fetchDownloads();
+        isDBCallActive.current = false;
+        syncNow();
+        setDownloadingFileId(null);
       })();
     }
-  }, [error]);
+  }, [error]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (downloadingFileId === null || isDone) {
-      fetchDownloads();
+    if (isDone) {
+      setDownloadingFileId(null);
+      void import("../lib/idb/IDBStore").then(({ setCursor }) => {
+        void setCursor("torrents_cursor", new Date(0).toISOString());
+      });
+      syncNow();
     }
-  }, [isDone]);
+  }, [isDone]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleAddDownload = async (
     magnetLink: string,
@@ -153,7 +161,7 @@ export default function TorrentsPage() {
         return;
       }
       setIsModalOpen(false);
-      fetchDownloads();
+      syncNow();
     } finally {
       setLoading(false);
     }
@@ -162,7 +170,12 @@ export default function TorrentsPage() {
   const handleDelete = async (id: string) => {
     const result = await deleteTorrentDownload(id);
     if (result.success) {
-      fetchDownloads();
+      if (id === downloadingFileId) {
+        client.current.stopTracking();
+        setDownloadingFileId(null);
+      }
+      await client.current.deleteDownload(id);
+      syncNow();
     } else {
       alert(result.message);
     }
@@ -177,7 +190,7 @@ export default function TorrentsPage() {
       const result = await updateTorrentDownload(id, data);
       if (result.success) {
         setEditingFile(null);
-        fetchDownloads();
+        syncNow();
       } else {
         alert(result.message);
       }
@@ -210,9 +223,11 @@ export default function TorrentsPage() {
           </Button>
         </motion.div>
 
+        <OfflineBanner networkStatus={networkStatus} />
+
         <DownloadList
           downloads={downloads}
-          setDownloads={setDownloads}
+          setDownloads={() => {}}
           downloadingFileId={downloadingFileId}
           progress={progress}
           onSelect={setSelectedId}
@@ -235,6 +250,7 @@ export default function TorrentsPage() {
         onClose={() => setIsModalOpen(false)}
         onSubmit={handleAddDownload}
         loading={loading}
+        workers={workers}
       />
 
       <EditDownloadModal

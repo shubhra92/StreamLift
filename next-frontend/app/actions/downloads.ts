@@ -62,17 +62,75 @@ export async function createDownload(sourceUrl: string, location: string, fileNa
   return data;
 }
 
-export async function getDownloads() {
-  const guestId = await getGuestId();
-  if (!guestId) return [];
+export interface DeltaSyncResult<T> {
+  data: T[];
+  syncedAt: string; // ISO timestamp — client should advance its cursor to this value
+}
 
-  const query = db
+export async function getDownloads(
+  since?: string
+): Promise<DeltaSyncResult<FileDownload>> {
+  const guestId = await getGuestId();
+  if (!guestId) return { data: [], syncedAt: new Date().toISOString() };
+
+  const syncedAt = new Date().toISOString();
+
+  const conditions = [
+    eq(fileDownloads.downloadType, "http"),
+    eq(fileDownloads.guestId, guestId),
+  ];
+
+  // Delta sync: only return rows updated after the cursor
+  if (since) {
+    const { gte } = await import("drizzle-orm");
+    conditions.push(gte(fileDownloads.updatedAt, new Date(since)));
+  }
+
+  const data = await db
     .select()
     .from(fileDownloads)
-    .where(and(eq(fileDownloads.downloadType, "http"), eq(fileDownloads.guestId, guestId)))
+    .where(and(...conditions))
     .orderBy(desc(fileDownloads.createdAt));
 
-  return query;
+  return { data, syncedAt };
+}
+
+/**
+ * Atomically claim a pending download by transitioning it from
+ * 'pending' → 'downloading' using a conditional UPDATE.
+ *
+ * Only ONE caller across all tabs/requests will get success:true —
+ * the first to execute the UPDATE. All others find the row already
+ * 'downloading' and get success:false, so they skip calling Express.
+ *
+ * This is a database-level compare-and-swap — safe against any number
+ * of concurrent callers regardless of timing.
+ */
+export async function claimDownload(
+  id: string
+): Promise<{ success: boolean; data?: FileDownload }> {
+  const guestId = await getGuestId();
+  if (!guestId) return { success: false };
+
+  // UPDATE WHERE status = 'pending' — only succeeds for one caller
+  const [claimed] = await db
+    .update(fileDownloads)
+    .set({ status: "downloading", updatedAt: new Date() })
+    .where(
+      and(
+        eq(fileDownloads.id, id),
+        eq(fileDownloads.guestId, guestId),
+        eq(fileDownloads.status, "pending")
+      )
+    )
+    .returning();
+
+  if (!claimed) {
+    // Row was already claimed by another tab or wasn't pending
+    return { success: false };
+  }
+
+  return { success: true, data: claimed };
 }
 
 export async function getDownloadById(fileId: string) {
@@ -119,8 +177,13 @@ export async function updateDownload(id: string, data: Partial<Omit<FileDownload
     return { success: false, message: "Download not found" };
   }
 
-  if (data.status === "failed" && data.errorMessage) {
-    data = { status: "failed", errorMessage: data.errorMessage };
+  // Always allow marking as failed — downloads can fail from any status
+  // (pending, downloading, uploading). Only restrict other edits to pending rows.
+  if (data.status === "failed") {
+    data = { status: "failed", errorMessage: data.errorMessage ?? "Unknown error" };
+  } else if (data.status === "pending" && existing.status === "downloading") {
+    // Allow reverting downloading → pending when Express start fails
+    data = { status: "pending" };
   } else if (existing.status !== "pending") {
     return { success: false, message: "Cannot edit a download that is no longer pending" };
   }
