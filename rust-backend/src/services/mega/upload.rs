@@ -330,7 +330,7 @@ async fn read_http_response(stream: &mut TcpStream, is_last: bool) -> Result<Vec
     let mut found_end = false;
 
     let read_timeout = if is_last {
-        Duration::from_secs(60)
+        Duration::from_secs(120)
     } else {
         Duration::from_secs(15)
     };

@@ -193,7 +193,7 @@ impl MegaManager {
 
         let session = SessionData {
             sid,
-            key: login_result.k,
+            key: super::crypto::b64_encode(&master_key),  // Store DECRYPTED master key (same as megajs toJSON)
             name: None,
             user: None,
             root: Some(root_handle.clone()),
