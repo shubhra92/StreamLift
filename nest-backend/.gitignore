@@ -1,0 +1,36 @@
+# compiled output
+dist/
+build/
+
+# dependencies
+node_modules/
+
+# environment
+.env
+.env.*
+!.env.example
+
+# logs
+logs/
+*.log
+npm-debug.log*
+
+# downloads (runtime files)
+downloads/
+
+# drizzle migrations (keep generated SQL if you want, exclude if auto-migrating)
+# drizzle/
+
+# NestJS incremental compilation cache
+tsconfig.tsbuildinfo
+.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
