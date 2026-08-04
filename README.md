@@ -34,19 +34,17 @@ The frontend uses a SharedWorker so a single SSE connection handles progress acr
 
 All backends expose the same API. Pick any one and point a frontend at it.
 
-| Path | Language / Framework | Status |
-|------|----------------------|--------|
-| `nest-backend/` | TypeScript (NestJS) | ✅ Done |
-| `express-backend/` | JavaScript (Express) | ✅ Done |
-| `rust-backend/` | Rust (Axum) | ✅ Done |
-| _more coming..._ | | |
+| Path | Language / Framework |
+|------|----------------------|
+| `nest-backend/` | TypeScript (NestJS) |
+| `express-backend/` | JavaScript (Express) |
+| `rust-backend/` | Rust (Axum) |
 
 ### Frontends
 
-| Path | Language / Framework | Status |
-|------|----------------------|--------|
-| `next-frontend/` | TypeScript (Next.js 15, App Router) | ✅ Done |
-| _more coming..._ | | |
+| Path | Language / Framework |
+|------|----------------------|
+| `next-frontend/` | TypeScript (Next.js 15, App Router) |
 
 ---
 
@@ -54,7 +52,7 @@ All backends expose the same API. Pick any one and point a frontend at it.
 
 ### Prerequisites
 
-- PostgreSQL database (e.g. [Supabase](https://supabase.com))
+- PostgreSQL database
 - Cloud storage account (currently MEGA)
 - Node.js 20+ _(for NestJS / Express backends and Next.js frontend)_
 - Rust + Cargo _(for Rust backend)_
