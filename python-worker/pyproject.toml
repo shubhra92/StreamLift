@@ -33,8 +33,9 @@ where = ["."]
 include = ["streamlift_worker*"]
 
 # setuptools-scm: read version from the nearest Git tag
-# Tag format: v1.2.3 → package version: 1.2.3  (strip the "v" prefix automatically)
+# root ".." because pyproject.toml lives in python-worker/ but .git is at repo root
 [tool.setuptools_scm]
+root = ".."
 write_to = "streamlift_worker/_version.py"
 
 [tool.ruff]
