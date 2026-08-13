@@ -1,0 +1,47 @@
+name: Publish streamlift-worker to PyPI
+
+# Triggers ONLY on version tags — e.g. v1.0.0, v1.2.3
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish:
+    name: Build and publish to PyPI
+    runs-on: ubuntu-latest
+
+    # Required for OIDC Trusted Publishing — no API token stored anywhere
+    environment:
+      name: pypi
+      url: https://pypi.org/project/streamlift-worker/
+
+    permissions:
+      id-token: write   # OIDC token — lets PyPI verify this job is from your repo
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full history needed so setuptools-scm can resolve the tag → version
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        run: pip install build==1.2.2
+
+      - name: Build wheel and sdist
+        # Run from inside python-worker/ — only that subtree gets packaged.
+        # The rest of the monorepo is never touched.
+        working-directory: python-worker
+        run: python -m build
+
+      - name: Publish to PyPI via Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # dist/ is relative to the repo root, not working-directory
+          packages-dir: python-worker/dist/

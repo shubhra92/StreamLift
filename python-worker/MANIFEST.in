@@ -1,0 +1,17 @@
+# Only include what belongs in the published source distribution.
+# Everything not listed here is excluded — the rest of the monorepo never touches PyPI.
+
+include pyproject.toml
+include README.md
+include MANIFEST.in
+
+recursive-include streamlift_worker *.py
+
+# Explicitly exclude everything else (belt-and-suspenders)
+exclude .env
+exclude .env.example
+exclude .gitignore
+prune dist
+prune build
+prune .github
+prune downloads
