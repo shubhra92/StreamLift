@@ -10,20 +10,21 @@ export interface Progress {
 }
 
 export interface DownloadItemProps {
-  index: number;
   download: FileDownload;
   isDownloading: boolean;
+  /** True while the delete server action is in-flight for this row */
+  isDeleting: boolean;
   progress: Progress | null;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onEdit: (file: FileDownload) => void;
-  handleUpdateDownlodingItem: (index:number, fileId: string) => void;
 }
 
 export interface DownloadListProps {
   downloads: FileDownload[];
-  setDownloads: (files: FileDownload[]) => void;
   downloadingFileId: string | null;
+  /** ID of the row currently being deleted — shows spinner on its delete button */
+  deletingId: string | null;
   progress: Progress | null;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
@@ -31,16 +32,25 @@ export interface DownloadListProps {
 }
 
 export interface DownloadDetailsProps {
-  download: FileDownload;
+  download: FileDownload | null;
   isDownloading: boolean;
   progress: Progress | null;
   onClose: () => void;
+  /** Ref forwarded to the panel element so the parent can detect outside clicks */
+  panelRef?: React.RefObject<HTMLDivElement | null>;
+}
+
+export interface FileInfo {
+  fileName: string;
+  fileSize: number | null;
+  fileType: string | null;
+  fileExtension: string | null;
 }
 
 export interface AddDownloadModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (url: string, location: "server" | "mega", fileName?: string) => Promise<void>;
+  onSubmit: (url: string, location: string, fileName: string, fileInfo: FileInfo) => Promise<void>;
   loading: boolean;
   workers?: { id: string; name: string; online: boolean }[];
 }

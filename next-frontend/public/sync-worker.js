@@ -53,6 +53,18 @@ var RECONCILE_EVERY = 5;
 /** In-worker cache of IDB-known IDs (sent by tabs on first data ack) */
 var broadcastIds    = { downloads: null, torrents: null, workers: null };
 
+/**
+ * Buffered IDB IDs from tabs, accumulated during the 500 ms boot-debounce
+ * window. Multiple tabs reloading at the same time each send their IDB ID
+ * sets; we union them before the first reconcile so no orphan is missed.
+ * Keyed by entity. Each value is a Set<string> or null (not yet seeded).
+ */
+var pendingIdbIds   = { downloads: null, torrents: null, workers: null };
+
+/** Boot-debounce timers — one per entity, 500 ms */
+var bootDebounce    = { downloads: null, torrents: null, workers: null };
+var BOOT_DEBOUNCE_MS = 500;
+
 var origin   = "";
 var isOnline = true;
 
@@ -113,10 +125,18 @@ function handleMessage(port, msg) {
       sendTo(port, { type: "networkStatus", status: isOnline ? "online" : "offline" });
       break;
     case "declare":
-      handleDeclare(port, msg.needs || [], msg.cursors || {});
+      handleDeclare(port, msg.needs || [], msg.cursors || {}, msg.idbIds || {});
       break;
     case "syncNow":
       scheduleSync(msg.entity);
+      break;
+    case "resetCursor":
+      // Wipe the in-memory cursor so the next sync is a full fetch.
+      // Also clear the syncing flag in case a previous sync is stuck,
+      // and run immediately (no debounce) since this is an urgent reset.
+      cursors[msg.entity] = null;
+      syncing[msg.entity] = false;
+      runSync(msg.entity);
       break;
     case "trackDownload":
       startTracking(msg.downloadId, msg.workerId, msg.downloadType);
@@ -141,19 +161,40 @@ function handleMessage(port, msg) {
  *
  * cursors: per-entity IDB cursors from the tab (used to resume syncing from
  *          the right point if the worker doesn't have a cursor yet).
+ * idbIds:  per-entity IDB ID arrays from the tab — merged into pendingIdbIds
+ *          so the first reconcile can detect orphans even on a fresh worker.
  */
-function handleDeclare(port, needs, cursors_from_tab) {
+function handleDeclare(port, needs, cursors_from_tab, idbIds_from_tab) {
   // Update this port's needs (full replace, not increment/decrement)
   var prev = portNeeds.get(port) || new Set();
   var next = new Set(needs);
   portNeeds.set(port, next);
 
-  // Absorb any cursors the tab sent for newly-needed entities
+  // Absorb any cursors the tab sent for newly-needed entities.
+  // Always accept an epoch reset (new Date(0)) — it means the tab detected
+  // stale state and explicitly wants a full re-fetch regardless of what
+  // cursor the worker currently holds.
   needs.forEach(function(entity) {
-    if (!prev.has(entity) && cursors_from_tab[entity] && !cursors[entity]) {
-      cursors[entity] = cursors_from_tab[entity];
+    var tabCursor = cursors_from_tab[entity];
+    if (!tabCursor) return;
+    var isEpochReset = tabCursor === "1970-01-01T00:00:00.000Z";
+    if (isEpochReset || (!prev.has(entity) && !cursors[entity])) {
+      cursors[entity] = isEpochReset ? null : tabCursor;
     }
   });
+
+  // Merge incoming IDB IDs into pendingIdbIds (union across tabs)
+  if (idbIds_from_tab) {
+    needs.forEach(function(entity) {
+      var ids = idbIds_from_tab[entity];
+      if (!ids || !ids.length) return;
+      if (!pendingIdbIds[entity]) {
+        pendingIdbIds[entity] = new Set(ids);
+      } else {
+        ids.forEach(function(id) { pendingIdbIds[entity].add(id); });
+      }
+    });
+  }
 
   recomputeIntervals();
 }
@@ -173,13 +214,19 @@ function recomputeIntervals() {
     var running = syncIntervals[entity] !== null;
 
     if (needed && !running) {
-      // Newly needed — boot immediately if stale, then schedule interval
-      bootSyncIfStale(entity);
+      // Newly needed — debounce the boot sync to coalesce multi-tab reloads,
+      // then schedule the regular interval.
+      scheduleBootSync(entity);
       syncIntervals[entity] = setInterval(function() { runSync(entity); }, INTERVALS[entity]);
     } else if (!needed && running) {
-      // No longer needed by any tab — stop the interval
+      // No longer needed by any tab — stop the interval and cancel any
+      // pending boot debounce for this entity.
       clearInterval(syncIntervals[entity]);
       syncIntervals[entity] = null;
+      if (bootDebounce[entity]) {
+        clearTimeout(bootDebounce[entity]);
+        bootDebounce[entity] = null;
+      }
     }
     // needed && running → nothing to do (already polling)
     // !needed && !running → nothing to do
@@ -187,6 +234,19 @@ function recomputeIntervals() {
 }
 
 // ─── Boot sync ────────────────────────────────────────────────────────────────
+
+/**
+ * Debounced boot sync — waits BOOT_DEBOUNCE_MS before firing so that all
+ * tabs reloading simultaneously can contribute their IDB IDs first.
+ * After the window closes, ONE sync runs using the merged pendingIdbIds.
+ */
+function scheduleBootSync(entity) {
+  if (bootDebounce[entity]) clearTimeout(bootDebounce[entity]);
+  bootDebounce[entity] = setTimeout(function() {
+    bootDebounce[entity] = null;
+    bootSyncIfStale(entity);
+  }, BOOT_DEBOUNCE_MS);
+}
 
 function bootSyncIfStale(entity) {
   var age = Date.now() - lastSyncedAt[entity];
@@ -244,6 +304,11 @@ function fetchAndBroadcast(entity) {
         var orphanIds = [];
         if (serverIds) {
           var serverIdSet = new Set(serverIds);
+          // Seed broadcastIds from tabs' IDB IDs if this is the first sync
+          if (!broadcastIds.downloads && pendingIdbIds.downloads) {
+            broadcastIds.downloads = new Set(pendingIdbIds.downloads);
+          }
+          pendingIdbIds.downloads = null; // consumed
           if (broadcastIds.downloads) {
             broadcastIds.downloads.forEach(function(id) {
               if (!serverIdSet.has(id)) orphanIds.push(id);
@@ -281,6 +346,11 @@ function fetchAndBroadcast(entity) {
         var orphanIds = [];
         if (serverIds) {
           var serverIdSet = new Set(serverIds);
+          // Seed broadcastIds from tabs' IDB IDs if this is the first sync
+          if (!broadcastIds.torrents && pendingIdbIds.torrents) {
+            broadcastIds.torrents = new Set(pendingIdbIds.torrents);
+          }
+          pendingIdbIds.torrents = null; // consumed
           if (broadcastIds.torrents) {
             broadcastIds.torrents.forEach(function(id) {
               if (!serverIdSet.has(id)) orphanIds.push(id);
@@ -317,6 +387,11 @@ function fetchAndBroadcast(entity) {
         var orphanIds = [];
         if (serverIds) {
           var serverIdSet = new Set(serverIds);
+          // Seed broadcastIds from tabs' IDB IDs if this is the first sync
+          if (!broadcastIds.workers && pendingIdbIds.workers) {
+            broadcastIds.workers = new Set(pendingIdbIds.workers);
+          }
+          pendingIdbIds.workers = null; // consumed
           if (broadcastIds.workers) {
             broadcastIds.workers.forEach(function(id) {
               if (!serverIdSet.has(id)) orphanIds.push(id);
@@ -373,7 +448,7 @@ function stopTracking() {
 
 function openSSE(downloadId) {
   var sseUrl = (origin || "") + "/api/progress/" + downloadId + "/stream";
-  sseSource = new EventSource(sseUrl);
+  sseSource = new EventSource(sseUrl, { withCredentials: true });
 
   sseSource.onmessage = function(event) {
     try {
@@ -397,27 +472,34 @@ function openSSE(downloadId) {
 
   sseSource.onerror = function() {
     if (sseSource) { sseSource.close(); sseSource = null; }
-    // Check if download exists before falling back to polling
+    // Check the progress endpoint before deciding what to do
     safeFetch("/api/progress/" + downloadId).then(function(res) {
       if (!res) {
-        // 404 — not in server cache
+        // 404 — progressMap entry is gone. The download may have completed
+        // normally (progressMap cleans up 60s after done) or the server may
+        // have restarted. Trigger a DB sync so the tab can read the real
+        // status from the database instead of assuming failure.
+        scheduleSync("downloads");
+        // Signal done without an error — the tab's error handler only acts
+        // on the specific "Download not found" string, so using a different
+        // sentinel here prevents it from incorrectly marking a completed
+        // download as failed.
         broadcast({
           type: "progress",
           payload: {
             downloadedBytes: 0, totalBytes: null,
             percent: null, percentFixed2: null,
-            done: true, error: "Download not found"
+            done: true, error: null
           }
         });
         stopTracking();
-        scheduleSync("downloads");
       } else if (res.done) {
         broadcast({ type: "progress", payload: {
           downloadedBytes: res.downloadedBytes || 0,
           totalBytes: res.totalBytes || null,
           percent: res.percent || null,
           percentFixed2: res.percentFixed2 || null,
-          done: true, error: null
+          done: true, error: res.error || null
         }});
         stopTracking();
         scheduleSync("downloads");
@@ -433,16 +515,18 @@ function startExpressPolling(downloadId) {
   progressTimer = setInterval(function() {
     safeFetch("/api/progress/" + downloadId).then(function(res) {
       if (!res) {
+        // 404 — progressMap gone (download finished or server restarted).
+        // Sync the DB to get the real terminal status instead of assuming failure.
+        scheduleSync("downloads");
         broadcast({
           type: "progress",
           payload: {
             downloadedBytes: 0, totalBytes: null,
             percent: null, percentFixed2: null,
-            done: true, error: "Download not found"
+            done: true, error: null
           }
         });
         stopTracking();
-        scheduleSync("downloads");
         return;
       }
       var payload = {
@@ -550,7 +634,7 @@ function openWorkerStatusSSE() {
   if (sseRetryTimer)   { clearTimeout(sseRetryTimer); sseRetryTimer = null; }
 
   var sseUrl = (origin || "") + "/api/worker/status/stream";
-  workerStatusSSE = new EventSource(sseUrl);
+  workerStatusSSE = new EventSource(sseUrl, { withCredentials: true });
   sseActive = true;
 
   workerStatusSSE.onmessage = function(event) {

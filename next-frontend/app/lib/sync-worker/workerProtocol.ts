@@ -20,8 +20,15 @@ export type TabToWorkerMessage =
       type: "declare";
       needs: SyncEntity[];
       cursors: Partial<Record<SyncEntity, string>>;
+      /**
+       * Current IDB IDs for each needed entity — sent on boot so the worker
+       * can detect orphans (server-deleted rows) on the very first reconcile,
+       * even before broadcastIds has been populated from a prior sync.
+       */
+      idbIds?: Partial<Record<SyncEntity, string[]>>;
     }
   | { type: "syncNow";       entity: SyncEntity }
+  | { type: "resetCursor";   entity: SyncEntity }
   | {
       type: "trackDownload";
       downloadId: string;

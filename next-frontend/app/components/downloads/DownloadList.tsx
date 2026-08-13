@@ -10,46 +10,30 @@ import {
 } from "@/components/ui/table";
 import { DownloadItem } from "./DownloadItem";
 import type { DownloadListProps } from "./types";
-import { useCallback, useRef } from "react";
-import { getDownloadById } from "@/app/actions/downloads";
 
 export function DownloadList({
   downloads,
-  setDownloads,
   downloadingFileId,
+  deletingId,
   progress,
   onSelect,
   onDelete,
   onEdit,
 }: DownloadListProps) {
-  const isCalled_getDownloadById = useRef<boolean>(false)
-  const handleUpdateDownlodingItem = 
-  // useCallback(
-    async (itemIndex: number, itemId: string)=>{
-    if(isCalled_getDownloadById.current) return null;
-    isCalled_getDownloadById.current = true;
-
-    console.log("heeeeyyyyy.....")
-    const download = await getDownloadById(itemId)
-    if(download) {
-      downloads[itemIndex] = download
-      setDownloads([...downloads])
-    }
-    isCalled_getDownloadById.current = false;
-  }
-  // ,[isItemUpdated,downloads])
-
   return (
     <div className="bg-card rounded-xl shadow-md border overflow-hidden">
-      <Table>
+      {/* table-fixed: columns respect explicit widths; w-full: fills container */}
+      <Table className="w-full table-fixed">
         <TableHeader className="hidden md:table-header-group">
           <TableRow className="bg-muted/50">
-            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600">File Name</TableHead>
-            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600">File Size</TableHead>
-            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600">Location</TableHead>
-            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600">Status</TableHead>
-            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600">Created</TableHead>
-            <TableHead className="px-4 py-3 text-sm font-medium w-[100px] text-gray-600"></TableHead>
+            {/* File name gets all remaining space */}
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 min-w-0">File Name</TableHead>
+            {/* Fixed-width columns that never grow */}
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-32">File Size</TableHead>
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-36">Location</TableHead>
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-36">Status</TableHead>
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-40">Created</TableHead>
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-24"></TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -61,17 +45,16 @@ export function DownloadList({
                 </TableCell>
               </TableRow>
             ) : (
-              downloads.map((download, index) => (
+              downloads.map((download) => (
                 <DownloadItem
                   key={download.id}
-                  index={index} 
                   download={download}
                   isDownloading={downloadingFileId === download.id}
+                  isDeleting={deletingId === download.id}
                   progress={downloadingFileId === download.id ? progress : null}
                   onSelect={onSelect}
                   onDelete={onDelete}
                   onEdit={onEdit}
-                  handleUpdateDownlodingItem={handleUpdateDownlodingItem}
                 />
               ))
             )}

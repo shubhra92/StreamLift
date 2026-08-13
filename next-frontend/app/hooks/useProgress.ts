@@ -23,7 +23,7 @@ export function useProgress(id: string | null) {
 
   useEffect(() => {
     const wc = client.current;
-    void wc.init();
+    let cancelled = false;
 
     const onProgress = (payload: ProgressPayload) => {
       setProgress(payload);
@@ -33,15 +33,19 @@ export function useProgress(id: string | null) {
 
     const unsub = wc.subscribeProgress(onProgress);
 
-    if (id) {
-      wc.trackDownload(id, null, "express");
-    } else {
-      wc.stopTracking();
-      setProgress(null);
-      setError(null);
-    }
+    wc.init().then(() => {
+      if (cancelled) return;
+      if (id) {
+        wc.trackDownload(id, null, "express");
+      } else {
+        wc.stopTracking();
+        setProgress(null);
+        setError(null);
+      }
+    });
 
     return () => {
+      cancelled = true;
       unsub();
       if (id) wc.stopTracking();
     };

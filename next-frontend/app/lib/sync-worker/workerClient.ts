@@ -73,10 +73,6 @@ class WorkerClient {
   private _fallback: any = null;
   private get isFallback() { return this._fallback !== null; }
 
-  /** Counts syncs per entity — reconciliation runs every RECONCILE_EVERY syncs */
-  private syncCount: Record<string, number> = {};
-  private static readonly RECONCILE_EVERY = 5;
-
   private constructor() {}
 
   static getInstance(): WorkerClient {
@@ -105,9 +101,24 @@ class WorkerClient {
       return;
     }
 
+    // ── Stale-download detection ──────────────────────────────────────────
+    // Before connecting to the SharedWorker, check IDB for any rows stuck
+    // in 'downloading' state. If found, wipe the cursor so the worker's
+    // boot sync does a full fetch and picks up the real terminal status.
+    // This must happen BEFORE the worker is connected so the wiped cursor
+    // is what gets sent in the 'declare' message — not the stale one.
+    try {
+      const idbRows = await getAllDownloads("http");
+      const hasStale = idbRows.some((r) => r.status === "downloading");
+      if (hasStale) {
+        await setCursor("downloads_cursor", new Date(0).toISOString());
+      }
+    } catch {
+      // IDB unavailable — safe to continue
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     // Fetch the worker script to get its ETag (content hash).
-    // We include the hash in the worker name so Chrome loads a fresh worker
-    // whenever sync-worker.js changes — no manual version bumping needed.
     let workerName = "streamlift-sync";
     try {
       const probe = await fetch("/api/sync-worker", { method: "HEAD" });
@@ -131,7 +142,14 @@ class WorkerClient {
   // ─── Send ────────────────────────────────────────────────────────────────
 
   private send(msg: TabToWorkerMessage): void {
-    if (!this.port) return;
+    if (!this.port) {
+      // Port not yet established (init still in progress) — queue the message.
+      // It will be sent once the port is ready and flushPending runs.
+      if (msg.type !== "init") {
+        this.pendingMessages.push(msg);
+      }
+      return;
+    }
     if (!this.ready && msg.type !== "init") {
       this.pendingMessages.push(msg);
       return;
@@ -141,8 +159,17 @@ class WorkerClient {
   }
 
   private flushPending(): void {
+    // Deduplicate tracking messages — only the last stopTracking/trackDownload matters
     const msgs = this.pendingMessages.splice(0);
-    for (const msg of msgs) this.send(msg);
+    const lastTrackingIdx = msgs.reduce((last, msg, i) =>
+      (msg.type === "trackDownload" || msg.type === "stopTracking") ? i : last, -1);
+    const deduped = msgs.filter((msg, i) => {
+      if (msg.type === "trackDownload" || msg.type === "stopTracking") {
+        return i === lastTrackingIdx;
+      }
+      return true;
+    });
+    for (const msg of deduped) this.send(msg);
   }
 
   // ─── Handle messages from worker ─────────────────────────────────────────
@@ -227,8 +254,15 @@ class WorkerClient {
   // ─── Dependency registry helpers ─────────────────────────────────────────
 
   /**
-   * Reads all per-entity IDB cursors in parallel, then sends a single
-   * "declare" message to the worker with the current needs set.
+   * Reads all per-entity IDB cursors AND current IDB IDs in parallel, then
+   * sends a single "declare" message to the worker with the current needs set.
+   *
+   * Sending IDB IDs lets the worker detect orphans (server-deleted rows) on
+   * the very first reconcile after boot — before broadcastIds is populated.
+   * Multiple tabs reloading simultaneously will each send their IDB IDs; the
+   * worker merges (unions) them over a 500 ms debounce window before running
+   * one reconcile for all tabs.
+   *
    * Called whenever needs changes (entity added or removed).
    */
   private async flushDeclare(): Promise<void> {
@@ -238,22 +272,45 @@ class WorkerClient {
       workers:   "workers_cursor",
     };
 
-    // Only fetch cursors for entities we actually need — no point sending
-    // a cursor for an entity we're declaring as unneeded.
+    // Only fetch data for entities we actually need.
     const needed = Array.from(this.needs) as SyncEntity[];
-    const cursorEntries = await Promise.all(
-      needed.map(async (entity) => {
-        const cursor = await getCursor(CURSOR_KEYS[entity] as any);
-        return [entity, cursor] as const;
-      })
-    );
+
+    const [cursorEntries, idbIdEntries] = await Promise.all([
+      // Cursors — used to resume delta syncing from the right point
+      Promise.all(
+        needed.map(async (entity) => {
+          const cursor = await getCursor(CURSOR_KEYS[entity] as any);
+          return [entity, cursor] as const;
+        })
+      ),
+      // IDB IDs — used by the worker to detect orphans on first reconcile
+      Promise.all(
+        needed.map(async (entity) => {
+          let ids: string[];
+          if (entity === "workers") {
+            const rows = await getAllWorkers();
+            ids = rows.map((r) => r.id);
+          } else {
+            const type = entity === "downloads" ? "http" : "torrent";
+            const rows = await getAllDownloads(type);
+            ids = rows.map((r) => r.id);
+          }
+          return [entity, ids] as const;
+        })
+      ),
+    ]);
 
     const cursors: Partial<Record<SyncEntity, string>> = {};
     for (const [entity, cursor] of cursorEntries) {
       if (cursor) cursors[entity] = cursor;
     }
 
-    this.send({ type: "declare", needs: needed, cursors });
+    const idbIds: Partial<Record<SyncEntity, string[]>> = {};
+    for (const [entity, ids] of idbIdEntries) {
+      idbIds[entity] = ids;
+    }
+
+    this.send({ type: "declare", needs: needed, cursors, idbIds });
   }
 
   // ─── Data subscribe / unsubscribe ─────────────────────────────────────────
@@ -373,6 +430,36 @@ class WorkerClient {
   syncNow(entity: SyncEntity): void {
     if (this.isFallback) { this._fallback.syncNow(entity); return; }
     this.send({ type: "syncNow", entity });
+  }
+
+  /**
+   * Reset the worker's in-memory cursor for an entity to null, then
+   * also wipe the IDB cursor so restarts resume from the beginning.
+   * The worker will immediately run a full (non-delta) sync.
+   */
+  async resetCursorAndSync(entity: SyncEntity): Promise<void> {
+    if (this.isFallback) { this._fallback.syncNow(entity); return; }
+
+    // Wipe IDB cursor first so if the worker restarts it also starts clean
+    const CURSOR_KEYS: Record<SyncEntity, string> = {
+      downloads: "downloads_cursor",
+      torrents:  "torrents_cursor",
+      workers:   "workers_cursor",
+    };
+    await setCursor(CURSOR_KEYS[entity] as any, new Date(0).toISOString());
+
+    // If the worker isn't ready yet, wait for it so resetCursor is the LAST
+    // thing in the queue — after declare (which may set an old cursor).
+    if (!this.ready) {
+      await new Promise<void>((resolve) => {
+        const check = setInterval(() => {
+          if (this.ready) { clearInterval(check); resolve(); }
+        }, 20);
+      });
+    }
+
+    // Tell the running worker to drop its in-memory cursor and force a sync
+    this.send({ type: "resetCursor", entity });
   }
 
   trackDownload(

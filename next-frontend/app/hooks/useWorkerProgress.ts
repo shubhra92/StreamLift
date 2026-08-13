@@ -36,7 +36,7 @@ export function useWorkerProgress(
     }
 
     const wc = client.current;
-    void wc.init();
+    let cancelled = false;
 
     const onProgress = (payload: ProgressPayload) => {
       setProgress(payload);
@@ -44,9 +44,15 @@ export function useWorkerProgress(
     };
 
     const unsub = wc.subscribeProgress(onProgress);
-    wc.trackDownload(downloadId, workerId, "worker");
+
+    // Await init so trackDownload is sent after the port is established.
+    wc.init().then(() => {
+      if (cancelled) return;
+      wc.trackDownload(downloadId, workerId, "worker");
+    });
 
     return () => {
+      cancelled = true;
       unsub();
       wc.stopTracking();
     };

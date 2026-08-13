@@ -1,33 +1,25 @@
 "use client";
 
 import { motion } from "motion/react";
-import { Trash2, Pencil } from "lucide-react";
+import { Trash2, Pencil, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { formatDate, formatFileSize, getStatusClass, getStatusVariant } from "./utils";
 import type { DownloadItemProps } from "./types";
-import { useEffect } from "react";
 import { LocationLabel } from "./LocationLabel";
 
 export function DownloadItem({
-  index,
   download,
   isDownloading,
+  isDeleting,
   progress,
   onSelect,
   onDelete,
   onEdit,
-  handleUpdateDownlodingItem
 }: DownloadItemProps) {
   const canEdit = download.status === "pending";
   const canDelete = download.status !== "downloading" && !isDownloading;
-
-  useEffect(()=>{
-    if(isDownloading && progress && progress.percent! > 0 && !download.fileSize){
-      handleUpdateDownlodingItem(index, download.id)
-    }
-  },[progress])
   return (
     <motion.tr
       initial={{ opacity: 0, y: 10 }}
@@ -63,12 +55,16 @@ export function DownloadItem({
                   variant="ghost"
                   size="icon"
                   className="h-8 w-8 text-destructive hover:text-destructive"
+                  disabled={isDeleting}
                   onClick={(e) => {
                     e.stopPropagation();
                     onDelete(download.id);
                   }}
                 >
-                  <Trash2 className="h-4 w-4" />
+                  {isDeleting
+                    ? <Loader2 className="h-4 w-4 animate-spin" />
+                    : <Trash2 className="h-4 w-4" />
+                  }
                 </Button>
               )}
             </div>
@@ -99,18 +95,21 @@ export function DownloadItem({
       </TableCell>
 
       {/* Desktop Table View */}
-      <TableCell className="hidden md:table-cell px-4 py-3 text-sm max-w-xs truncate">
-        {download.fileName || "-"}
+      {/* File name: min-w-0 lets the cell shrink; overflow+truncate clips long names */}
+      <TableCell className="hidden md:table-cell px-4 py-3 text-sm min-w-0">
+        <span className="block truncate" title={download.fileName || undefined}>
+          {download.fileName || "-"}
+        </span>
       </TableCell>
-      <TableCell className="hidden md:table-cell px-4 py-3 text-sm text-muted-foreground">
+      <TableCell className="hidden md:table-cell px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">
         {download.fileSize ? formatFileSize(download.fileSize) : "-"}
       </TableCell>
-      <TableCell className="hidden md:table-cell px-4 py-3 text-sm text-muted-foreground capitalize">
+      <TableCell className="hidden md:table-cell px-4 py-3 text-sm text-muted-foreground capitalize whitespace-nowrap">
         <LocationLabel location={download.location} />
       </TableCell>
       <TableCell className="hidden md:table-cell px-4 py-3">
         {isDownloading ? (
-          <div className="w-full bg-gray-200 rounded h-3 min-w-[100px]"> {/* bg-gray-200 <= bg-muted */}
+          <div className="w-full bg-gray-200 rounded h-3 min-w-[80px]">
             <motion.div
               className="bg-green-600 h-3 rounded"
               initial={{ width: 0 }}
@@ -119,14 +118,12 @@ export function DownloadItem({
             />
           </div>
         ) : (
-          <Badge 
-          // variant={getStatusVariant(download.status)} 
-          className={getStatusClass(download.status)}>
+          <Badge className={getStatusClass(download.status)}>
             {download.status}
           </Badge>
         )}
       </TableCell>
-      <TableCell className="hidden md:table-cell px-4 py-3 text-sm text-muted-foreground">
+      <TableCell className="hidden md:table-cell px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">
         {formatDate(download.createdAt)}
       </TableCell>
       <TableCell className="hidden md:table-cell px-4 py-3">
@@ -149,12 +146,16 @@ export function DownloadItem({
               variant="ghost"
               size="icon"
               className="h-8 w-8 text-destructive hover:text-destructive"
+              disabled={isDeleting}
               onClick={(e) => {
                 e.stopPropagation();
                 onDelete(download.id);
               }}
             >
-              <Trash2 className="h-4 w-4" />
+              {isDeleting
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <Trash2 className="h-4 w-4" />
+              }
             </Button>
           </div>
         )}

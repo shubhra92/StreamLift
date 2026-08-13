@@ -43,7 +43,13 @@ async function resolveWorkerAssignment(
   return { workerId: null };
 }
 
-export async function createDownload(sourceUrl: string, location: string, fileName?: string) {
+export async function createDownload(
+  sourceUrl: string,
+  location: string,
+  fileName?: string,
+  fileSize?: number | null,
+  fileType?: string | null,
+) {
   const guestId = await getGuestId();
   if (!guestId) throw new Error("Unauthorized");
   const { workerId, error } = await resolveWorkerAssignment(location, guestId);
@@ -57,6 +63,8 @@ export async function createDownload(sourceUrl: string, location: string, fileNa
     fileName: fileName || "default",
     status: "pending",
     downloadType: "http",
+    ...(fileSize != null && { fileSize }),
+    ...(fileType   && { fileType }),
   }).returning();
 
   return data;
