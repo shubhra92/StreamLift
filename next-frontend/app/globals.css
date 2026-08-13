@@ -121,5 +121,16 @@
   }
   body {
     @apply bg-background text-foreground;
+    overflow-x: hidden;
+  }
+  /* Next.js route announcer sits at position:absolute and adds to scroll height.
+     Clip it while keeping it accessible to screen readers. */
+  next-route-announcer {
+    position: fixed !important;
+    width: 1px !important;
+    height: 1px !important;
+    overflow: hidden !important;
+    clip: rect(0,0,0,0) !important;
+    white-space: nowrap !important;
   }
 }

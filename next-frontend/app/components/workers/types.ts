@@ -11,6 +11,7 @@ export type WorkerWithStatus = Worker & {
 export interface WorkerListProps {
   workers: WorkerWithStatus[];
   selectedId: string | null;
+  deletingId: string | null;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onCopyScript: (id: string) => void;
@@ -19,15 +20,17 @@ export interface WorkerListProps {
 export interface WorkerItemProps {
   worker: WorkerWithStatus;
   isSelected: boolean;
+  isDeleting: boolean;
   onSelect: () => void;
   onDelete: () => void;
   onCopyScript: () => void;
 }
 
 export interface WorkerDetailsProps {
-  worker: WorkerWithStatus;
+  worker: WorkerWithStatus | null;
   status: WorkerStatus | null;
   onClose: () => void;
+  panelRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 export interface AddWorkerModalProps {

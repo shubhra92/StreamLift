@@ -1,40 +1,55 @@
 "use client";
 
-import { motion, AnimatePresence } from "motion/react";
+import { AnimatePresence } from "motion/react";
+import {
+  Table,
+  TableBody,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { WorkerItem } from "./WorkerItem";
 import type { WorkerListProps } from "./types";
 
-export function WorkerList({ workers, selectedId, onSelect, onDelete, onCopyScript }: WorkerListProps) {
-  if (workers.length === 0) {
-    return (
-      <div className="text-center py-16 text-muted-foreground">
-        <p className="text-lg font-medium mb-1">No workers yet</p>
-        <p className="text-sm">Create a worker to start distributing downloads to Google Colab.</p>
-      </div>
-    );
-  }
-
+export function WorkerList({ workers, selectedId, deletingId, onSelect, onDelete, onCopyScript }: WorkerListProps) {
   return (
-    <div className="space-y-3">
-      <AnimatePresence initial={false}>
-        {workers.map((worker) => (
-          <motion.div
-            key={worker.id}
-            initial={{ opacity: 0, y: -8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.15 }}
-          >
-            <WorkerItem
-              worker={worker}
-              isSelected={selectedId === worker.id}
-              onSelect={() => onSelect(worker.id)}
-              onDelete={() => onDelete(worker.id)}
-              onCopyScript={() => onCopyScript(worker.id)}
-            />
-          </motion.div>
-        ))}
-      </AnimatePresence>
+    <div className="bg-card rounded-xl shadow-md border overflow-hidden">
+      <Table className="w-full table-fixed">
+        <TableHeader className="hidden md:table-header-group">
+          <TableRow className="bg-muted/50">
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 min-w-0">Name</TableHead>
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-28">Status</TableHead>
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-28">Compute</TableHead>
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-28">Location</TableHead>
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-40">IP Address</TableHead>
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-40">Created</TableHead>
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-24"></TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <AnimatePresence mode="popLayout">
+            {workers.length === 0 ? (
+              <TableRow>
+                <td className="px-4 py-8 text-center text-muted-foreground" colSpan={7}>
+                  No workers yet. Click &quot;Create Worker&quot; to add one.
+                </td>
+              </TableRow>
+            ) : (
+              workers.map((worker) => (
+                <WorkerItem
+                  key={worker.id}
+                  worker={worker}
+                  isSelected={selectedId === worker.id}
+                  isDeleting={deletingId === worker.id}
+                  onSelect={() => onSelect(worker.id)}
+                  onDelete={() => onDelete(worker.id)}
+                  onCopyScript={() => onCopyScript(worker.id)}
+                />
+              ))
+            )}
+          </AnimatePresence>
+        </TableBody>
+      </Table>
     </div>
   );
 }

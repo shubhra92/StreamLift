@@ -44,12 +44,29 @@ export default function TorrentsPage() {
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [editingFile, setEditingFile] = useState<FileDownload | null>(null);
 
   const { downloads: idbDownloads, networkStatus, syncNow } = useTorrents();
   const downloads = idbDownloads.map(toFileDownload);
   const { workers } = useWorkers({ enabled: isModalOpen });
   const client = useRef(WorkerClient.getInstance());
+
+  // Refs for outside-click detection on the details panel
+  const listRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [panelHeight, setPanelHeight] = useState(0);
+
+  // Dynamically track panel height so the spacer always matches
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      setPanelHeight(entry.contentRect.height);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [selectedId]);
 
   const torrentService = useTorrentService();
   const isFnEnd = useRef(true);
@@ -168,22 +185,27 @@ export default function TorrentsPage() {
   };
 
   const handleDelete = async (id: string) => {
-    const result = await deleteTorrentDownload(id);
-    if (result.success) {
-      if (id === downloadingFileId) {
-        client.current.stopTracking();
-        setDownloadingFileId(null);
+    setDeletingId(id);
+    try {
+      const result = await deleteTorrentDownload(id);
+      if (result.success) {
+        if (id === downloadingFileId) {
+          client.current.stopTracking();
+          setDownloadingFileId(null);
+        }
+        await client.current.deleteDownload(id);
+        syncNow();
+      } else {
+        alert(result.message);
       }
-      await client.current.deleteDownload(id);
-      syncNow();
-    } else {
-      alert(result.message);
+    } finally {
+      setDeletingId(null);
     }
   };
 
   const handleEditSubmit = async (
     id: string,
-    data: { sourceUrl: string; fileName?: string; location: "server" | "mega" }
+    data: { sourceUrl: string; fileName?: string; location: "server" | "cloud" | "mega" }
   ) => {
     setLoading(true);
     try {
@@ -201,8 +223,21 @@ export default function TorrentsPage() {
 
   const selectedDownload = downloads.find((d) => d.id === selectedId);
 
+  // Close the details panel when clicking outside both the list and the panel
+  useEffect(() => {
+    if (!selectedId) return;
+    const handleMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const inList  = listRef.current?.contains(target);
+      const inPanel = panelRef.current?.contains(target);
+      if (!inList && !inPanel) setSelectedId(null);
+    };
+    document.addEventListener("mousedown", handleMouseDown);
+    return () => document.removeEventListener("mousedown", handleMouseDown);
+  }, [selectedId]);
+
   return (
-    <main className="min-h-screen bg-background p-4 md:p-6">
+    <main className="bg-background p-4 md:p-6">
       <div className="max-w-5xl mx-auto">
         <motion.div
           initial={{ opacity: 0, y: -20 }}
@@ -225,24 +260,29 @@ export default function TorrentsPage() {
 
         <OfflineBanner networkStatus={networkStatus} />
 
-        <DownloadList
-          downloads={downloads}
-          setDownloads={() => {}}
-          downloadingFileId={downloadingFileId}
-          progress={progress}
-          onSelect={setSelectedId}
-          onDelete={handleDelete}
-          onEdit={setEditingFile}
+        <div ref={listRef}>
+          <DownloadList
+            downloads={downloads}
+            downloadingFileId={downloadingFileId}
+            deletingId={deletingId}
+            selectedId={selectedId}
+            progress={progress}
+            onSelect={setSelectedId}
+            onDelete={handleDelete}
+            onEdit={setEditingFile}
+          />
+        </div>
+
+        <DownloadDetails
+          download={selectedDownload ?? null}
+          isDownloading={downloadingFileId === selectedId}
+          progress={downloadingFileId === selectedId ? progress : null}
+          onClose={() => setSelectedId(null)}
+          panelRef={panelRef}
         />
 
-        {selectedDownload && (
-          <DownloadDetails
-            download={selectedDownload}
-            isDownloading={downloadingFileId === selectedId}
-            progress={downloadingFileId === selectedId ? progress : null}
-            onClose={() => setSelectedId(null)}
-          />
-        )}
+        {/* Spacer: exact height of the panel so covered rows can be scrolled into view */}
+        {selectedId && <div style={{ height: panelHeight }} className="shrink-0" aria-hidden="true" />}
       </div>
 
       <AddTorrentModal

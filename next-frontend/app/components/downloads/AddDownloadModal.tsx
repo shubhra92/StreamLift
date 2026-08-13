@@ -36,7 +36,7 @@ function formatBytes(bytes: number): string {
 }
 
 const DEFAULT_LOCATION =
-  process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED === "true" ? "server" : "mega";
+  process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED === "true" ? "server" : "cloud";
 
 // ─── Component ────────────────────────────────────────────────────────────────
 

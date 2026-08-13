@@ -8,7 +8,7 @@ export function LocationLabel({ location }: { location: string | null | undefine
   const [label, setLabel] = useState<string | null>(() => {
     if (!location) return "—";
     if (location === "server") return "Cloud (Server)";
-    if (location === "mega") return "Cloud";
+    if (location === "cloud" || location === "mega") return "Cloud";
     if (location === "all-workers") return "All Workers";
     if (location.startsWith("worker-")) return "Worker…";
     return location;

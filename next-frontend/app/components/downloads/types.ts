@@ -14,6 +14,8 @@ export interface DownloadItemProps {
   isDownloading: boolean;
   /** True while the delete server action is in-flight for this row */
   isDeleting: boolean;
+  /** True when this row's detail panel is open */
+  isSelected: boolean;
   progress: Progress | null;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
@@ -25,6 +27,8 @@ export interface DownloadListProps {
   downloadingFileId: string | null;
   /** ID of the row currently being deleted — shows spinner on its delete button */
   deletingId: string | null;
+  /** ID of the row whose detail panel is currently open */
+  selectedId: string | null;
   progress: Progress | null;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
@@ -58,6 +62,6 @@ export interface AddDownloadModalProps {
 export interface EditDownloadModalProps {
   file: FileDownload | null;
   onClose: () => void;
-  onSubmit: (id: string, data: { sourceUrl: string; fileName?: string; location: "server" | "mega" }) => Promise<void>;
+  onSubmit: (id: string, data: { sourceUrl: string; fileName?: string; location: "server" | "cloud" | "mega" }) => Promise<void>;
   loading: boolean;
 }

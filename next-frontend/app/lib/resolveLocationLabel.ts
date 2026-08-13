@@ -42,7 +42,7 @@ export async function resolveLocationLabel(
 ): Promise<string | null> {
   if (!location) return "—";
   if (location === "server") return "Cloud (Server)";
-  if (location === "mega") return "Cloud";
+  if (location === "cloud" || location === "mega") return "Cloud";
   if (location === "all-workers") return "All Workers";
 
   if (location.startsWith("worker-")) {
@@ -61,7 +61,7 @@ export function resolveLocationLabelSync(
 ): string {
   if (!location) return "—";
   if (location === "server") return "Cloud (Server)";
-  if (location === "mega") return "Cloud";
+  if (location === "cloud" || location === "mega") return "Cloud";
   if (location === "all-workers") return "All Workers";
 
   if (location.startsWith("worker-")) {

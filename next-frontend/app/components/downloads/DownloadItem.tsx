@@ -13,6 +13,7 @@ export function DownloadItem({
   download,
   isDownloading,
   isDeleting,
+  isSelected,
   progress,
   onSelect,
   onDelete,
@@ -26,7 +27,9 @@ export function DownloadItem({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -10 }}
       transition={{ duration: 0.2 }}
-      className="hover:bg-muted/50 cursor-pointer border-b"
+      className={`hover:bg-muted/50 cursor-pointer border-b transition-colors ${
+        isSelected ? "bg-blue-50/50 dark:bg-blue-950/20" : ""
+      }`}
       onClick={() => onSelect(download.id)}
     >
       {/* Mobile Card View */}

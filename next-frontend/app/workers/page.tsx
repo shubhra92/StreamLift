@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";import { motion } from "motion/react";
+import { useState, useEffect, useRef } from "react";
+import { motion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { WorkerList } from "../components/workers/WorkerList";
 import { WorkerDetails } from "../components/workers/WorkerDetails";
@@ -28,6 +29,11 @@ export default function WorkersPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const listRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [panelHeight, setPanelHeight] = useState(0);
 
   // ── IDB-backed data + sync ────────────────────────────────────────────────
   const { workers: idbWorkers, networkStatus, syncNow } = useWorkers();
@@ -78,16 +84,20 @@ export default function WorkersPage() {
   };
 
   const handleDeleteWorker = async (workerId: string) => {
-    const result = await deleteWorker(workerId);
-    if (result.success) {
-      if (selectedId === workerId) setSelectedId(null);
-      // Invalidate location label cache so deleted worker name disappears
-      const { invalidateWorkerNameCache } = await import("../lib/resolveLocationLabel");
-      invalidateWorkerNameCache();
-      await WorkerClient.getInstance().deleteWorker(workerId);
-      syncNow();
-    } else {
-      alert(result.message ?? "Failed to delete worker");
+    setDeletingId(workerId);
+    try {
+      const result = await deleteWorker(workerId);
+      if (result.success) {
+        if (selectedId === workerId) setSelectedId(null);
+        const { invalidateWorkerNameCache } = await import("../lib/resolveLocationLabel");
+        invalidateWorkerNameCache();
+        await WorkerClient.getInstance().deleteWorker(workerId);
+        syncNow();
+      } else {
+        alert(result.message ?? "Failed to delete worker");
+      }
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -109,8 +119,30 @@ export default function WorkersPage() {
 
   const selectedWorker = workers.find((w) => w.id === selectedId) ?? null;
 
+  // Dynamic spacer height
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => setPanelHeight(entry.contentRect.height));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [selectedId]);
+
+  // Close panel on outside click
+  useEffect(() => {
+    if (!selectedId) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (!listRef.current?.contains(target) && !panelRef.current?.contains(target)) {
+        setSelectedId(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [selectedId]);
+
   return (
-    <main className="min-h-screen bg-background p-4 md:p-6">
+    <main className="bg-background p-4 md:p-6">
       <div className="max-w-4xl mx-auto">
         <motion.div
           initial={{ opacity: 0, y: -20 }}
@@ -133,21 +165,25 @@ export default function WorkersPage() {
 
         <OfflineBanner networkStatus={networkStatus} />
 
-        <WorkerList
-          workers={workers}
-          selectedId={selectedId}
-          onSelect={(id) => setSelectedId((prev) => (prev === id ? null : id))}
-          onDelete={handleDeleteWorker}
-          onCopyScript={handleCopyScript}
+        <div ref={listRef}>
+          <WorkerList
+            workers={workers}
+            selectedId={selectedId}
+            deletingId={deletingId}
+            onSelect={(id) => setSelectedId((prev) => (prev === id ? null : id))}
+            onDelete={handleDeleteWorker}
+            onCopyScript={handleCopyScript}
+          />
+        </div>
+
+        <WorkerDetails
+          worker={selectedWorker}
+          status={workerStatus}
+          onClose={() => setSelectedId(null)}
+          panelRef={panelRef}
         />
 
-        {selectedWorker && (
-          <WorkerDetails
-            worker={selectedWorker}
-            status={workerStatus}
-            onClose={() => setSelectedId(null)}
-          />
-        )}
+        {selectedId && <div style={{ height: panelHeight }} className="shrink-0" aria-hidden="true" />}
       </div>
 
       <AddWorkerModal

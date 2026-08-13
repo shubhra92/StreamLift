@@ -15,6 +15,7 @@ export function DownloadList({
   downloads,
   downloadingFileId,
   deletingId,
+  selectedId,
   progress,
   onSelect,
   onDelete,
@@ -51,6 +52,7 @@ export function DownloadList({
                   download={download}
                   isDownloading={downloadingFileId === download.id}
                   isDeleting={deletingId === download.id}
+                  isSelected={selectedId === download.id}
                   progress={downloadingFileId === download.id ? progress : null}
                   onSelect={onSelect}
                   onDelete={onDelete}

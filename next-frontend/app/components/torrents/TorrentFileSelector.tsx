@@ -4,6 +4,7 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { FileVideo, FileAudio, FileImage, FileText, FileArchive, File, Check } from "lucide-react";
+import { LocationSelect } from "../downloads/LocationSelect";
 
 interface TorrentFile {
   index: number;
@@ -25,6 +26,11 @@ interface TorrentMetadata {
 
 interface TorrentFileSelectorProps {
   metadata: TorrentMetadata;
+  fileNameOverride: string;
+  onFileNameOverrideChange: (value: string) => void;
+  location: string;
+  onLocationChange: (value: string) => void;
+  workers?: { id: string; name: string; online: boolean }[];
   onConfirm: (selectedIndices: number[], selectedFiles: TorrentFile[]) => void;
   onCancel: () => void;
   loading: boolean;
@@ -32,6 +38,11 @@ interface TorrentFileSelectorProps {
 
 export function TorrentFileSelector({
   metadata,
+  fileNameOverride,
+  onFileNameOverrideChange,
+  location,
+  onLocationChange,
+  workers = [],
   onConfirm,
   onCancel,
   loading,
@@ -93,6 +104,31 @@ export function TorrentFileSelector({
             Selected: {selectedIndices.size} file(s) ({formatBytes(selectedSize)})
           </p>
         </div>
+      </div>
+
+      {/* File name override */}
+      <div>
+        <label className="text-sm text-muted-foreground mb-2 block">
+          File Name Override (optional)
+        </label>
+        <input
+          type="text"
+          placeholder={metadata.files.length === 1 ? metadata.files[0].name : metadata.name}
+          value={fileNameOverride}
+          onChange={(e) => onFileNameOverrideChange(e.target.value)}
+          className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring text-sm"
+        />
+      </div>
+
+      {/* Storage location */}
+      <div>
+        <label className="text-sm text-muted-foreground mb-2 block">
+          Storage Location
+        </label>
+        <LocationSelect value={location} onChange={onLocationChange} workers={workers} />
+        <p className="text-xs text-muted-foreground mt-1">
+          MEGA recommended for persistent storage
+        </p>
       </div>
 
       <div className="flex gap-2">

@@ -62,7 +62,7 @@ export function AddTorrentModal({
   workers = [],
 }: AddTorrentModalProps) {
   const defaultLocation =
-    process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED === "true" ? "server" : "mega";
+    process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED === "true" ? "server" : "cloud";
 
   const [step, setStep] = useState<"input" | "select">("input");
   const [magnetLink, setMagnetLink] = useState("");
@@ -244,29 +244,6 @@ export function AddTorrentModal({
                 )}
               </div>
 
-              <div>
-                <label className="text-sm text-muted-foreground mb-2 block">
-                  File Name Override (optional)
-                </label>
-                <input
-                  type="text"
-                  placeholder="Leave blank to use torrent file name"
-                  value={fileNameOverride}
-                  onChange={(e) => setFileNameOverride(e.target.value)}
-                  className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm text-muted-foreground mb-2 block">
-                  Storage Location
-                </label>
-                <LocationSelect value={location} onChange={setLocation} workers={workers} />
-                <p className="text-xs text-muted-foreground mt-1">
-                  MEGA recommended for persistent storage
-                </p>
-              </div>
-
               <div className="flex flex-col-reverse sm:flex-row gap-3">
                 <Button
                   variant="outline"
@@ -294,6 +271,11 @@ export function AddTorrentModal({
               {metadata && (
                 <TorrentFileSelector
                   metadata={metadata}
+                  fileNameOverride={fileNameOverride}
+                  onFileNameOverrideChange={setFileNameOverride}
+                  location={location}
+                  onLocationChange={setLocation}
+                  workers={workers}
                   onConfirm={handleConfirmSelection}
                   onCancel={() => setStep("input")}
                   loading={loading}

@@ -158,7 +158,7 @@ export async function updateTorrentDownload(
   data: {
     sourceUrl?: string;
     fileName?: string;
-    location?: "server" | "mega";
+    location?: "server" | "cloud" | "mega";
     status?: string;
     errorMessage?: string;
   }

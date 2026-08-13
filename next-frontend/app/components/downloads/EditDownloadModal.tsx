@@ -19,13 +19,13 @@ export function EditDownloadModal({
 }: EditDownloadModalProps) {
   const [url, setUrl] = useState("");
   const [fileName, setFileName] = useState("");
-  const [location, setLocation] = useState<"server" | "mega">("server");
+  const [location, setLocation] = useState<"server" | "cloud" | "mega">("server");
 
   useEffect(() => {
     if (file) {
       setUrl(file.sourceUrl);
       setFileName(file.fileName || "");
-      setLocation((file.location as "server" | "mega") || "server");
+      setLocation((file.location as "server" | "cloud" | "mega") || "server");
     }
   }, [file]);
 
@@ -75,12 +75,12 @@ export function EditDownloadModal({
             />
 
             <select
-              value={location}
-              onChange={(e) => setLocation(e.target.value as "server" | "mega")}
+              value={location === "mega" ? "cloud" : location}
+              onChange={(e) => setLocation(e.target.value as "server" | "cloud")}
               className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             >
               <option value="server">Cloud (Server)</option>
-              <option value="mega">Cloud</option>
+              <option value="cloud">Cloud</option>
             </select>
 
             <div className="flex flex-col-reverse sm:flex-row gap-3">

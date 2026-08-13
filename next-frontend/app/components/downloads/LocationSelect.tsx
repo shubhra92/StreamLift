@@ -3,7 +3,7 @@
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const serverDownloadEnabled = process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED === "true";
-const cloudLocation = serverDownloadEnabled ? "server" : "mega";
+const cloudLocation = serverDownloadEnabled ? "server" : "cloud";
 const cloudLabel = serverDownloadEnabled ? "Cloud (Server)" : "Cloud";
 
 export interface WorkerOption {
@@ -32,7 +32,7 @@ export function LocationSelect({ value, onChange, className, workers = [] }: Loc
 
   // Map the actual stored value back to "cloud" for display
   const displayValue =
-    value === "mega" || value === "server" ? "cloud" : value;
+    value === "cloud" || value === "mega" || value === "server" ? "cloud" : value;
 
   return (
     <Select value={displayValue} onValueChange={handleChange}>

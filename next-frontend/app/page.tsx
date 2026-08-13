@@ -45,6 +45,18 @@ export default function Home() {
   // Refs for outside-click detection on the details panel
   const listRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const [panelHeight, setPanelHeight] = useState(0);
+
+  // Dynamically track panel height so the spacer always matches
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      setPanelHeight(entry.contentRect.height);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [selectedId]); // re-attach when panel mounts/unmounts
 
   const { downloads: idbDownloads, networkStatus, syncNow } = useDownloads();
   const downloads = idbDownloads.map(toFileDownload);
@@ -229,7 +241,7 @@ export default function Home() {
 
   const handleEditSubmit = async (
     id: string,
-    data: { sourceUrl: string; fileName?: string; location: "server" | "mega" }
+    data: { sourceUrl: string; fileName?: string; location: "server" | "cloud" | "mega" }
   ) => {
     setLoading(true);
     try {
@@ -248,7 +260,7 @@ export default function Home() {
   const selectedDownload = downloads.find((d) => d.id === selectedId);
 
   return (
-    <main className="min-h-screen bg-background p-4 md:p-6">
+    <main className="bg-background p-4 md:p-6">
       <div className="max-w-4xl mx-auto">
         <motion.div
           initial={{ opacity: 0, y: -20 }}
@@ -274,6 +286,7 @@ export default function Home() {
             downloads={downloads}
             downloadingFileId={downloadingFileId}
             deletingId={deletingId}
+            selectedId={selectedId}
             progress={progress}
             onSelect={setSelectedId}
             onDelete={handleDelete}
@@ -288,6 +301,9 @@ export default function Home() {
           onClose={() => setSelectedId(null)}
           panelRef={panelRef}
         />
+
+        {/* Spacer: exact height of the panel so covered rows can be scrolled into view */}
+        {selectedId && <div style={{ height: panelHeight }} className="shrink-0" aria-hidden="true" />}
       </div>
 
       <AddDownloadModal

@@ -6,7 +6,9 @@ const serverDownloadEnabled = process.env.NEXT_PUBLIC_SERVER_DOWNLOAD_ENABLED ==
 
 /** Resolve "cloud" to the actual backend endpoint segment */
 function resolveLocation(location: string): string {
-    if (location === "cloud") return serverDownloadEnabled ? "server" : "mega";
+    if (location === "cloud") return serverDownloadEnabled ? "server" : "cloud";
+    // Backward compat: old DB rows stored "mega" before the rename
+    if (location === "mega") return "cloud";
     return location;
 }
 

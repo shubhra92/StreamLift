@@ -45,7 +45,7 @@ export function Navigation() {
   }, [open]);
 
   return (
-    <nav className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+    <nav className="sticky top-0 z-30 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="max-w-4xl mx-auto px-4 md:px-6">
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
