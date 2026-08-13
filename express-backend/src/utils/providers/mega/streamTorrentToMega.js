@@ -1,7 +1,7 @@
 import WebTorrent from "webtorrent";
-import { progressMap } from "./progressStore.js";
+import { progressMap } from "../../progressStore.js";
 import { initMega } from "./megaStorage.js";
-import { db, fileDownloads } from "../db/index.js";
+import { db, fileDownloads } from "../../../db/index.js";
 import { eq } from "drizzle-orm";
 import { Transform } from "stream";
 

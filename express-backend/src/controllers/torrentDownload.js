@@ -1,6 +1,6 @@
 import { progressMap } from "../utils/progressStore.js";
 import { serverTorrentDownload } from "../utils/serverTorrentDownload.js";
-import { streamTorrentToMega } from "../utils/streamTorrentToMega.js";
+import { getCloudUploadFns } from "../utils/cloudProvider.js";
 import { db, fileDownloads } from "../db/index.js";
 import { eq } from "drizzle-orm";
 
@@ -51,7 +51,6 @@ export async function torrentServerDownload(req, res) {
         const id = data.id;
         const guestId = data.guestId ?? null;
 
-        // Pre-fill progress with known fileSize if available from DB record
         progressMap.set(id, {
             downloadedBytes: 0,
             totalBytes: data.fileSize ?? null,
@@ -59,7 +58,6 @@ export async function torrentServerDownload(req, res) {
             percent: null,
         });
 
-        // Use fileName from DB record (pre-filled by frontend) or fall back to request
         const resolvedFileName = data.fileName || file_name;
 
         serverTorrentDownload(id, magnet_link, {
@@ -79,7 +77,7 @@ export async function torrentServerDownload(req, res) {
     }
 }
 
-export async function torrentMegaUpload(req, res) {
+export async function torrentCloudUpload(req, res) {
     try {
         const { magnet_link, file_name, file_id } = req.body;
         let { file_indices } = req.body;
@@ -115,7 +113,7 @@ export async function torrentMegaUpload(req, res) {
         // Only create a new record if no existing record was found
         if (!file_id || !data) {
             [data] = await db.insert(fileDownloads).values({
-                location: "mega",
+                location: "cloud",
                 sourceUrl: magnet_link,
                 downloadType: "torrent",
                 selectedFileIndices: file_indices ? JSON.stringify(file_indices) : null,
@@ -126,7 +124,6 @@ export async function torrentMegaUpload(req, res) {
         const id = data.id;
         const guestId = data.guestId ?? null;
 
-        // Pre-fill progress with known fileSize if available from DB record
         progressMap.set(id, {
             downloadedBytes: 0,
             totalBytes: data.fileSize ?? null,
@@ -134,10 +131,11 @@ export async function torrentMegaUpload(req, res) {
             percent: null,
         });
 
-        // Use fileName from DB record (pre-filled by frontend) or fall back to request
         const resolvedFileName = data.fileName || file_name;
 
-        streamTorrentToMega(id, magnet_link, {
+        // Resolve the provider at runtime via STORAGE_PROVIDER env var
+        const { streamTorrentToCloud } = await getCloudUploadFns();
+        streamTorrentToCloud(id, magnet_link, {
             fileName: resolvedFileName,
             fileIndices: file_indices,
             guestId
@@ -145,11 +143,11 @@ export async function torrentMegaUpload(req, res) {
 
         return res.status(200).send({
             status: true,
-            message: "torrent to MEGA upload started successfully",
+            message: "torrent to cloud upload started successfully",
             data: { fileStatusId: id }
         });
     } catch (error) {
-        console.error("Error in torrentMegaUpload:", error);
+        console.error("Error in torrentCloudUpload:", error);
         return res.status(500).send({ status: false, details: error.message });
     }
 }

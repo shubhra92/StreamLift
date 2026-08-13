@@ -1,10 +1,9 @@
 import express from "express";
-import { streamServerDownload, streamMegaUpload } from "../controllers/streamDownload.js";
+import { streamServerDownload, streamCloudUpload } from "../controllers/streamDownload.js";
 
 const router = express.Router();
 
 router.post("/server", streamServerDownload);
-router.post("/mega", streamMegaUpload);
-
+router.post("/cloud", streamCloudUpload);
 
 export default router;

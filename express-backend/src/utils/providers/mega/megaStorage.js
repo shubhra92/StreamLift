@@ -1,5 +1,5 @@
 import { Storage } from "megajs";
-import { db, megaSessions } from "../db/index.js";
+import { db, megaSessions } from "../../../db/index.js";
 import { eq, and } from "drizzle-orm";
 
 let mega = null;

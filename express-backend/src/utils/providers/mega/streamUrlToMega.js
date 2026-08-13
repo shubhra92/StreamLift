@@ -1,7 +1,7 @@
 import path from "path";
-import { progressMap } from "./progressStore.js";
+import { progressMap } from "../../progressStore.js";
 import { initMega } from "./megaStorage.js";
-import { db, fileDownloads } from "../db/index.js";
+import { db, fileDownloads } from "../../../db/index.js";
 import { eq } from "drizzle-orm";
 
 
@@ -68,10 +68,16 @@ export async function streamUrlToMega(id, url, options = { fileName: null, guest
         throw new Error(`Download failed with status ${response.status}`);
     }
 
-    const [fileType, fileExtention] = response.headers.get("content-type")?.split("/")
-    const filename = options.fileName ?? response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1] ?? `movie.${fileExtention}`
+    const contentType = response.headers.get("content-type") ?? "";
+    // Store the full mime type (e.g. "video/mp4"), stripping codec params
+    const fileType = contentType.split(";")[0].trim() || null;
+    const fileExtension = fileType ? fileType.split("/")[1] ?? null : null;
+    const filename = options.fileName
+        ?? response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1]
+        ?? (fileExtension ? `download.${fileExtension}` : "download");
 
-    const totalBytes = Number(response.headers.get("content-length")) || 0;
+    // Use null when content-length is absent — 0 would be misleading
+    const totalBytes = Number(response.headers.get("content-length")) || null;
     let downloadedBytes = 0;
 
     // Resolve the upload target node — guest folder when guestId is present, root otherwise
@@ -87,7 +93,7 @@ export async function streamUrlToMega(id, url, options = { fileName: null, guest
     //update db save file detail status from pending to downloading
     await db.update(fileDownloads).set({
         locationPath: filename,
-        fileName:filename,
+        fileName: filename,
         fileType: fileType,
         status: "downloading",
         fileSize: totalBytes,
@@ -98,7 +104,6 @@ export async function streamUrlToMega(id, url, options = { fileName: null, guest
         fileStream.on("complete", (file) => {
             console.log("MEGA upload completed ✅");
 
-            //update db save file deatil status from pending to downloading
             db.update(fileDownloads).set({
                 status: "completed",
                 updatedAt: new Date(),
@@ -108,15 +113,14 @@ export async function streamUrlToMega(id, url, options = { fileName: null, guest
                         downloadedBytes,
                         totalBytes,
                         percent: 100,
-                        percentFixed2: 100.0,
+                        percentFixed2: "100.00",  // string — consistent with in-progress format
                         done: true,
                     });
                     resolve(file);
                 }).catch(() => {
-                    console.log("failed to update db")
+                    console.log("failed to update db");
                     resolve(file);
-                })
-            // resolve(file);
+                });
         });
 
         fileStream.on("error", (err) => {
@@ -143,13 +147,11 @@ export async function streamUrlToMega(id, url, options = { fileName: null, guest
                 write(chunk) {
                     downloadedBytes += chunk.length;
                     
-                    // Update progress tracking
                     const progressDetail = {};
                     if (totalBytes) {
-                        const percent = ((downloadedBytes / totalBytes) * 100).toFixed(2);
                         progressDetail["downloadedBytes"] = downloadedBytes;
                         progressDetail["totalBytes"] = totalBytes;
-                        progressDetail["percentFixed2"] = percent;
+                        progressDetail["percentFixed2"] = ((downloadedBytes / totalBytes) * 100).toFixed(2);
                         progressDetail["percent"] = Math.round((downloadedBytes / totalBytes) * 100);
                     } else {
                         progressDetail["downloadedBytes"] = downloadedBytes;

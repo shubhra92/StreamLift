@@ -46,8 +46,14 @@ export async function serverDownloadWithProgress(id, url, options = { fileName: 
         throw new Error(`Download failed with status ${response.status}`);
     }
 
-    const [fileType, fileExtention] = response.headers.get("content-type")?.split("/")
-    const filename = options.fileName ?? response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1] ?? `movie.${fileExtention}`
+    const contentType = response.headers.get("content-type") ?? "";
+    // Store the full mime type (e.g. "video/mp4"), stripping codec params
+    const fileType = contentType.split(";")[0].trim() || null;
+    // Derive extension from the subtype portion
+    const fileExtension = fileType ? fileType.split("/")[1] ?? null : null;
+    const filename = options.fileName
+        ?? response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1]
+        ?? (fileExtension ? `download.${fileExtension}` : "download");
 
     // Scope the download folder to the guest when a guestId is available
     const downloadDir = options.guestId
@@ -58,15 +64,16 @@ export async function serverDownloadWithProgress(id, url, options = { fileName: 
 
     const filePath = path.join(downloadDir, filename);
 
-    const totalBytes = Number(response.headers.get("content-length")) || 0;
+    // Use null when content-length is absent — 0 would be misleading
+    const totalBytes = Number(response.headers.get("content-length")) || null;
     let downloadedBytes = 0;
 
     const fileStream = fs.createWriteStream(filePath);
 
-    //update db save file deatil status fro pending to downloading
+    // Update DB: set status to downloading with known metadata
     await db.update(fileDownloads).set({
         locationPath: filePath,
-        fileName:filename,
+        fileName: filename,
         fileType: fileType,
         status: "downloading",
         fileSize: totalBytes,
@@ -80,50 +87,42 @@ export async function serverDownloadWithProgress(id, url, options = { fileName: 
                     downloadedBytes += chunk.length;
                     fileStream.write(chunk);
 
-                    const progressDetail = {}
-
+                    const progressDetail = {};
                     if (totalBytes) {
-                        const percent = (
-                            (downloadedBytes / totalBytes) * 100
-                        ).toFixed(2);
-
-                        progressDetail["downloadedBytes"] = downloadedBytes
-                        progressDetail["totalBytes"] = totalBytes
-                        progressDetail["percentFixed2"] = percent
-                        progressDetail["percent"] = totalBytes ? Math.round((downloadedBytes / totalBytes) * 100) : null;
-
-                        // console.log(`Downloading: ${percent}% (${downloadedBytes}/${totalBytes} bytes)`);
+                        const percent = Math.round((downloadedBytes / totalBytes) * 100);
+                        progressDetail["downloadedBytes"] = downloadedBytes;
+                        progressDetail["totalBytes"] = totalBytes;
+                        progressDetail["percentFixed2"] = ((downloadedBytes / totalBytes) * 100).toFixed(2);
+                        progressDetail["percent"] = percent;
                     } else {
-                        progressDetail["downloadedBytes"] = downloadedBytes
-                        progressDetail["totalBytes"] = null
-                        progressDetail["percentFixed2"] = null
-                        progressDetail["percent"] = null
-
-                        // console.log(`Downloaded: ${downloadedBytes} bytes`);
+                        progressDetail["downloadedBytes"] = downloadedBytes;
+                        progressDetail["totalBytes"] = null;
+                        progressDetail["percentFixed2"] = null;
+                        progressDetail["percent"] = null;
                     }
                     progressMap.set(id, progressDetail);
                 },
                 close() {
                     fileStream.end();
                     console.log("Download completed ✅");
-                    
-                    //update db save file deatil status fro pending to downloading
+
                     db.update(fileDownloads).set({
                         status: "completed",
                         updatedAt: new Date(),
                     }).where(eq(fileDownloads.id, id))
-                    .then(()=>{
+                    .then(() => {
                         progressMap.set(id, {
-                            "downloadedBytes": downloadedBytes,
-                            "percent": 100,
-                            "percentFixed2": 100.00,
-                            "done": true
+                            downloadedBytes,
+                            totalBytes,
+                            percent: 100,
+                            percentFixed2: "100.00",  // string — consistent with in-progress format
+                            done: true,
                         });
                         resolve();
-                    }).catch(()=>{
+                    }).catch(() => {
                         console.log("DB update failed");
                         resolve();
-                    })
+                    });
                 },
                 abort(err) {
                     db.update(fileDownloads).set({

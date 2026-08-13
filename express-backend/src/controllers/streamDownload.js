@@ -1,117 +1,99 @@
 import { progressMap } from "../utils/progressStore.js";
 import { serverDownloadWithProgress } from "../utils/serverDownloadWithProgress.js";
-import { streamUrlToMega } from "../utils/streamUrlToMega.js";
+import { getCloudUploadFns } from "../utils/cloudProvider.js";
 import { db, fileDownloads } from "../db/index.js";
 import { eq } from "drizzle-orm";
 
-export async function streamServerDownload(req, res){
-
+export async function streamServerDownload(req, res) {
     try {
-        const {source_url, file_name, file_id} = req.body
+        const { source_url, file_name, file_id } = req.body;
 
+        // file_id is required — the row is always created by Next.js createDownload first
+        if (!file_id) {
+            return res.status(400).send({ details: "file_id is required" });
+        }
+
+        // Idempotency: if this download is already in progress, return early
         if (progressMap.get(file_id)) {
             return res.status(200).send({
                 status: true,
                 message: "file download already started",
-                data: {
-                    fileStatusId: file_id
-                }
-            })
+                data: { fileStatusId: file_id }
+            });
         }
 
-        let data = null;
-
-        if(file_id) {
-            [data] = await db.select().from(fileDownloads).where(eq(fileDownloads.id, file_id)).limit(1);
-        }
-        if(!file_id || !data){
-            [data] = await db.insert(fileDownloads).values({
-                location: "server",
-                sourceUrl: source_url,
-                ...(file_name && {fileName:file_name})
-            }).returning()
+        // Validate the row exists — reject unknown IDs rather than silently creating rows
+        const [data] = await db.select().from(fileDownloads).where(eq(fileDownloads.id, file_id)).limit(1);
+        if (!data) {
+            return res.status(404).send({ details: "Download record not found" });
         }
 
         const id = data.id;
         const guestId = data.guestId ?? null;
-        
-        const progressDetail = {
-            "downloadedBytes":0,
-            "totalBytes":null,
-            "percentFixed2":null,
-            "percent": null,
-        }
 
-        progressMap.set(id, progressDetail);
+        progressMap.set(id, {
+            downloadedBytes: 0,
+            totalBytes: null,
+            percentFixed2: null,
+            percent: null,
+        });
 
-        serverDownloadWithProgress(id, source_url, { fileName: file_name, guestId }).catch(console.error)
+        serverDownloadWithProgress(id, source_url, { fileName: file_name, guestId }).catch(console.error);
 
         return res.status(200).send({
             status: true,
             message: "message succesful recived",
-            data:{
-                fileStatusId: id
-            }
-        })
+            data: { fileStatusId: id }
+        });
     } catch (error) {
-        return res.status(500).send({
-            details: error.message
-        })
+        return res.status(500).send({ details: error.message });
     }
 }
 
-export async function streamMegaUpload(req, res) {
-    try{
-        const { source_url, file_name, file_id } = req.body
+export async function streamCloudUpload(req, res) {
+    try {
+        const { source_url, file_name, file_id } = req.body;
 
+        // file_id is required — the row is always created by Next.js createDownload first
+        if (!file_id) {
+            return res.status(400).send({ details: "file_id is required" });
+        }
+
+        // Idempotency: if this download is already in progress, return early
         if (progressMap.get(file_id)) {
             return res.status(200).send({
                 status: true,
                 message: "file download already started",
-                data: {
-                    fileStatusId: file_id
-                }
-            })
+                data: { fileStatusId: file_id }
+            });
         }
 
-        let data = null;
-
-        if(file_id) {
-            [data] = await db.select().from(fileDownloads).where(eq(fileDownloads.id, file_id))
-        }
-        if(!file_id || !data){
-            [data] = await db.insert(fileDownloads).values({
-                location: "server",
-                sourceUrl: source_url,
-                ...(file_name && {fileName:file_name})
-            }).returning()
+        // Validate the row exists — reject unknown IDs rather than silently creating rows
+        const [data] = await db.select().from(fileDownloads).where(eq(fileDownloads.id, file_id)).limit(1);
+        if (!data) {
+            return res.status(404).send({ details: "Download record not found" });
         }
 
         const id = data.id;
         const guestId = data.guestId ?? null;
 
-        const progressDetail = {
-            "downloadedBytes": 0,
-            "totalBytes": null,
-            "percentFixed2": null,
-            "percent": null,
-        }
-        progressMap.set(id, progressDetail);
+        progressMap.set(id, {
+            downloadedBytes: 0,
+            totalBytes: null,
+            percentFixed2: null,
+            percent: null,
+        });
 
-        streamUrlToMega(id, source_url, { fileName: file_name, guestId }).catch(console.error)
+        // Resolve the provider at runtime via STORAGE_PROVIDER env var
+        const { streamUrlToCloud } = await getCloudUploadFns();
+        streamUrlToCloud(id, source_url, { fileName: file_name, guestId }).catch(console.error);
 
         return res.status(200).send({
             status: true,
             message: "message succesful recived",
-            data:{
-                fileStatusId: id
-            }
-        })
-
+            data: { fileStatusId: id }
+        });
     } catch (error) {
-        return res.status(500).send({
-            details: error.message
-        })
+        return res.status(500).send({ details: error.message });
     }
-    
 }
