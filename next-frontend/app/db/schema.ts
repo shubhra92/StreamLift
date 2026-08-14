@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, boolean, uuid, bigint } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, integer, boolean, uuid, bigint, unique } from 'drizzle-orm/pg-core';
 
 export const guests = pgTable('guests', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -27,19 +27,28 @@ export const megaSessions = pgTable('mega_sessions', {
 export const workers = pgTable('workers', {
   id: uuid('id').defaultRandom().primaryKey(),
   guestId: uuid('guest_id').references(() => guests.id), // owning guest
-  name: text('name').notNull().unique(),
+  name: text('name').notNull(),                          // unique per guest — see table constraint below
   downloadLocation: text('download_location').notNull(), // 'local' | 'mega'
   computeType: text('compute_type').notNull(),           // 'low' | 'medium' | 'high'
   megaEmail: text('mega_email'),
   megaPassword: text('mega_password'),                   // AES-256-GCM encrypted
+  pinggyToken: text('pinggy_token'),                     // AES-256-GCM encrypted
   authToken: text('auth_token').notNull(),
   version: text('version').default('1.0.0'),
   totalDownloads: integer('total_downloads').default(0),
   totalBytes: bigint('total_bytes', { mode: 'number' }).default(0),
   totalUptime: integer('total_uptime').default(0),       // seconds
+  // ── v2: direct connection fields ─────────────────────────────────────────
+  pinggyUrl: text('pinggy_url'),                         // current public tunnel URL
+  lastHeartbeat: timestamp('last_heartbeat'),            // updated every 8s by worker
+  ipAddress: text('ip_address'),                         // worker's public IP (set on register)
+  sessionToken: text('session_token'),                   // short-lived client access token
+  sessionTokenExpiry: timestamp('session_token_expiry'), // rotated every 4hr
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
-});
+}, (t) => [
+  unique('workers_name_guest_unique').on(t.name, t.guestId), // name unique per guest
+]);
 
 export type Worker = typeof workers.$inferSelect;
 export type NewWorker = typeof workers.$inferInsert;

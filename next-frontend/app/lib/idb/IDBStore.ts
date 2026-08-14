@@ -27,17 +27,17 @@ export function fileDownloadToIDB(row: FileDownload): IDBFileDownload {
 
 export function workerToIDB(
   row: Worker,
-  runtime?: { online: boolean; ipAddress: string | null; lastHeartbeat: string | null }
+  runtime?: { online: boolean; lastHeartbeat: string | null; pinggyUrl?: string | null; ipAddress?: string | null }
 ): IDBWorker {
   return {
-    ...row,
-    createdAt: toISOSafe(row.createdAt),
-    updatedAt: toISOSafe(row.updatedAt),
-    _syncedAt: new Date().toISOString(),
+    ...(row as any),
+    createdAt:     toISOSafe(row.createdAt),
+    updatedAt:     toISOSafe(row.updatedAt),
+    _syncedAt:     new Date().toISOString(),
     online:        runtime?.online        ?? false,
-    ipAddress:     runtime?.ipAddress     ?? null,
-    lastHeartbeat: runtime?.lastHeartbeat ?? null,
-  };
+    ipAddress:     (runtime?.ipAddress    ?? null) as any,
+    lastHeartbeat: (runtime?.lastHeartbeat ?? null) as any,
+  } as IDBWorker;
 }
 
 // ─── fileDownloads ────────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ export async function getAllWorkers(): Promise<IDBWorker[]> {
 
 export async function upsertWorkers(
   rows: Worker[],
-  runtimeStatus?: Record<string, { online: boolean; ipAddress: string | null; lastHeartbeat: string | null }>
+  runtimeStatus?: Record<string, { online: boolean; lastHeartbeat: string | null; pinggyUrl?: string | null; ipAddress?: string | null }>
 ): Promise<void> {
   if (!rows.length) return;
   try {
@@ -110,12 +110,12 @@ export async function upsertWorkers(
 }
 
 /**
- * Patch only the runtime fields (online, ipAddress, lastHeartbeat) for
- * workers that already exist in IDB — used after a runtimeStatus-only update
- * where no DB rows changed.
+ * Patch only the runtime fields (online, lastHeartbeat) for workers that
+ * already exist in IDB — used after a runtimeStatus-only update where no
+ * DB rows changed. ipAddress is no longer tracked server-side.
  */
 export async function patchWorkersRuntime(
-  runtimeStatus: Record<string, { online: boolean; ipAddress: string | null; lastHeartbeat: string | null }>
+  runtimeStatus: Record<string, { online: boolean; lastHeartbeat: string | null; pinggyUrl?: string | null; ipAddress?: string | null }>
 ): Promise<void> {
   const ids = Object.keys(runtimeStatus);
   if (!ids.length) return;
@@ -130,10 +130,10 @@ export async function patchWorkersRuntime(
         await tx.store.put({
           ...existing,
           online:        live.online,
-          ipAddress:     live.ipAddress,
-          lastHeartbeat: live.lastHeartbeat,
+          ipAddress:     (live.ipAddress     ?? existing.ipAddress ?? null) as any,
+          lastHeartbeat: (live.lastHeartbeat ?? null) as any,
           _syncedAt:     new Date().toISOString(),
-        });
+        } as any);
       })
     );
     await tx.done;

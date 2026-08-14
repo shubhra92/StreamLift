@@ -69,6 +69,9 @@ class WorkerClient {
   // ── Worker status subscribers: workerId → Set<callback> ──────────────────
   private workerStatusSubs: Map<string, Set<WorkerStatusCallback>> = new Map();
 
+  // ── Server dispatch subscribers — notified when dispatcher picks a server download ──
+  private dispatchServerDownloadSubs: Set<(download: any) => void> = new Set();
+
   // ── Fallback to SyncManager if SharedWorker unavailable ──────────────────
   private _fallback: any = null;
   private get isFallback() { return this._fallback !== null; }
@@ -196,7 +199,6 @@ class WorkerClient {
       }
 
       case "saveCursor": {
-        // Persist the cursor to IDB so the next worker restart resumes from here
         const CURSOR_MAP: Record<string, string> = {
           downloads: "downloads_cursor",
           torrents:  "torrents_cursor",
@@ -204,6 +206,11 @@ class WorkerClient {
         };
         const key = CURSOR_MAP[msg.entity];
         if (key) void setCursor(key as any, msg.cursor);
+        break;
+      }
+
+      case "dispatchServer": {
+        this.dispatchServerDownloadSubs.forEach((cb) => cb(msg.download));
         break;
       }
 
@@ -217,7 +224,7 @@ class WorkerClient {
     entity: SyncEntity,
     rows: Record<string, unknown>[],
     runtimeStatus?: Record<string, {
-      online: boolean; ipAddress: string | null; lastHeartbeat: string | null;
+      online: boolean; lastHeartbeat: string | null; pinggyUrl?: string | null; ipAddress?: string | null;
     }>,
     orphanIds?: string[]   // IDs to remove from IDB (reconciliation from worker)
   ): Promise<void> {
@@ -375,6 +382,15 @@ class WorkerClient {
   subscribeProgress(cb: ProgressCallback): () => void {
     this.progressSubs.add(cb);
     return () => this.progressSubs.delete(cb);
+  }
+
+  // ─── Server dispatch subscribe ────────────────────────────────────────────
+  // Tab subscribes to be notified when the SharedWorker dispatcher picks a
+  // server/cloud download that needs to be triggered via Express/cloud path.
+
+  subscribeServerDispatch(cb: (download: any) => void): () => void {
+    this.dispatchServerDownloadSubs.add(cb);
+    return () => this.dispatchServerDownloadSubs.delete(cb);
   }
 
   // ─── Network subscribe ────────────────────────────────────────────────────

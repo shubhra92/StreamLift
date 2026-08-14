@@ -269,6 +269,11 @@ function runSync(entity) {
   syncing[entity] = true;
   fetchAndBroadcast(entity).then(function() {
     syncing[entity] = false;
+    // Run dispatcher only after download/torrent syncs — halves dispatch frequency.
+    // Workers sync (every 15s) does NOT trigger dispatch.
+    if (entity === "downloads" || entity === "torrents") {
+      runDispatcher();
+    }
   }).catch(function(err) {
     console.warn("[SyncWorker] sync failed for " + entity, err);
     syncing[entity] = false;
@@ -411,9 +416,15 @@ function fetchAndBroadcast(entity) {
 
 // ─── Fetch helper (absolute URL) ──────────────────────────────────────────────
 
-function safeFetch(path) {
+function safeFetch(path, method, body) {
   var url = origin ? (origin + path) : path;
-  return fetch(url, { credentials: "include" })
+  var opts = { credentials: "include" };
+  if (method === "POST") {
+    opts.method = "POST";
+    opts.headers = { "Content-Type": "application/json" };
+    opts.body = JSON.stringify(body || {});
+  }
+  return fetch(url, opts)
     .then(function(res) {
       if (!res.ok) return null;
       return res.json();
@@ -706,7 +717,79 @@ function scheduleSseRetry() {
   }, WORKER_STATUS_SSE_RETRY);
 }
 
-// ─── Online / offline ─────────────────────────────────────────────────────────
+// ─── Dispatcher ───────────────────────────────────────────────────────────────
+//
+// Runs after every sync cycle. Calls /api/worker/dispatch which returns the
+// next pending download that should start (if any). The worker then calls
+// the appropriate endpoint to trigger the download.
+//
+// This runs in the SharedWorker — single instance across all tabs, so there's
+// no risk of two tabs double-triggering the same download.
+
+var dispatchInProgress = false;
+
+function runDispatcher() {
+  if (dispatchInProgress || !isOnline) return;
+  dispatchInProgress = true;
+
+  safeFetch("/api/worker/dispatch", "POST", {})
+    .then(function(res) {
+      dispatchInProgress = false;
+      if (!res || res.action !== "trigger") return;
+
+      var download = res.download;
+      if (!download) return;
+
+      if (res.destination === "worker" && res.pinggyUrl && res.sessionToken) {
+        // Trigger worker download directly
+        var workerUrl = res.pinggyUrl + "/download";
+        var indices = null;
+        try {
+          if (download.selectedFileIndices) {
+            indices = JSON.parse(download.selectedFileIndices);
+          }
+        } catch(e) {}
+
+        fetch(workerUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type":    "application/json",
+            "X-Session-Token": res.sessionToken,
+          },
+          body: JSON.stringify({
+            downloadId:   download.id,
+            sourceUrl:    download.sourceUrl,
+            fileName:     download.fileName || "download",
+            downloadType: download.downloadType || "http",
+            fileIndices:  indices,
+          }),
+        }).then(function(r) {
+          if (r.ok) {
+            // Force immediate syncs after trigger so the "downloading" status
+            // is picked up right away rather than waiting for the 30s cycle.
+            // Poll at 1s, 5s, 15s to catch fast and slow downloads.
+            setTimeout(function() { scheduleSync("downloads"); scheduleSync("torrents"); }, 1000);
+            setTimeout(function() { scheduleSync("downloads"); scheduleSync("torrents"); }, 5000);
+            setTimeout(function() { scheduleSync("downloads"); scheduleSync("torrents"); }, 15000);
+          } else if (r.status === 409) {
+            // Worker is busy — will retry on next sync cycle
+          }
+        }).catch(function() {
+          // Network error — will retry on next sync cycle
+        });
+
+      } else if (res.destination === "server") {
+        // For server/cloud downloads, broadcast to tabs — they handle it
+        // (tabs already have the claimDownload + startDownload logic)
+        broadcast({ type: "dispatchServer", download: download });
+      }
+    })
+    .catch(function() {
+      dispatchInProgress = false;
+    });
+}
+
+
 
 self.addEventListener("online", function() {
   isOnline = true;

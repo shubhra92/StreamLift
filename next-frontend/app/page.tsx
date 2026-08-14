@@ -93,54 +93,28 @@ export default function Home() {
     isFnEnd.current = false;
 
     try {
-      // If we're already tracking a download, check whether it has reached
-      // a terminal state in the latest IDB data. If it has, clear tracking
-      // and let the logic below re-evaluate for a new active download.
+      // Clear tracking if the current download is in a terminal state
       if (downloadingFileIdRef.current) {
         const tracked = data.find((f) => f.id === downloadingFileIdRef.current);
-        const isTerminal = !tracked || (tracked.status !== "downloading" && tracked.status !== "pending");
-        if (!isTerminal) return; // still active — nothing to do
-        // Terminal: clear tracking state so we fall through to re-evaluation
+        const isActive = tracked && (tracked.status === "downloading" || tracked.status === "pending");
+        if (isActive) return; // still active — nothing to do
         downloadingFileIdRef.current = null;
         setDownloadingFileId(null);
       }
 
-      let targetFile: FileDownload | null = null;
-      const targetStatus = new Set(["downloading", "pending"]);
+      // Show progress bar for:
+      //   1. Any row currently downloading (highest priority)
+      //   2. Pending rows that have been dispatched (workerId set = worker accepted it)
+      // Do NOT show for pending rows with no workerId (not dispatched yet)
+      const downloading = data.find((f) => f.status === "downloading");
+      const dispatchedPending = data.find(
+        (f) => f.status === "pending" && f.workerId !== null
+      );
+      const targetFile = downloading ?? dispatchedPending ?? null;
 
-      for (const f of data) {
-        if (!targetStatus.has(f.status!)) continue;
-        if (f.status === "downloading") { targetFile = f; break; }
-        if (!targetFile) { targetFile = f; continue; }
-        if (new Date(f.updatedAt!) < new Date(targetFile.updatedAt!)) targetFile = f;
-      }
-
-      if (targetFile?.status === "pending") {
-        if (isWorkerLocation(targetFile.location)) {
-          downloadingFileIdRef.current = targetFile.id;
-          setDownloadingFileId(targetFile.id);
-        } else {
-          const claim = await claimDownload(targetFile.id);
-          if (!claim.success) {
-            downloadingFileIdRef.current = targetFile.id;
-            setDownloadingFileId(targetFile.id);
-            return;
-          }
-          const { status, message } = await startDownload(targetFile);
-          if (!status) {
-            console.log(message);
-            await updateDownload(targetFile.id, { status: "pending" });
-          } else {
-            downloadingFileIdRef.current = targetFile.id;
-            setDownloadingFileId(targetFile.id);
-            syncNow();
-          }
-        }
-      } else if (targetFile) {
-        // Row is already 'downloading' — reconnecting after a reload.
+      if (targetFile) {
         downloadingFileIdRef.current = targetFile.id;
         setDownloadingFileId(targetFile.id);
-        await client.current.resetCursorAndSync("downloads");
       } else {
         downloadingFileIdRef.current = null;
         setDownloadingFileId(null);
@@ -154,6 +128,27 @@ export default function Home() {
   useEffect(() => {
     if (downloads.length > 0) void startActiveDownload(downloads);
   }, [idbDownloads]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Handle server/cloud dispatch from SharedWorker — claim and start via Express
+  useEffect(() => {
+    const wc = client.current;
+    let unsub: (() => void) | null = null;
+
+    void wc.init().then(() => {
+      unsub = wc.subscribeServerDispatch(async (download: any) => {
+        if (download.downloadType !== "http") return;
+        const claim = await claimDownload(download.id);
+        if (!claim.success) return;
+        const { status } = await startDownload(claim.data!);
+        if (!status) {
+          await updateDownload(download.id, { status: "pending" });
+        }
+        syncNow();
+      });
+    });
+
+    return () => { unsub?.(); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Handle progress error — only act on genuine server-reported errors,
   // not on stale-progressMap 404s (those now arrive as done:true, error:null)
@@ -193,6 +188,19 @@ export default function Home() {
     }
   }, [isDone]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // For worker downloads: watch IDB row status directly.
+  // If the DB status becomes terminal while the progress bar is showing,
+  // clear it immediately without waiting for the next 30s sync.
+  useEffect(() => {
+    if (!downloadingFileId || !isWorkerDownload) return;
+    const row = downloads.find((d) => d.id === downloadingFileId);
+    if (!row) return;
+    if (row.status === "completed" || row.status === "failed") {
+      downloadingFileIdRef.current = null;
+      setDownloadingFileId(null);
+    }
+  }, [downloads, downloadingFileId, isWorkerDownload]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Handlers ─────────────────────────────────────────────────────────────
 
   // Close the details panel when clicking outside both the list and the panel
@@ -213,6 +221,7 @@ export default function Home() {
     try {
       await createDownload(url, location, fileName, fileInfo.fileSize, fileInfo.fileType);
       setIsModalOpen(false);
+      // Just create the DB record — the SharedWorker dispatcher will trigger it
       syncNow();
     } finally {
       setLoading(false);

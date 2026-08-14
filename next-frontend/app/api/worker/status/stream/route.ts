@@ -1,85 +1,68 @@
 /**
  * GET /api/worker/status/stream
  *
- * SSE stream that pushes status for ALL workers owned by the authenticated guest.
- * Pushes every 2 seconds. Each event is:
- *   data: { workerId: string, status: WorkerStatusPayload }
+ * SSE stream pushing online status for ALL workers owned by the guest.
+ * Reads last_heartbeat from DB every 5s — no in-memory cache.
  *
- * Used by the SharedWorker as a single connection for all open WorkerDetails panels.
- * The SharedWorker filters by watchedWorkerIds and broadcasts to relevant tabs only.
+ * Note: live metrics and task progress are now streamed directly from the
+ * worker's own /stream SSE endpoint. This route only covers online/offline status.
  */
 
 import { NextRequest } from "next/server";
-import { workerStore } from "@/app/lib/workerStore";
-import { initWorkerStore } from "@/app/lib/initWorkerStore";
-import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
 import { db } from "@/app/db";
 import { workers } from "@/app/db/schema";
 import { eq } from "drizzle-orm";
+import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const PUSH_INTERVAL_MS = 2000;
+const PUSH_INTERVAL_MS   = 5_000;
+const ONLINE_THRESHOLD_MS = 20_000;
 
 export async function GET(req: NextRequest) {
-  // Auth
   const token = req.cookies.get(GUEST_COOKIE_NAME)?.value;
-  if (!token) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+  if (!token) return new Response("Unauthorized", { status: 401 });
+
   const guest = await validateGuestToken(token);
-  if (!guest) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-
-  await initWorkerStore();
-
-  // Fetch all worker IDs for this guest once at stream open
-  // (new workers created during the stream will appear on next reconnect)
-  const guestWorkers = await db
-    .select({ id: workers.id })
-    .from(workers)
-    .where(eq(workers.guestId, guest.id));
-
-  const workerIds = guestWorkers.map((w) => w.id);
+  if (!guest) return new Response("Unauthorized", { status: 401 });
 
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
-    start(controller) {
-      const push = () => {
-        for (const workerId of workerIds) {
-          const state = workerStore.get(workerId);
-          if (!state) continue;
+    async start(controller) {
+      const push = async () => {
+        try {
+          const guestWorkers = await db
+            .select()
+            .from(workers)
+            .where(eq(workers.guestId, guest.id));
 
-          const payload = {
-            workerId,
-            status: {
-              online:        state.online,
-              ipAddress:     state.ipAddress,
-              lastHeartbeat: state.lastHeartbeat,
-              metrics:       state.metrics,
-              currentTask:   state.currentTask,
-              logs:          state.logs,
-              version:       state.version,
-            },
-          };
+          for (const w of guestWorkers) {
+            const online = w.lastHeartbeat
+              ? Date.now() - new Date(w.lastHeartbeat).getTime() < ONLINE_THRESHOLD_MS
+              : false;
 
-          try {
+            const payload = {
+              workerId: w.id,
+              status: {
+                online,
+                lastHeartbeat: w.lastHeartbeat?.toISOString() ?? null,
+                pinggyUrl:     w.pinggyUrl ?? null,
+                version:       w.version,
+              },
+            };
+
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify(payload)}\n\n`)
             );
-          } catch {
-            // Controller closed — stop
-            clearInterval(interval);
-            return;
           }
+        } catch {
+          // DB error — skip this tick
         }
       };
 
-      // Push immediately, then every 2s
-      push();
+      await push();
       const interval = setInterval(push, PUSH_INTERVAL_MS);
 
       req.signal.addEventListener("abort", () => {
@@ -91,9 +74,9 @@ export async function GET(req: NextRequest) {
 
   return new Response(stream, {
     headers: {
-      "Content-Type":    "text/event-stream",
-      "Cache-Control":   "no-cache, no-transform",
-      "Connection":      "keep-alive",
+      "Content-Type":      "text/event-stream",
+      "Cache-Control":     "no-cache, no-transform",
+      "Connection":        "keep-alive",
       "X-Accel-Buffering": "no",
     },
   });

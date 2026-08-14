@@ -16,12 +16,14 @@ import type { CreateWorkerData } from "../service/workerService";
 import useWorkerService from "../service/workerService";
 import type { IDBWorker } from "../lib/idb/schema";
 
-/** Convert IDB row → WorkerWithStatus (string dates → Date objects) */
+/** Convert IDB row → WorkerWithStatus (string dates → Date objects, runtime fields preserved) */
 function toWorkerWithStatus(w: IDBWorker): WorkerWithStatus {
   return {
     ...w,
-    createdAt: w.createdAt ? new Date(w.createdAt) : null,
-    updatedAt: w.updatedAt ? new Date(w.updatedAt) : null,
+    createdAt:          w.createdAt ? new Date(w.createdAt) : null,
+    updatedAt:          w.updatedAt ? new Date(w.updatedAt) : null,
+    lastHeartbeat:      w.lastHeartbeat ?? null,
+    sessionTokenExpiry: null,  // not needed on client — only used server-side
   };
 }
 
@@ -47,8 +49,7 @@ export default function WorkersPage() {
   const workerService = useWorkerService();
   const { status: workerStatus } = useWorkerStatus(selectedId);
 
-  // Option A: when SSE fires for the selected worker, patch that entry in the
-  // list immediately — no waiting for the next 15s sync cycle.
+  // Patch selected worker with live status from SSE
   useEffect(() => {
     if (!selectedId || !workerStatus) return;
     setWorkers((prev) =>
@@ -57,7 +58,6 @@ export default function WorkersPage() {
           ? {
               ...w,
               online:        workerStatus.online,
-              ipAddress:     workerStatus.ipAddress,
               lastHeartbeat: workerStatus.lastHeartbeat,
             }
           : w

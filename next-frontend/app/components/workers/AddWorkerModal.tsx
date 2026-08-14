@@ -16,6 +16,7 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
   const [name, setName] = useState("");
   const [downloadLocation, setDownloadLocation] = useState<"local" | "mega">("local");
   const [computeType, setComputeType] = useState<"low" | "medium" | "high">("medium");
+  const [pinggyToken, setPinggyToken] = useState("");
   const [megaEmail, setMegaEmail] = useState("");
   const [megaPassword, setMegaPassword] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -23,6 +24,7 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
   const validate = (): boolean => {
     const e: Record<string, string> = {};
     if (!name.trim()) e.name = "Worker name is required";
+    if (!pinggyToken.trim()) e.pinggyToken = "Pinggy token is required";
     if (downloadLocation === "mega") {
       if (!megaEmail.trim()) e.megaEmail = "Mega email is required";
       if (!megaPassword.trim()) e.megaPassword = "Mega password is required";
@@ -37,6 +39,7 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
       name: name.trim(),
       downloadLocation,
       computeType,
+      pinggyToken: pinggyToken.trim(),
       ...(downloadLocation === "mega" ? { megaEmail, megaPassword } : {}),
     };
     await onSubmit(data);
@@ -46,6 +49,7 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
     setName("");
     setDownloadLocation("local");
     setComputeType("medium");
+    setPinggyToken("");
     setMegaEmail("");
     setMegaPassword("");
     setErrors({});
@@ -102,6 +106,34 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
                 <option value="medium">Medium — 50% CPU, 1 MB chunks</option>
                 <option value="high">High — 100% CPU, 2 MB chunks</option>
               </select>
+            </div>
+
+            {/* Pinggy Token */}
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">
+                Pinggy Token
+                <a
+                  href="https://pinggy.io"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-1 text-blue-500 hover:underline"
+                >
+                  (get one at pinggy.io)
+                </a>
+              </label>
+              <input
+                type="password"
+                placeholder="Paste your Pinggy token"
+                value={pinggyToken}
+                onChange={(e) => setPinggyToken(e.target.value)}
+                className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring font-mono text-sm"
+              />
+              {errors.pinggyToken && (
+                <p className="text-xs text-destructive mt-1">{errors.pinggyToken}</p>
+              )}
+              <p className="text-xs text-muted-foreground mt-1">
+                Used to expose the worker's API via a public HTTPS tunnel.
+              </p>
             </div>
 
             {/* Mega Credentials (conditional) */}

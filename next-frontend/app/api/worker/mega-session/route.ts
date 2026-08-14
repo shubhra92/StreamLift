@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateWorkerAuth } from "@/app/lib/workerAuth";
-import { initWorkerStore } from "@/app/lib/initWorkerStore";
 import { db } from "@/app/db";
 import { megaSessions } from "@/app/db/schema";
 import { and, eq } from "drizzle-orm";
@@ -9,12 +8,8 @@ export const dynamic = "force-dynamic";
 
 /**
  * GET /api/worker/mega-session
- * Worker fetches its saved Mega session SID.
- * Query params: workerId, authToken
  */
 export async function GET(req: NextRequest) {
-  await initWorkerStore();
-
   const workerId  = req.nextUrl.searchParams.get("workerId");
   const authToken = req.nextUrl.searchParams.get("authToken");
 
@@ -47,12 +42,8 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST /api/worker/mega-session
- * Worker saves its Mega session SID after a fresh login.
- * Body: { workerId, authToken, email, sessionData }
  */
 export async function POST(req: NextRequest) {
-  await initWorkerStore();
-
   let body: any;
   try { body = await req.json(); } catch {
     return NextResponse.json({ success: false, message: "Invalid JSON" }, { status: 400 });

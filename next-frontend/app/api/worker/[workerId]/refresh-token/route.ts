@@ -1,12 +1,18 @@
+/**
+ * GET /api/worker/[workerId]/refresh-token
+ *
+ * Called by the client when it gets a 401 from the worker (token expired mid-session).
+ * Rotates the session token and returns the new one.
+ */
+
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/app/db";
 import { workers } from "@/app/db/schema";
 import { eq } from "drizzle-orm";
 import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
+import { rotateSessionToken } from "@/app/lib/sessionToken";
 
 export const dynamic = "force-dynamic";
-
-const ONLINE_THRESHOLD_MS = 20_000; // 20 seconds
 
 export async function GET(
   req: NextRequest,
@@ -33,15 +39,20 @@ export async function GET(
     return NextResponse.json({ success: false, message: "Worker not found" }, { status: 404 });
   }
 
-  const online = worker.lastHeartbeat
-    ? Date.now() - new Date(worker.lastHeartbeat).getTime() < ONLINE_THRESHOLD_MS
-    : false;
+  if (!worker.pinggyUrl) {
+    return NextResponse.json(
+      { success: false, message: "Worker has no tunnel URL — is it online?" },
+      { status: 503 },
+    );
+  }
 
-  return NextResponse.json({
-    online,
-    ipAddress:     worker.ipAddress    ?? null,
-    lastHeartbeat: worker.lastHeartbeat?.toISOString() ?? null,
-    pinggyUrl:     worker.pinggyUrl    ?? null,
-    version:       worker.version,
-  });
+  try {
+    const newToken = await rotateSessionToken(workerId, worker.pinggyUrl, worker.authToken);
+    return NextResponse.json({ success: true, sessionToken: newToken });
+  } catch (e: any) {
+    return NextResponse.json(
+      { success: false, message: `Token rotation failed: ${e.message}` },
+      { status: 502 },
+    );
+  }
 }

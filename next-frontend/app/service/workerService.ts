@@ -4,6 +4,7 @@ export interface CreateWorkerData {
   name: string;
   downloadLocation: "local" | "mega";
   computeType: "low" | "medium" | "high";
+  pinggyToken: string;
   megaEmail?: string;
   megaPassword?: string;
 }

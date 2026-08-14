@@ -12,11 +12,11 @@ import {
   deleteTorrentDownload,
   updateTorrentDownload,
   claimTorrentDownload,
-} from "../actions/torrents";
-import type { FileDownload } from "../db/schema";
+} from "../actions/torrents";import type { FileDownload } from "../db/schema";
 import type { IDBFileDownload } from "../lib/idb/schema";
 import useTorrentService from "../service/torrentService";
 import WorkerClient from "../lib/sync-worker/workerClient";
+import { startDownload } from "../lib/startDownload";
 import { OfflineBanner } from "../components/OfflineBanner";
 import {
   DownloadList,
@@ -90,53 +90,56 @@ export default function TorrentsPage() {
 
   const startActiveDownload = async (data: FileDownload[]) => {
     if (!isFnEnd.current) return;
-    if (downloadingFileId) { isFnEnd.current = true; return; }
     isFnEnd.current = false;
 
-    let targetFile: FileDownload | null = null;
-    const targetStatus = new Set(["downloading", "pending"]);
+    try {
+      if (downloadingFileId) {
+        const tracked = data.find((f) => f.id === downloadingFileId);
+        const isActive = tracked && (tracked.status === "downloading" || tracked.status === "pending");
+        if (isActive) return;
+        setDownloadingFileId(null);
+      }
 
-    for (const f of data) {
-      if (!targetStatus.has(f.status!)) continue;
-      if (f.status === "downloading") { targetFile = f; break; }
-      if (!targetFile) { targetFile = f; continue; }
-      if (new Date(f.updatedAt!) < new Date(targetFile.updatedAt!)) targetFile = f;
-    }
+      const downloading = data.find((f) => f.status === "downloading");
+      const dispatchedPending = data.find(
+        (f) => f.status === "pending" && f.workerId !== null
+      );
+      const targetFile = downloading ?? dispatchedPending ?? null;
 
-    if (targetFile?.status === "pending") {
-      if (isWorkerLocation(targetFile.location)) {
-        // Worker downloads: don't claim — worker picks up 'pending' via heartbeat
+      if (targetFile) {
         setDownloadingFileId(targetFile.id);
       } else {
-        // Non-worker: atomically claim before calling Express
-        const claim = await claimTorrentDownload(targetFile.id);
-        if (!claim.success) {
-          // Another tab claimed it — just track
-          setDownloadingFileId(targetFile.id);
-          isFnEnd.current = true;
-          return;
-        }
-        const { status, message } = await torrentService.startDownload(targetFile);
-        if (!status) {
-          console.log(message);
-          await updateTorrentDownload(targetFile.id, { status: "pending" });
-        } else {
-          setDownloadingFileId(targetFile.id);
-          syncNow();
-        }
+        setDownloadingFileId(null);
       }
-    } else if (targetFile) {
-      setDownloadingFileId(targetFile.id);
-    } else {
-      setDownloadingFileId(null);
+    } finally {
+      isFnEnd.current = true;
     }
-
-    isFnEnd.current = true;
   };
 
   useEffect(() => {
     if (downloads.length > 0) void startActiveDownload(downloads);
   }, [idbDownloads]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Handle server dispatch from SharedWorker for torrent downloads
+  useEffect(() => {
+    const wc = client.current;
+    let unsub: (() => void) | null = null;
+
+    void wc.init().then(() => {
+      unsub = wc.subscribeServerDispatch(async (download: any) => {
+        if (download.downloadType !== "torrent") return;
+        const claim = await claimTorrentDownload(download.id);
+        if (!claim.success) return;
+        const { status } = await torrentService.startDownload(claim.data!);
+        if (!status) {
+          await updateTorrentDownload(download.id, { status: "pending" });
+        }
+        syncNow();
+      });
+    });
+
+    return () => { unsub?.(); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (error === "Download not found") {
@@ -164,6 +167,17 @@ export default function TorrentsPage() {
     }
   }, [isDone]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // For worker downloads: watch IDB row status directly so the progress bar
+  // clears immediately without waiting for the next 30s sync cycle.
+  useEffect(() => {
+    if (!downloadingFileId || !isWorkerDownload) return;
+    const row = downloads.find((d) => d.id === downloadingFileId);
+    if (!row) return;
+    if (row.status === "completed" || row.status === "failed") {
+      setDownloadingFileId(null);
+    }
+  }, [downloads, downloadingFileId, isWorkerDownload]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleAddDownload = async (
     magnetLink: string,
     location: string,
@@ -177,6 +191,7 @@ export default function TorrentsPage() {
         alert(result.message ?? "Failed to create download");
         return;
       }
+      // Just create the DB record — SharedWorker dispatcher will trigger it
       setIsModalOpen(false);
       syncNow();
     } finally {

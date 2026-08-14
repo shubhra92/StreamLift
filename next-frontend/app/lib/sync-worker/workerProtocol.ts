@@ -53,13 +53,14 @@ export interface ProgressPayload {
 }
 
 export interface WorkerStatusPayload {
-  online: boolean;
-  ipAddress: string | null;
+  online:        boolean;
   lastHeartbeat: string | null;
-  metrics: unknown | null;
-  currentTask: unknown | null;
-  logs: unknown[];
-  version: string;
+  pinggyUrl:     string | null;
+  version:       string;
+  // live fields — only present when client connects directly to worker SSE
+  metrics?:     unknown | null;
+  currentTask?: unknown | null;
+  logs?:        unknown[];
 }
 
 export type WorkerToTabMessage =
@@ -68,9 +69,10 @@ export type WorkerToTabMessage =
       entity: SyncEntity;
       rows: Record<string, unknown>[];
       runtimeStatus?: Record<string, {
-        online: boolean;
-        ipAddress: string | null;
+        online:        boolean;
         lastHeartbeat: string | null;
+        pinggyUrl:     string | null;
+        ipAddress:     string | null;
       }>;
       /** IDs present in IDB but deleted on server — tabs remove these */
       orphanIds?: string[];
@@ -80,4 +82,10 @@ export type WorkerToTabMessage =
   | { type: "networkStatus"; status: "online" | "offline" }
   /** Worker tells tabs to persist the new cursor to IDB */
   | { type: "saveCursor";    entity: SyncEntity; cursor: string }
+  /** Dispatcher found a server/cloud download to start — tab handles it */
+  | { type: "dispatchServer"; download: {
+      id: string; sourceUrl: string; fileName: string | null;
+      location: string | null; downloadType: string | null;
+      selectedFileIndices: string | null; workerId: null;
+    }}
   | { type: "ready" };

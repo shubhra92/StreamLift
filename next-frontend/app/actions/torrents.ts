@@ -3,8 +3,9 @@
 import { db, fileDownloads, workers } from "../db";
 import { eq, desc, and } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
-import { workerStore } from "../lib/workerStore";
 import { getGuestId } from "../lib/getGuestId";
+
+const ONLINE_THRESHOLD_MS = 20_000;
 
 async function resolveWorkerForTorrent(location: string, guestId: string): Promise<string | null> {
   if (location === "all-workers") {
@@ -13,11 +14,13 @@ async function resolveWorkerForTorrent(location: string, guestId: string): Promi
       .from(workers)
       .where(eq(workers.guestId, guestId));
 
-    const candidates = allWorkers
-      .map((w) => ({ worker: w, state: workerStore.get(w.id) }))
-      .filter(({ state }) => state?.online)
-      .sort((a, b) => (a.state?.currentTask ? 1 : 0) - (b.state?.currentTask ? 1 : 0));
-    return candidates.length > 0 ? candidates[0].worker.id : null;
+    const now = Date.now();
+    const online = allWorkers.filter((w) =>
+      w.lastHeartbeat
+        ? now - new Date(w.lastHeartbeat).getTime() < ONLINE_THRESHOLD_MS
+        : false
+    );
+    return online.length > 0 ? online[0].id : null;
   }
   if (location.startsWith("worker-")) {
     return location.replace("worker-", "");

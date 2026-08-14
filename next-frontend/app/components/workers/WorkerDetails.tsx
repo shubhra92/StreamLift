@@ -16,6 +16,7 @@ import {
 } from "./utils";
 import type { WorkerDetailsProps } from "./types";
 import type { WorkerLog } from "@/app/lib/workerStore";
+import { openWorkerStream, invalidateWorkerConnection } from "@/app/lib/workerConnection";
 
 // ── Progress log parser ───────────────────────────────────────────────────────
 const PROGRESS_RE = /📊\s+([\d.]+)%\s*\|(.+)/;
@@ -123,22 +124,78 @@ function Field({ label, value, mono = false, copyable = false }: {
   );
 }
 
-// ── Props extended with panelRef ──────────────────────────────────────────────
+// ── Live stream data from worker SSE ─────────────────────────────────────────
+interface LiveData {
+  metrics?:     { cpuUsage: number; ramUsage: number; downloadSpeed: number; uploadSpeed: number };
+  currentTask?: { downloadId: string; fileName: string; status: string; progress: number; startedAt: string } | null;
+  logs?:        WorkerLog[];
+}
+
+// ── Props ─────────────────────────────────────────────────────────────────────
 interface WorkerDetailsPanelProps extends WorkerDetailsProps {
   panelRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 export function WorkerDetails({ worker, status, onClose, panelRef }: WorkerDetailsPanelProps) {
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const streamRef  = useRef<{ close: () => void } | null>(null);
+  const [liveData, setLiveData] = useState<LiveData>({});
+  const [streamError, setStreamError] = useState<string | null>(null);
 
+  const online   = worker ? (status?.online ?? worker.online) : false;
+  const version  = worker ? (status?.version ?? "1.0.0") : "1.0.0";
+  const outdated = worker ? isVersionOutdated(version) : false;
+
+  // ── Connect to worker SSE when panel opens and worker is online ───────────
+  useEffect(() => {
+    if (!worker || !online) {
+      streamRef.current?.close();
+      streamRef.current = null;
+      setLiveData({});
+      setStreamError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setStreamError(null);
+
+    openWorkerStream(
+      worker.id,
+      (data: any) => {
+        if (cancelled) return;
+        setStreamError(null);
+        setLiveData({
+          metrics:     data.metrics     ?? undefined,
+          currentTask: data.currentTask ?? null,
+          logs:        Array.isArray(data.logs) ? data.logs as WorkerLog[] : undefined,
+        });
+      },
+      (errMsg: string) => {
+        if (!cancelled) setStreamError(errMsg);
+      },
+    ).then((handle) => {
+      if (cancelled) { handle.close(); return; }
+      streamRef.current = handle;
+    }).catch((e) => {
+      if (!cancelled) setStreamError(`Failed to connect: ${e.message}`);
+    });
+
+    return () => {
+      cancelled = true;
+      streamRef.current?.close();
+      streamRef.current = null;
+    };
+  }, [worker?.id, online]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Live SSE data takes priority; status only provides online/lastHeartbeat
+  const metrics     = liveData.metrics     ?? null;
+  const currentTask = liveData.currentTask ?? null;
+  const logs        = liveData.logs        ?? [];
+
+  // Scroll logs to bottom on new entries (must be after logs is declared)
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [status?.logs?.length]);
-
-  // Guard: don't compute anything if worker is null (panel is closed)
-  const online = worker ? (status?.online ?? worker.online) : false;
-  const version = worker ? (status?.version ?? "1.0.0") : "1.0.0";
-  const outdated = worker ? isVersionOutdated(version) : false;
+  }, [logs.length]);
 
   return (
     <AnimatePresence>
@@ -158,7 +215,7 @@ export function WorkerDetails({ worker, status, onClose, panelRef }: WorkerDetai
             <div className="w-8 h-1 rounded-full bg-muted-foreground/25" />
           </div>
 
-          {/* Header — sticky inside panel */}
+          {/* Header */}
           <div className="flex items-center justify-between px-4 pb-2 pt-1 border-b shrink-0">
             <div className="flex items-center gap-2">
               {online
@@ -183,81 +240,85 @@ export function WorkerDetails({ worker, status, onClose, panelRef }: WorkerDetai
           {/* Scrollable body */}
           <div className="overflow-y-auto flex-1 px-4 py-3 space-y-4">
 
-            {/* ── Current Task progress — shown prominently at top ── */}
-            {status?.currentTask && (
+          {/* Stream connection error */}
+            {streamError && (
+              <div className="text-xs text-yellow-600 bg-yellow-50 dark:bg-yellow-900/20 rounded px-3 py-2">
+                ⚠ {streamError}
+              </div>
+            )}
+
+            {/* Current Task */}
+            {currentTask && (
               <div className="space-y-1.5">
-                <p className="text-sm font-semibold truncate">{status.currentTask.fileName}</p>
+                <p className="text-sm font-semibold truncate">{currentTask.fileName}</p>
                 <div className="flex items-center gap-3">
                   <div className="flex-1 bg-gray-200 dark:bg-gray-700 rounded h-3">
                     <motion.div
                       className="bg-green-600 h-3 rounded"
                       initial={{ width: 0 }}
-                      animate={{ width: `${Math.min(100, status.currentTask.progress)}%` }}
+                      animate={{ width: `${Math.min(100, currentTask.progress)}%` }}
                       transition={{ duration: 0.3 }}
                     />
                   </div>
                   <span className="text-sm tabular-nums font-medium text-muted-foreground shrink-0">
-                    {status.currentTask.progress.toFixed(1)}%
+                    {currentTask.progress.toFixed(1)}%
                   </span>
                 </div>
-                <p className="text-xs text-muted-foreground">Started {timeAgo(status.currentTask.startedAt)}</p>
+                <p className="text-xs text-muted-foreground">Started {timeAgo(currentTask.startedAt)}</p>
               </div>
             )}
 
-            {/* ── Worker Info + Metrics side by side on desktop ── */}
+            {/* Worker Info + Metrics */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Info grid */}
               <div className="grid grid-cols-2 gap-x-6 gap-y-3">
                 <Field label="Worker ID" value={worker.id} mono copyable />
-                <Field label="Version" value={version} />
-                <Field label="IP Address" value={status?.ipAddress ?? worker.ipAddress ?? "—"} />
+                <Field label="Version"   value={version} />
                 <Field label="Last Seen" value={timeAgo(status?.lastHeartbeat)} />
-                <Field label="Compute" value={worker.computeType.charAt(0).toUpperCase() + worker.computeType.slice(1)} />
+                <Field label="Compute"   value={worker.computeType.charAt(0).toUpperCase() + worker.computeType.slice(1)} />
                 <Field label="Download To" value={worker.downloadLocation === "mega" ? "Mega" : "Local"} />
-                <Field label="Created" value={formatDate(worker.createdAt?.toString())} />
+                <Field label="Created"   value={formatDate(worker.createdAt?.toString())} />
                 {worker.megaEmail && <Field label="Mega Account" value={worker.megaEmail} />}
               </div>
 
-              {/* Metrics + Stats */}
               <div className="space-y-3">
-                {status?.metrics && (
+                {metrics && (
                   <>
                     <MiniBar
                       label="CPU"
-                      value={status.metrics.cpuUsage}
-                      valueLabel={`${status.metrics.cpuUsage.toFixed(1)}%`}
-                      color={status.metrics.cpuUsage > 80 ? "bg-red-500" : "bg-blue-500"}
+                      value={metrics.cpuUsage}
+                      valueLabel={`${metrics.cpuUsage.toFixed(1)}%`}
+                      color={metrics.cpuUsage > 80 ? "bg-red-500" : "bg-blue-500"}
                     />
                     <MiniBar
                       label="RAM"
-                      value={status.metrics.ramUsage}
-                      valueLabel={`${status.metrics.ramUsage.toFixed(1)}%`}
-                      color={status.metrics.ramUsage > 80 ? "bg-red-500" : "bg-purple-500"}
+                      value={metrics.ramUsage}
+                      valueLabel={`${metrics.ramUsage.toFixed(1)}%`}
+                      color={metrics.ramUsage > 80 ? "bg-red-500" : "bg-purple-500"}
                     />
                     <div className="grid grid-cols-2 gap-3">
-                      <Field label="↓ Speed" value={formatSpeed(status.metrics.downloadSpeed)} />
-                      <Field label="↑ Speed" value={formatSpeed(status.metrics.uploadSpeed)} />
+                      <Field label="↓ Speed" value={formatSpeed(metrics.downloadSpeed)} />
+                      <Field label="↑ Speed" value={formatSpeed(metrics.uploadSpeed)} />
                     </div>
                   </>
                 )}
                 <div className="grid grid-cols-3 gap-3">
-                  <Field label="Downloads" value={String(worker.totalDownloads ?? 0)} />
+                  <Field label="Downloads"   value={String(worker.totalDownloads ?? 0)} />
                   <Field label="Transferred" value={formatBytes(worker.totalBytes ?? 0)} />
-                  <Field label="Uptime" value={formatUptime(worker.totalUptime ?? 0)} />
+                  <Field label="Uptime"      value={formatUptime(worker.totalUptime ?? 0)} />
                 </div>
               </div>
             </div>
 
-            {/* ── Logs ── */}
+            {/* Logs */}
             <div>
               <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                Logs <span className="normal-case font-normal">({status?.logs?.length ?? 0} entries)</span>
+                Logs <span className="normal-case font-normal">({logs.length} entries)</span>
               </p>
               <div className="bg-muted/50 rounded-lg p-3 h-40 overflow-y-auto font-mono text-xs space-y-0.5">
-                {!status?.logs?.length ? (
+                {!logs.length ? (
                   <p className="text-muted-foreground italic">No logs yet</p>
                 ) : (
-                  status.logs.map((log, i) => <LogEntry key={i} log={log} />)
+                  logs.map((log: WorkerLog, i: number) => <LogEntry key={i} log={log} />)
                 )}
                 <div ref={logsEndRef} />
               </div>

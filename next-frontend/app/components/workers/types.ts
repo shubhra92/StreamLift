@@ -2,10 +2,11 @@ import type { Worker } from "@/app/db/schema";
 import type { WorkerStatus } from "@/app/hooks/useWorkerStatus";
 import type { CreateWorkerData } from "@/app/service/workerService";
 
-export type WorkerWithStatus = Worker & {
-  online: boolean;
-  ipAddress: string | null;
-  lastHeartbeat: string | null;
+export type WorkerWithStatus = Omit<Worker, "lastHeartbeat" | "sessionTokenExpiry"> & {
+  online:             boolean;
+  ipAddress:          string | null;
+  lastHeartbeat:      string | null;
+  sessionTokenExpiry: string | null;
 };
 
 export interface WorkerListProps {

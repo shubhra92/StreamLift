@@ -2,12 +2,14 @@
 
 import { db, fileDownloads } from "../db";
 import { desc, eq, and } from "drizzle-orm";
-import { workerStore } from "../lib/workerStore";
 import { workers } from "../db/schema";
 import { getGuestId } from "../lib/getGuestId";
 import type { FileDownload } from "../db/schema";
 
-/** Resolve which workerId to assign based on the location string */
+const ONLINE_THRESHOLD_MS = 20_000; // 20 seconds
+
+/** Resolve which workerId to assign based on the location string.
+ *  Uses DB last_heartbeat for online check — no in-memory store. */
 async function resolveWorkerAssignment(
   location: string,
   guestId: string
@@ -18,15 +20,16 @@ async function resolveWorkerAssignment(
       .from(workers)
       .where(eq(workers.guestId, guestId));
 
-    const candidates = allWorkers
-      .map((w) => ({ worker: w, state: workerStore.get(w.id) }))
-      .filter(({ state }) => state?.online)
-      .sort((a, b) => (a.state?.currentTask ? 1 : 0) - (b.state?.currentTask ? 1 : 0));
+    // Pick an online idle worker — prefer ones with no current session token activity
+    const now = Date.now();
+    const candidates = allWorkers.filter((w) =>
+      w.lastHeartbeat
+        ? now - new Date(w.lastHeartbeat).getTime() < ONLINE_THRESHOLD_MS
+        : false
+    );
 
-    if (candidates.length === 0) {
-      return { workerId: null };
-    }
-    return { workerId: candidates[0].worker.id };
+    if (candidates.length === 0) return { workerId: null };
+    return { workerId: candidates[0].id };
   }
 
   if (location.startsWith("worker-")) {

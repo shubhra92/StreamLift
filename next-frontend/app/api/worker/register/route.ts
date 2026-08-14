@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateWorkerAuth } from "@/app/lib/workerAuth";
-import { workerStore, markWorkerOnline, updateWorkerHeartbeat } from "@/app/lib/workerStore";
-import { initWorkerStore } from "@/app/lib/initWorkerStore";
+import { db } from "@/app/db";
+import { workers } from "@/app/db/schema";
+import { eq } from "drizzle-orm";
+import { generateSessionToken, sessionTokenExpiry } from "@/app/lib/sessionToken";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
-  await initWorkerStore();
-
   let body: any;
   try {
     body = await req.json();
@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: "Invalid JSON" }, { status: 400 });
   }
 
-  const { workerId, authToken, ipAddress, version } = body ?? {};
+  const { workerId, authToken, ipAddress, version, pinggyUrl } = body ?? {};
 
   if (!workerId || !authToken) {
     return NextResponse.json({ success: false, message: "Missing workerId or authToken" }, { status: 401 });
@@ -26,22 +26,31 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: "Invalid credentials" }, { status: 401 });
   }
 
-  // Ensure state exists
-  if (!workerStore.has(workerId)) {
-    const { initializeWorkerState } = await import("@/app/lib/workerStore");
-    workerStore.set(workerId, initializeWorkerState(workerId));
-  }
+  // Generate a fresh session token for direct client access
+  const sessionToken = generateSessionToken();
+  const tokenExpiry  = sessionTokenExpiry();
 
-  markWorkerOnline(workerId, ipAddress ?? "unknown", version);
+  // Persist pinggy URL + session token + heartbeat to DB
+  await db
+    .update(workers)
+    .set({
+      pinggyUrl:          pinggyUrl ?? null,
+      lastHeartbeat:      new Date(),
+      ipAddress:          ipAddress ?? null,
+      sessionToken,
+      sessionTokenExpiry: tokenExpiry,
+      updatedAt:          new Date(),
+    })
+    .where(eq(workers.id, workerId));
 
   return NextResponse.json({
-    success: true,
-    message: "Worker registered successfully",
+    success:      true,
+    message:      "Worker registered successfully",
+    sessionToken,                          // returned once — worker passes to FastAPI server
     config: {
-      pollInterval: 10000,
       heartbeatEndpoint: "/api/worker/heartbeat",
-      logsEndpoint: "/api/worker/logs",
-      progressEndpoint: "/api/worker/download-progress",
+      statusEndpoint:    "/api/worker/status-update",
+      logsEndpoint:      "/api/worker/logs",
     },
   });
 }

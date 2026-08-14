@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getWorkerById, deleteWorker } from "@/app/actions/workers";
-import { initWorkerStore } from "@/app/lib/initWorkerStore";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +7,6 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ workerId: string }> }
 ) {
-  await initWorkerStore();
   const { workerId } = await params;
   const data = await getWorkerById(workerId);
 
@@ -16,8 +14,8 @@ export async function GET(
     return NextResponse.json({ success: false, message: "Worker not found" }, { status: 404 });
   }
 
-  // Never expose megaPassword
-  const { megaPassword: _pw, authToken: _tok, ...safe } = data as any;
+  // Never expose megaPassword or auth/session tokens
+  const { megaPassword: _pw, authToken: _tok, pinggyToken: _pt, sessionToken: _st, ...safe } = data as any;
   return NextResponse.json({ success: true, data: safe });
 }
 
@@ -25,7 +23,6 @@ export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ workerId: string }> }
 ) {
-  await initWorkerStore();
   const { workerId } = await params;
   const result = await deleteWorker(workerId);
 

@@ -3,13 +3,16 @@
 /**
  * useWorkerProgress
  *
- * Backed by the SharedWorker — the worker polls the worker status endpoint
- * in one place across all tabs.
+ * For worker downloads (v2), progress comes directly from the worker's
+ * /stream SSE endpoint via openWorkerStream. The currentTask.progress
+ * field is mapped to the ProgressPayload shape the downloads page expects.
+ *
+ * When done is detected, triggers an immediate IDB sync so the download
+ * list updates without waiting for the next 30s cycle.
  */
 
 import { useState, useEffect, useRef } from "react";
-import WorkerClient from "@/app/lib/sync-worker/workerClient";
-import type { ProgressPayload } from "@/app/lib/sync-worker/workerProtocol";
+import { openWorkerStream, invalidateWorkerConnection } from "@/app/lib/workerConnection";
 
 export interface WorkerProgress {
   downloadedBytes: number;
@@ -20,13 +23,21 @@ export interface WorkerProgress {
   error?: string;
 }
 
+function triggerImmediateSync() {
+  void import("@/app/lib/sync-worker/workerClient").then(({ default: WorkerClient }) => {
+    const wc = WorkerClient.getInstance();
+    wc.syncNow("downloads");
+    wc.syncNow("torrents");
+  });
+}
+
 export function useWorkerProgress(
   workerId: string | null | undefined,
   downloadId: string | null | undefined,
 ) {
   const [progress, setProgress] = useState<WorkerProgress | null>(null);
   const [isDone, setIsDone] = useState(false);
-  const client = useRef(WorkerClient.getInstance());
+  const streamRef = useRef<{ close: () => void } | null>(null);
 
   useEffect(() => {
     if (!workerId || !downloadId) {
@@ -35,26 +46,61 @@ export function useWorkerProgress(
       return;
     }
 
-    const wc = client.current;
     let cancelled = false;
+    let lastTaskSeen = false; // true once we've seen this task in the SSE stream
 
-    const onProgress = (payload: ProgressPayload) => {
-      setProgress(payload);
-      if (payload.done) setIsDone(true);
-    };
+    openWorkerStream(
+      workerId,
+      (data: any) => {
+        if (cancelled) return;
 
-    const unsub = wc.subscribeProgress(onProgress);
+        const task = data?.currentTask;
 
-    // Await init so trackDownload is sent after the port is established.
-    wc.init().then(() => {
-      if (cancelled) return;
-      wc.trackDownload(downloadId, workerId, "worker");
+        if (task && task.downloadId === downloadId) {
+          // Task is active for our download
+          lastTaskSeen = true;
+          const pct = typeof task.progress === "number" ? task.progress : null;
+          const isDoneStatus = task.status === "completed" || task.status === "failed";
+
+          setProgress({
+            downloadedBytes: 0,
+            totalBytes:      null,
+            percent:         pct,
+            percentFixed2:   pct != null ? pct.toFixed(2) : null,
+            done:            isDoneStatus,
+            error:           task.status === "failed" ? "Download failed" : undefined,
+          });
+
+          if (isDoneStatus) {
+            setIsDone(true);
+            triggerImmediateSync();
+          }
+        } else if (lastTaskSeen) {
+          // Task was active but is now null/different — it completed and was cleared
+          setProgress((prev) =>
+            prev ? { ...prev, done: true, percent: 100, percentFixed2: "100.00" } : null
+          );
+          setIsDone(true);
+          lastTaskSeen = false;
+          triggerImmediateSync();
+        }
+      },
+      (_errMsg: string) => {
+        if (!cancelled) {
+          invalidateWorkerConnection(workerId);
+        }
+      },
+    ).then((handle) => {
+      if (cancelled) { handle.close(); return; }
+      streamRef.current = handle;
+    }).catch(() => {
+      // Connection failed — progress won't update but page will still sync on schedule
     });
 
     return () => {
       cancelled = true;
-      unsub();
-      wc.stopTracking();
+      streamRef.current?.close();
+      streamRef.current = null;
     };
   }, [workerId, downloadId]);
 

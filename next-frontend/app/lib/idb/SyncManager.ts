@@ -441,23 +441,24 @@ class SyncManager {
         data: Record<string, unknown>[];
         syncedAt: string;
         runtimeStatus: Record<string, {
-          online: boolean;
-          ipAddress: string | null;
+          online:        boolean;
           lastHeartbeat: string | null;
+          pinggyUrl:     string | null;
+          ipAddress:     string | null;
         }>;
       } = await res.json();
 
       if (result.data.length > 0) {
         await upsertWorkers(
           result.data as Parameters<typeof upsertWorkers>[0],
-          result.runtimeStatus
+          result.runtimeStatus as any
         );
         await setCursor(CURSOR_KEY[entity], result.syncedAt);
       } else if (!cursor) {
         await setCursor(CURSOR_KEY[entity], result.syncedAt);
       }
 
-      await patchWorkersRuntime(result.runtimeStatus);
+      await patchWorkersRuntime(result.runtimeStatus as any);
       await setCursor(SYNCED_AT_KEY[entity], now);
 
       const idbWorkers = await getAllWorkers();

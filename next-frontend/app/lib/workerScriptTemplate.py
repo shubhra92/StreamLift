@@ -8,4 +8,5 @@
   --auth-token   "{{AUTH_TOKEN}}" \
   --api-url      "{{API_BASE_URL}}" \
   --compute-type "{{COMPUTE_TYPE}}" \
-  --location     "{{DOWNLOAD_LOCATION}}"{{MEGA_FLAGS}}
+  --location     "{{DOWNLOAD_LOCATION}}" \
+  --pinggy-token "{{PINGGY_TOKEN}}"{{MEGA_FLAGS}}

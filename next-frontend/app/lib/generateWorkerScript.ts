@@ -13,7 +13,13 @@ export function generateWorkerScript(worker: Worker, apiBaseUrl: string): string
     console.warn("[generateWorkerScript] MEGAPY_GITHUB_PAT is not set — megapy install will fail");
   }
 
-  // Mega flags are only added when the worker is configured to upload to Mega.
+  // Decrypt Pinggy token stored encrypted in DB
+  const pinggyToken = worker.pinggyToken ? decryptCredentials(worker.pinggyToken) : "";
+  if (!pinggyToken) {
+    console.warn("[generateWorkerScript] Worker has no Pinggy token configured");
+  }
+
+  // Mega flags only when download location is mega
   let megaFlags = "";
   if (worker.downloadLocation === "mega") {
     const megaEmail    = worker.megaEmail ?? "";
@@ -26,6 +32,7 @@ export function generateWorkerScript(worker: Worker, apiBaseUrl: string): string
   script = script.replaceAll("{{API_BASE_URL}}",       apiBaseUrl.replace(/\/$/, ""));
   script = script.replaceAll("{{COMPUTE_TYPE}}",       worker.computeType);
   script = script.replaceAll("{{DOWNLOAD_LOCATION}}", worker.downloadLocation);
+  script = script.replaceAll("{{PINGGY_TOKEN}}",       pinggyToken);
   script = script.replaceAll("{{MEGA_FLAGS}}",         megaFlags);
   script = script.replaceAll("{{MEGAPY_PAT}}",         megapyPat);
 
