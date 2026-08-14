@@ -57,29 +57,54 @@ def _get(config: WorkerConfig, endpoint: str, params: dict[str, Any] | None = No
 
 # ── Worker lifecycle ──────────────────────────────────────────────────────────
 
-def register(config: WorkerConfig, ip_address: str) -> bool:
+def register(config: WorkerConfig, ip_address: str, pinggy_url: str) -> Optional[str]:
+    """
+    Register with the backend. Returns the session_token on success, None on failure.
+    """
     result = _post(config, "/api/worker/register", {
-        "workerId":  config.worker_id,
-        "authToken": config.auth_token,
-        "ipAddress": ip_address,
-        "version":   config.worker_version,
+        "workerId":   config.worker_id,
+        "authToken":  config.auth_token,
+        "ipAddress":  ip_address,
+        "version":    config.worker_version,
+        "pinggyUrl":  pinggy_url,
     })
     if result and result.get("success"):
+        session_token = result.get("sessionToken", "")
         logger.log("info", f"Registered successfully. Public IP: {ip_address}")
-        return True
+        return session_token
     logger.log("error", f"Registration failed. Response: {result}")
-    return False
+    return None
 
 
-def heartbeat(config: WorkerConfig, current_task: Optional[dict], metrics: dict) -> Optional[dict]:
-    payload: dict[str, Any] = {
+def heartbeat(config: WorkerConfig, metrics: dict, pinggy_url: str) -> None:
+    """
+    Send heartbeat — updates last_heartbeat + pinggy_url in DB.
+    No longer returns newTasks — task dispatch is triggered by client directly.
+    """
+    _post(config, "/api/worker/heartbeat", {
         "workerId":  config.worker_id,
         "authToken": config.auth_token,
         "metrics":   metrics,
+        "pinggyUrl": pinggy_url,
+    })
+
+
+def status_update(
+    config: WorkerConfig,
+    download_id: str,
+    status: str,
+    error_msg: str = "",
+) -> None:
+    """Notify the backend when a download completes or fails."""
+    payload: dict[str, Any] = {
+        "workerId":   config.worker_id,
+        "authToken":  config.auth_token,
+        "downloadId": download_id,
+        "status":     status,
     }
-    if current_task:
-        payload["currentTask"] = current_task
-    return _post(config, "/api/worker/heartbeat", payload)
+    if error_msg:
+        payload["errorMessage"] = error_msg
+    _post(config, "/api/worker/status-update", payload)
 
 
 def flush_logs(config: WorkerConfig) -> None:
@@ -95,32 +120,6 @@ def flush_logs(config: WorkerConfig) -> None:
     if not (result and result.get("success")):
         from streamlift_worker.logger import _queue
         _queue[:0] = batch
-
-
-def report_progress(
-    config: WorkerConfig,
-    download_id: str,
-    downloaded: int,
-    total: int,
-    status: str,
-    file_name: str = "",
-    error_msg:  str = "",
-) -> None:
-    pct = round(downloaded / total * 100, 2) if total > 0 else 0
-    payload: dict[str, Any] = {
-        "workerId":   config.worker_id,
-        "authToken":  config.auth_token,
-        "downloadId": download_id,
-        "progress": {
-            "downloadedBytes": downloaded,
-            "totalBytes":      total,
-            "percent":         pct,
-            "status":          status,
-        },
-    }
-    if error_msg:
-        payload["progress"]["errorMessage"] = error_msg
-    _post(config, "/api/worker/download-progress", payload)
 
 
 # ── Mega session persistence ──────────────────────────────────────────────────

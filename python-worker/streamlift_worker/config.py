@@ -3,7 +3,7 @@ Worker configuration — populated entirely from CLI args.
 No .env file needed; the user just runs the one-liner from the UI.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 ComputeType      = Literal["low", "medium", "high"]
@@ -15,11 +15,11 @@ COMPUTE_CONFIG = {
     "high":   {"max_cpu_pct": 100, "chunk_size": 2048 * 1024},   # 2 MB
 }
 
-POLL_INTERVAL      = 10   # seconds between main-loop polls
 MAX_RETRIES        = 3
 RETRY_DELAY        = 5    # seconds, multiplied by attempt number
 MAX_LOG_QUEUE      = 50
 HEARTBEAT_INTERVAL = 8    # background heartbeat thread interval (seconds)
+SERVER_PORT        = 8000
 
 
 @dataclass
@@ -29,9 +29,11 @@ class WorkerConfig:
     api_base_url:      str
     compute_type:      ComputeType
     download_location: DownloadLocation
+    pinggy_token:      str = ""
     mega_email:        str = ""
     mega_password:     str = ""
     worker_version:    str = "1.1.0"
+    server_port:       int = SERVER_PORT
 
     @property
     def chunk_size(self) -> int:

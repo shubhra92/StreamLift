@@ -1,6 +1,8 @@
 """
 Download handlers — HTTP and torrent.
 Each handler reports progress back to the backend and handles cleanup.
+On completion or failure, calls api.status_update() to notify the Next.js backend.
+Respects cancel flags set via the worker's DELETE /download/{id} endpoint.
 """
 
 import json
@@ -28,6 +30,18 @@ def _colab_dir() -> str:
     return "/content" if os.path.exists("/content") else os.getcwd()
 
 
+def _is_cancelled(download_id: str) -> bool:
+    """Check if a cancel was requested via the worker API."""
+    try:
+        from streamlift_worker.server import get_cancel_flag, clear_cancel_flag
+        if get_cancel_flag(download_id):
+            clear_cancel_flag(download_id)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 # ── HTTP download ─────────────────────────────────────────────────────────────
 
 def process_http_download(config: WorkerConfig, task: dict, current_task: dict) -> None:
@@ -43,12 +57,13 @@ def process_http_download(config: WorkerConfig, task: dict, current_task: dict) 
         "progress":   0,
         "startedAt":  _now_iso(),
     })
+    # Notify backend — DB status: pending → downloading
+    api.status_update(config, download_id, "downloading")
 
     try:
         resp = requests.get(source_url, stream=True, timeout=30)
         resp.raise_for_status()
         total = int(resp.headers.get("content-length", 0))
-
         if config.download_location == "mega":
             _http_stream_to_mega(config, resp, total, download_id, file_name, current_task)
         else:
@@ -56,7 +71,7 @@ def process_http_download(config: WorkerConfig, task: dict, current_task: dict) 
 
     except Exception as e:
         logger.log("error", f"HTTP download failed: {e}")
-        api.report_progress(config, download_id, 0, 0, "failed", file_name, str(e))
+        api.status_update(config, download_id, "failed", str(e))
         _cleanup_local_file(_colab_dir(), file_name)
     finally:
         current_task.clear()
@@ -77,7 +92,6 @@ def _http_stream_to_mega(
         )
 
     logger.log("info", f"Streaming {file_name} directly to Mega ({total/1024/1024:.1f} MB) — no disk write")
-    api.report_progress(config, download_id, 0, total, "downloading", file_name)
 
     downloaded = 0
     last_report = time.time()
@@ -98,7 +112,6 @@ def _http_stream_to_mega(
                         f"📊 {pct:.1f}% | "
                         f"{downloaded/1024/1024:.1f} / {total/1024/1024:.1f} MB | "
                         f"RAM: {mem_mb:.0f} MB")
-                    api.report_progress(config, download_id, downloaded, total, "downloading", file_name)
                     last_report = now
             return chunk
 
@@ -106,11 +119,13 @@ def _http_stream_to_mega(
     ok = mega.stream_to_mega(config, _ProgressStream(), total, file_name)
 
     if ok:
-        api.report_progress(config, download_id, total, total, "completed", file_name)
+        current_task["progress"] = 100
+        current_task["status"]   = "completed"
+        api.status_update(config, download_id, "completed")
         logger.log("info", f"HTTP→Mega stream completed: {file_name}")
     else:
-        api.report_progress(config, download_id, 0, total, "failed", file_name,
-                            "Mega stream upload failed — check logs")
+        current_task["status"] = "failed"
+        api.status_update(config, download_id, "failed", "Mega stream upload failed — check logs")
 
 
 def _http_save_local(
@@ -132,6 +147,15 @@ def _http_save_local(
         for chunk in resp.iter_content(chunk_size=config.chunk_size):
             if not chunk:
                 continue
+
+            # Check cancel flag on each chunk
+            if _is_cancelled(download_id):
+                logger.log("info", f"Download cancelled: {file_name}")
+                current_task["status"] = "failed"
+                api.status_update(config, download_id, "failed", "Cancelled by user")
+                _cleanup_local_file(save_dir, file_name)
+                return
+
             f.write(chunk)
             downloaded += len(chunk)
             pct = (downloaded / total * 100) if total > 0 else 0
@@ -145,11 +169,12 @@ def _http_save_local(
                     f"📊 {pct:.1f}% | "
                     f"{downloaded/1024/1024:.1f} / {total/1024/1024:.1f} MB | "
                     f"RAM: {mem_mb:.0f} MB")
-                api.report_progress(config, download_id, downloaded, total, "downloading", file_name)
                 last_report_bytes = downloaded
                 last_report_time  = time.time()
 
-    api.report_progress(config, download_id, downloaded, total, "completed", file_name)
+    current_task["progress"] = 100
+    current_task["status"]   = "completed"
+    api.status_update(config, download_id, "completed")
     logger.log("info", f"HTTP download completed locally: {file_name} ({downloaded:,} bytes)")
 
 
@@ -192,11 +217,14 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
         "progress":   0,
         "startedAt":  _now_iso(),
     })
+    # Notify backend — DB status: pending → downloading
+    api.status_update(config, download_id, "downloading")
 
     if not _ensure_aria2c():
         msg = "aria2c is not available. Run: !apt-get install -y aria2"
         logger.log("error", msg)
-        api.report_progress(config, download_id, 0, 0, "failed", display_name, msg)
+        current_task["status"] = "failed"
+        api.status_update(config, download_id, "failed", msg)
         current_task.clear()
         return
 
@@ -242,8 +270,6 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
                         f"📊 {pct}% | "
                         f"{downloaded_bytes/1024/1024:.1f} / {total_bytes/1024/1024:.1f} MB | "
                         f"RAM: {mem_mb:.0f} MB")
-                    api.report_progress(config, download_id, downloaded_bytes, total_bytes,
-                                        "downloading", display_name)
                     last_report_time = now
 
         process.wait()
@@ -251,29 +277,29 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
         if process.returncode != 0:
             msg = f"aria2c exited with code {process.returncode}"
             logger.log("error", msg)
-            api.report_progress(config, download_id, downloaded_bytes, total_bytes,
-                                "failed", display_name, msg)
+            current_task["status"] = "failed"
+            api.status_update(config, download_id, "failed", msg)
             return
 
         logger.log("info", f"Torrent download finished locally: {display_name}")
 
         if config.download_location == "mega":
             current_task["status"] = "uploading"
-            api.report_progress(config, download_id, total_bytes, total_bytes, "uploading", display_name)
-
             files = _collect_downloaded_files(save_path, downloaded_path, display_name)
             success = _upload_torrent_files_to_mega(config, files, display_name,
                                                      download_id, total_bytes)
             if not success:
                 return
 
-        final = total_bytes or downloaded_bytes
-        api.report_progress(config, download_id, final, final, "completed", display_name)
+        current_task["progress"] = 100
+        current_task["status"]   = "completed"
+        api.status_update(config, download_id, "completed")
         logger.log("info", f"Torrent task completed: {display_name}")
 
     except Exception as e:
         logger.log("error", f"Torrent download failed: {e}")
-        api.report_progress(config, download_id, 0, 0, "failed", display_name, str(e))
+        current_task["status"] = "failed"
+        api.status_update(config, download_id, "failed", str(e))
     finally:
         current_task.clear()
 
@@ -292,14 +318,13 @@ def _upload_torrent_files_to_mega(
     if len(files) == 1:
         ok = mega.upload_file_to_mega(config, files[0], os.path.basename(files[0]))
         if not ok:
-            api.report_progress(config, download_id, total_bytes, total_bytes, "failed",
-                                 display_name, "Mega upload failed — check logs")
+            current_task_ref = None  # upload_torrent doesn't have direct ref, status set by caller
+            api.status_update(config, download_id, "failed", "Mega upload failed — check logs")
         return ok
 
     ok = mega.upload_files_to_mega_folder(config, files, display_name)
     if not ok:
-        api.report_progress(config, download_id, total_bytes, total_bytes, "failed",
-                             display_name, "Mega folder upload failed — check logs")
+        api.status_update(config, download_id, "failed", "Mega folder upload failed — check logs")
     return ok
 
 
