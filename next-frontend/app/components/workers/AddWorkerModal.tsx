@@ -8,6 +8,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription
 } from "@/components/ui/dialog";
 import type { AddWorkerModalProps } from "./types";
 import type { CreateWorkerData } from "@/app/service/workerService";
@@ -61,6 +62,9 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Create Worker</DialogTitle>
+          <DialogDescription>
+            Configure your worker's name, storage, compute resources, and connection settings.
+          </DialogDescription>
         </DialogHeader>
         <AnimatePresence>
           <motion.div
@@ -122,7 +126,7 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
                 </a>
               </label>
               <input
-                type="password"
+                type="text"
                 placeholder="Paste your Pinggy token"
                 value={pinggyToken}
                 onChange={(e) => setPinggyToken(e.target.value)}

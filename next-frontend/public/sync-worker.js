@@ -755,6 +755,9 @@ function runDispatcher() {
           headers: {
             "Content-Type":    "application/json",
             "X-Session-Token": res.sessionToken,
+            // Pinggy free tunnels show a browser screening page unless this
+            // header is present. It also keeps this direct request API-only.
+            "X-Pinggy-No-Screen": "1",
           },
           body: JSON.stringify({
             downloadId:   download.id,

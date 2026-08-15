@@ -83,6 +83,8 @@ async function callWorker(
       headers: {
         "Content-Type":    "application/json",
         "X-Session-Token": c.sessionToken,
+        // Required for Pinggy Free: bypasses its browser screening page.
+        "X-Pinggy-No-Screen": "1",
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
@@ -128,16 +130,24 @@ export async function cancelWorkerDownload(
 /**
  * Open an SSE connection to the worker's /stream endpoint.
  * Returns an object with a .close() method.
- * Automatically retries after errors (token expiry, transient network issues).
+ * Uses fetch rather than EventSource so Pinggy's screening-bypass header can
+ * be sent from a browser. Automatically retries after transient errors.
  */
 export async function openWorkerStream(
   workerId: string,
   onMessage: (data: object) => void,
   onError?: (err: string) => void,
 ): Promise<{ close: () => void }> {
-  let es: EventSource | null = null;
+  let abortController: AbortController | null = null;
   let closed = false;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const scheduleRetry = (message: string, delay: number) => {
+    if (closed) return;
+    invalidateWorkerConnection(workerId);
+    onError?.(message);
+    retryTimer = setTimeout(() => { void connect(); }, delay);
+  };
 
   const connect = async () => {
     if (closed) return;
@@ -146,36 +156,68 @@ export async function openWorkerStream(
     try {
       conn = await getConnection(workerId);
     } catch (e: any) {
-      onError?.(`Cannot reach worker: ${e.message}`);
-      // Retry after 10s
-      if (!closed) retryTimer = setTimeout(connect, 10_000);
+      scheduleRetry(`Cannot reach worker: ${e.message}`, 10_000);
       return;
     }
 
-    // EventSource doesn't support custom headers — pass token as query param
-    const url = `${conn.pinggyUrl}/stream?token=${encodeURIComponent(conn.sessionToken)}`;
+    abortController?.abort();
+    const controller = new AbortController();
+    abortController = controller;
 
-    es = new EventSource(url);
+    try {
+      const response = await fetch(`${conn.pinggyUrl}/stream`, {
+        headers: {
+          "Accept":              "text/event-stream",
+          "X-Session-Token":     conn.sessionToken,
+          "X-Pinggy-No-Screen": "1",
+        },
+        signal: controller.signal,
+      });
 
-    es.onmessage = (event) => {
-      if (closed) return;
-      try {
-        onMessage(JSON.parse(event.data));
-      } catch {
-        // ignore malformed events
+      if (response.status === 401) {
+        await refreshToken(workerId);
+        scheduleRetry("Worker session expired — reconnecting…", 0);
+        return;
       }
-    };
 
-    es.onerror = () => {
-      if (closed) return;
-      es?.close();
-      es = null;
-      // Invalidate cached token so next connect gets a fresh one
-      invalidateWorkerConnection(workerId);
-      onError?.("Worker stream disconnected — retrying...");
-      // Retry after 5s
-      if (!closed) retryTimer = setTimeout(connect, 5_000);
-    };
+      if (!response.ok || !response.body) {
+        throw new Error(`Worker stream failed (${response.status})`);
+      }
+
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.includes("text/event-stream")) {
+        throw new Error("Worker stream returned a non-SSE response");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (!closed) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split(/\r?\n\r?\n/);
+        buffer = events.pop() ?? "";
+
+        for (const event of events) {
+          const data = event
+            .split(/\r?\n/)
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trimStart())
+            .join("\n");
+          if (!data) continue;
+          try { onMessage(JSON.parse(data)); }
+          catch { /* Ignore malformed SSE payloads. */ }
+        }
+      }
+
+      if (!closed) scheduleRetry("Worker stream disconnected — retrying…", 5_000);
+    } catch (e: any) {
+      if (closed || e?.name === "AbortError") return;
+      scheduleRetry(`Worker stream error: ${e?.message ?? "unknown error"}`, 5_000);
+    }
   };
 
   await connect();
@@ -184,8 +226,8 @@ export async function openWorkerStream(
     close: () => {
       closed = true;
       if (retryTimer) clearTimeout(retryTimer);
-      es?.close();
-      es = null;
+      abortController?.abort();
+      abortController = null;
     },
   };
 }

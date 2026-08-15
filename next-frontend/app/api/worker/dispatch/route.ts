@@ -169,9 +169,9 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      const pinggyHttpUrl = worker.pinggyUrl.startsWith("tcp://")
-        ? worker.pinggyUrl.replace("tcp://", "http://")
-        : worker.pinggyUrl;
+      // Browser-dispatched worker jobs must use HTTPS when the dashboard is
+      // deployed on Vercel. Older TCP workers are skipped until restarted.
+      if (!worker.pinggyUrl.startsWith("https://")) continue;
 
       return NextResponse.json({
         action:      "trigger",
@@ -185,7 +185,7 @@ export async function POST(req: NextRequest) {
           workerId,
         },
         destination: "worker",
-        pinggyUrl:   pinggyHttpUrl,
+        pinggyUrl:   worker.pinggyUrl,
         sessionToken,
       });
     }

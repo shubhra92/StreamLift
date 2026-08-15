@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { LocationSelect } from "./LocationSelect";
 import type { AddDownloadModalProps, FileInfo } from "./types";
 
@@ -151,6 +151,9 @@ export function AddDownloadModal({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Add New Download</DialogTitle>
+          <DialogDescription>
+            Paste the URL of the file you want to download, then click Next.
+          </DialogDescription>
         </DialogHeader>
 
         <AnimatePresence mode="wait">

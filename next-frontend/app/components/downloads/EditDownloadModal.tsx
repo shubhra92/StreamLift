@@ -8,6 +8,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription
 } from "@/components/ui/dialog";
 import type { EditDownloadModalProps } from "./types";
 
@@ -50,6 +51,9 @@ export function EditDownloadModal({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Edit Download</DialogTitle>
+          <DialogDescription>
+            Update the download URL, file name, or storage location.
+          </DialogDescription>
         </DialogHeader>
         <AnimatePresence>
           <motion.div

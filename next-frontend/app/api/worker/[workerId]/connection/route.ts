@@ -47,6 +47,13 @@ export async function GET(
     );
   }
 
+  if (!worker.pinggyUrl.startsWith("https://")) {
+    return NextResponse.json(
+      { success: false, message: "Worker tunnel is not HTTPS. Restart the worker to obtain a secure Pinggy URL." },
+      { status: 503 },
+    );
+  }
+
   // Check online status — last heartbeat must be within 20 seconds
   const ONLINE_THRESHOLD_MS = 20_000;
   const isOnline = worker.lastHeartbeat
@@ -73,15 +80,9 @@ export async function GET(
     }
   }
 
-  // Convert tcp:// to http:// — Pinggy TCP tunnels use tcp:// internally
-  // but the worker's FastAPI server accepts plain HTTP connections
-  const pinggyHttpUrl = worker.pinggyUrl?.startsWith("tcp://")
-    ? worker.pinggyUrl.replace("tcp://", "http://")
-    : (worker.pinggyUrl ?? null);
-
   return NextResponse.json({
     success:      true,
-    pinggyUrl:    pinggyHttpUrl,
+    pinggyUrl:    worker.pinggyUrl,
     sessionToken,
   });
 }

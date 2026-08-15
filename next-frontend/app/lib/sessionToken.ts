@@ -38,13 +38,12 @@ export async function rotateSessionToken(
   const newToken  = generateSessionToken();
   const newExpiry = sessionTokenExpiry();
 
-  // Pinggy TCP tunnel returns tcp://host:port — convert to http:// for API calls
-  const workerHttpUrl = workerPinggyUrl.startsWith("tcp://")
-    ? workerPinggyUrl.replace("tcp://", "http://")
-    : workerPinggyUrl;
+  if (!workerPinggyUrl.startsWith("https://")) {
+    throw new Error("Worker tunnel must use HTTPS");
+  }
 
   // Tell the worker about the new token first — if this fails, don't save to DB
-  const res = await fetch(`${workerHttpUrl}/internal/rotate-token`, {
+  const res = await fetch(`${workerPinggyUrl}/internal/rotate-token`, {
     method:  "POST",
     headers: {
       "Content-Type": "application/json",

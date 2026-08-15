@@ -8,6 +8,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription
 } from "@/components/ui/dialog";
 import { TorrentFileSelector } from "./TorrentFileSelector";
 import { LocationSelect } from "../downloads/LocationSelect";
@@ -176,6 +177,11 @@ export function AddTorrentModal({
           <DialogTitle>
             {step === "input" ? "Add New Torrent" : "Select Files to Download"}
           </DialogTitle>
+          <DialogDescription>
+            {step === "input"
+              ? "Enter a magnet link or browse for a .torrent file to get started."
+              : "Choose the files you want to download and select a storage location."}
+          </DialogDescription>
         </DialogHeader>
 
         <AnimatePresence mode="wait">

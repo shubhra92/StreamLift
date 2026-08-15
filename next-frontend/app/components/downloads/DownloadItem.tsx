@@ -77,12 +77,12 @@ export function DownloadItem({
             <span>•</span>
             <span className="capitalize"><LocationLabel location={download.location} /></span>
           </div>
-          {isDownloading ? (
+          {isDownloading && ((progress?.percent ?? 0 > 0) || (download.status === "downloading")) ? (
             <div className="w-full bg-gray-200 rounded h-2"> {/* bg-gray-200 <= bg-muted */}
               <motion.div
                 className="bg-green-600 h-2 rounded"
                 initial={{ width: 0 }}
-                animate={{ width: `${progress?.percent || 0}%` }}
+                animate={{ width: `${progress?.percent ?? 0}%` }}
                 transition={{ duration: 0.3 }}
               />
             </div>
@@ -111,12 +111,12 @@ export function DownloadItem({
         <LocationLabel location={download.location} />
       </TableCell>
       <TableCell className="hidden md:table-cell px-4 py-3">
-        {isDownloading ? (
+        {isDownloading && ((progress?.percent ?? 0 > 0) || (download.status === "downloading")) ? (
           <div className="w-full bg-gray-200 rounded h-3 min-w-[80px]">
             <motion.div
               className="bg-green-600 h-3 rounded"
               initial={{ width: 0 }}
-              animate={{ width: `${progress?.percent || 0}%` }}
+              animate={{ width: `${progress?.percent ?? 0}%` }}
               transition={{ duration: 0.3 }}
             />
           </div>
