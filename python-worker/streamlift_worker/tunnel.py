@@ -1,38 +1,50 @@
 """
-Pinggy tunnel management — TCP mode (+tcp+force).
+Pinggy tunnel management — HTTPS HTTP mode.
 
-Uses raw TCP tunneling so Pinggy acts as a pure passthrough with zero HTTP
-proxy buffering. Essential for SSE streaming.
+Uses Pinggy's HTTP tunnel with TLS terminated by Pinggy. The resulting public
+HTTPS URL is safe to call from a browser hosted on HTTPS (for example, Vercel).
+The worker itself still serves plain HTTP locally on port 8000.
 
-Captures PTY output via `script` command (Pinggy writes the URL to the
-terminal, not to stdout/stderr pipes). Platform-aware syntax:
-  - Linux/Colab : script -q -c 'cmd' logfile
-  - macOS       : script -q logfile cmd [args...]
-
-The macOS branch is for local development only — Colab is always Linux.
+Forces an SSH pseudo-terminal and captures its combined output directly. This
+works in Colab and lets the worker report the real Pinggy error when startup
+fails, rather than hiding it behind a terminal wrapper.
 """
 
-import os
+import json
 import re
-import shlex
 import subprocess
-import sys
 import threading
 import time
 from typing import Optional
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
 from streamlift_worker import logger
 
-_LOG_FILE      = "/tmp/pinggy_streamlift.txt"
-_TCP_URL_RE    = re.compile(r"tcp://(\S+):(\d+)")
-_POLL_INTERVAL = 0.5   # seconds between log file polls
+# Pinggy's terminal output also contains control-plane links such as
+# dashboard.pinggy.io. Those are not tunnel URLs and must never be registered
+# as a worker endpoint.
+_HTTPS_URL_RE   = re.compile(r"https://[A-Za-z0-9.-]+(?::\d+)?")
+_PINGGY_CONTROL_HOSTS = {
+    "a.pinggy.io",
+    "dashboard.pinggy.io",
+    "free.pinggy.io",
+    "pro.pinggy.io",
+}
+_POLL_INTERVAL = 0.5   # seconds between captured-output polls
 _URL_TIMEOUT   = 45    # seconds to wait for URL
 _RESTART_DELAY = 5     # seconds before restart on unexpected exit
+_MAX_CAPTURED_OUTPUT = 12_000
+# Pinggy exposes tunnel metadata on its remote debugger port 4300. Bind it to
+# an uncommon local port so the worker can retrieve URLs even when Pinggy's
+# terminal banner is absent (as observed in Google Colab).
+_LOCAL_DEBUGGER_PORT = 4301
+_REMOTE_DEBUGGER_PORT = 4300
 
 
 class PinggyTunnel:
     """
-    Opens a Pinggy TCP tunnel (+tcp+force) via SSH.
+    Opens a Pinggy HTTP tunnel with a public HTTPS URL via SSH.
     Captures the public URL from PTY output using `script`.
     Auto-restarts if the tunnel drops.
     """
@@ -44,11 +56,12 @@ class PinggyTunnel:
         self._proc: Optional[subprocess.Popen] = None
         self._lock  = threading.Lock()
         self._on_url_change = None
+        self._output = ""
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def start(self) -> str:
-        """Start the tunnel and block until the public TCP URL is ready."""
+        """Start the tunnel and block until the public HTTPS URL is ready."""
         url = self._launch()
         threading.Thread(target=self._watchdog, daemon=True).start()
         return url
@@ -67,7 +80,6 @@ class PinggyTunnel:
                     self._proc.kill()
             self._proc = None
             self._url  = None
-        subprocess.run(["pkill", "-f", "a.pinggy.io"], capture_output=True)
 
     def on_url_change(self, callback) -> None:
         self._on_url_change = callback
@@ -75,49 +87,47 @@ class PinggyTunnel:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _launch(self) -> str:
-        """Start SSH subprocess and wait for the tcp:// URL to appear."""
-        try:
-            os.remove(_LOG_FILE)
-        except FileNotFoundError:
-            pass
-
-        # +tcp+force = raw TCP passthrough, no HTTP proxy, no buffering
+        """Start SSH subprocess and wait for the HTTPS URL to appear."""
+        # HTTP is Pinggy's default tunnel type. x:https prevents accidental
+        # HTTP use from an HTTPS dashboard; x:passpreflight lets browser CORS
+        # preflight requests reach FastAPI unchanged.
         ssh_args = [
-            "ssh", "-p", "443",
+            "ssh", "-tt", "-p", "443",
             "-R", f"0:localhost:{self._port}",
+            "-L", f"{_LOCAL_DEBUGGER_PORT}:localhost:{_REMOTE_DEBUGGER_PORT}",
             "-o", "StrictHostKeyChecking=no",
             "-o", "ServerAliveInterval=30",
             "-o", "ExitOnForwardFailure=yes",
-            f"{self._token}+tcp+force@a.pinggy.io",
+            f"{self._token}+force@free.pinggy.io",
+            "x:https",
+            "x:passpreflight",
         ]
 
-        logger.log("info", f"Starting Pinggy TCP tunnel on port {self._port}...")
+        logger.log("info", f"Starting Pinggy HTTPS tunnel on port {self._port}...")
 
-        # `script` gives SSH a PTY so Pinggy prints the URL.
-        # Syntax differs between platforms — only matters for local dev on macOS.
-        # Colab (production) is always Linux.
-        if sys.platform == "darwin":
-            # macOS: script -q logfile cmd [args...]
-            cmd = ["script", "-q", _LOG_FILE] + ssh_args
-        else:
-            # Linux / Colab: script -q -c 'cmd string' logfile
-            cmd = ["script", "-q", "-c", shlex.join(ssh_args), _LOG_FILE]
-
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(
+            ssh_args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
 
         with self._lock:
             self._proc = proc
+            self._output = ""
+
+        threading.Thread(target=self._capture_output, args=(proc,), daemon=True).start()
 
         url = self._wait_for_url(proc)
 
         if not url:
             proc.terminate()
-            try:
-                with open(_LOG_FILE, "r", errors="ignore") as f:
-                    content = f.read()
-                logger.log("error", f"Pinggy output:\n{content[-500:]}")
-            except Exception:
-                pass
+            output = self._get_output().strip()
+            if output:
+                logger.log("error", f"Pinggy SSH output:\n{self._redact(output[-2_000:])}")
+            else:
+                logger.log("error", "Pinggy SSH produced no output")
             raise RuntimeError(
                 f"Pinggy tunnel did not provide a URL within {_URL_TIMEOUT}s. "
                 "Check your Pinggy token."
@@ -137,7 +147,7 @@ class PinggyTunnel:
         return url
 
     def _wait_for_url(self, proc: subprocess.Popen) -> Optional[str]:
-        """Poll the log file until a tcp:// URL appears or timeout."""
+        """Poll captured SSH output until Pinggy prints an HTTPS URL or timeout."""
         deadline = time.time() + _URL_TIMEOUT
 
         while time.time() < deadline:
@@ -147,22 +157,50 @@ class PinggyTunnel:
                 logger.log("error", "Pinggy SSH process exited early")
                 return None
 
-            if not os.path.exists(_LOG_FILE):
-                continue
+            content = _strip_ansi(self._get_output())
 
-            try:
-                with open(_LOG_FILE, "rb") as f:
-                    raw = f.read()
-            except Exception:
-                continue
+            url = _find_public_https_url(content)
+            if url:
+                return url
 
-            content = _strip_ansi(raw.decode("utf-8", errors="ignore"))
-
-            match = _TCP_URL_RE.search(content)
-            if match:
-                return f"tcp://{match.group(1)}:{match.group(2)}"
+            # The debugger API is more reliable than scraping SSH terminal
+            # output and returns both the HTTP and HTTPS tunnel URLs.
+            url = self._get_debugger_url()
+            if url:
+                return url
 
         return None
+
+    def _capture_output(self, proc: subprocess.Popen) -> None:
+        """Read SSH output continuously so it cannot block on a full pipe."""
+        if proc.stdout is None:
+            return
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                with self._lock:
+                    self._output = (self._output + line)[-_MAX_CAPTURED_OUTPUT:]
+        finally:
+            proc.stdout.close()
+
+    def _get_output(self) -> str:
+        with self._lock:
+            return self._output
+
+    def _get_debugger_url(self) -> Optional[str]:
+        try:
+            with urlopen(
+                f"http://127.0.0.1:{_LOCAL_DEBUGGER_PORT}/urls",
+                timeout=1,
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            urls = payload.get("urls", []) if isinstance(payload, dict) else []
+            return _find_public_https_url("\n".join(urls))
+        except Exception:
+            # The SSH local forward/debugger will not be ready immediately.
+            return None
+
+    def _redact(self, text: str) -> str:
+        return text.replace(self._token, "[REDACTED]")
 
     def _watchdog(self) -> None:
         """Restart the tunnel if it exits unexpectedly."""
@@ -198,3 +236,24 @@ def _strip_ansi(text: str) -> str:
     text = re.sub(r'\x1b[()][AB012]', '', text)
     text = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', ' ', text)
     return text
+
+
+def _find_public_https_url(output: str) -> Optional[str]:
+    """Return a public Pinggy HTTPS tunnel URL from terminal output.
+
+    Free tunnels currently use ``*.run.pinggy-free.link`` or
+    ``*.free.pinggy.net``. The broader ``*.pinggy.io`` check also supports
+    public HTTPS URLs issued by paid or legacy Pinggy configurations, while
+    excluding known service endpoints.
+    """
+    for candidate in _HTTPS_URL_RE.findall(output):
+        host = urlparse(candidate).hostname
+        if not host or host in _PINGGY_CONTROL_HOSTS:
+            continue
+        if (
+            host.endswith(".pinggy-free.link")
+            or host.endswith(".free.pinggy.net")
+            or host.endswith(".pinggy.io")
+        ):
+            return candidate
+    return None

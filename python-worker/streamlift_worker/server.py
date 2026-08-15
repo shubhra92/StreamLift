@@ -43,6 +43,12 @@ def init_server(config, current_task: dict, initial_session_token: str) -> None:
     _session_token  = initial_session_token
 
 
+def update_session_token(session_token: str) -> None:
+    """Apply the token returned when the worker re-registers after a tunnel renewal."""
+    global _session_token
+    _session_token = session_token
+
+
 def get_cancel_flag(download_id: str) -> bool:
     return _cancel_flags.get(download_id, False)
 

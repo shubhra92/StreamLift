@@ -21,7 +21,7 @@ from streamlift_worker import api, logger
 from streamlift_worker.config import HEARTBEAT_INTERVAL, WorkerConfig
 from streamlift_worker.mega import get_mega_client
 from streamlift_worker.metrics import get_public_ip, get_system_metrics
-from streamlift_worker.server import app, init_server
+from streamlift_worker.server import app, init_server, update_session_token
 from streamlift_worker.tunnel import PinggyTunnel
 
 # Shared task state — written by downloader.py, read by server.py
@@ -106,7 +106,12 @@ def run(config: WorkerConfig) -> None:
     # Re-register with new URL whenever the tunnel restarts
     def _on_tunnel_url_change(new_url: str) -> None:
         logger.log("info", f"Tunnel URL changed to {new_url}, re-registering...")
-        api.register(config, ip, new_url)
+        new_session_token = api.register(config, ip, new_url)
+        if new_session_token:
+            update_session_token(new_session_token)
+            logger.log("info", "Worker session token refreshed after tunnel renewal")
+        else:
+            logger.log("error", "Worker re-registration failed; tunnel URL was not updated")
 
     tunnel.on_url_change(_on_tunnel_url_change)
 
