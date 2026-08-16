@@ -94,6 +94,7 @@ def status_update(
     download_id: str,
     status: str,
     error_msg: str = "",
+    location_path: str | None = None,
 ) -> None:
     """Notify the backend when a download completes or fails."""
     payload: dict[str, Any] = {
@@ -104,6 +105,8 @@ def status_update(
     }
     if error_msg:
         payload["errorMessage"] = error_msg
+    if location_path:
+        payload["locationPath"] = location_path
     _post(config, "/api/worker/status-update", payload)
 
 

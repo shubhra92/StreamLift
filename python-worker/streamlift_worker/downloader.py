@@ -30,6 +30,68 @@ def _colab_dir() -> str:
     return "/content" if os.path.exists("/content") else os.getcwd()
 
 
+def _downloads_dir() -> str:
+    """Return the user-visible local download directory, creating it if needed."""
+    path = os.path.join(_colab_dir(), "streamlift-downloads")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _partial_dir(download_id: str) -> str:
+    """Create an isolated, hidden staging directory for one download job."""
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", download_id)
+    path = os.path.join(_downloads_dir(), ".partial", safe_id)
+    shutil.rmtree(path, ignore_errors=True)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _safe_file_name(name: str, fallback: str = "download") -> str:
+    """Prevent a remote filename from escaping the worker's download directory."""
+    cleaned = os.path.basename(name.replace("\\", "/")).strip()
+    return cleaned if cleaned not in {"", ".", ".."} else fallback
+
+
+def _available_path(path: str) -> str:
+    """Avoid overwriting an existing completed download."""
+    if not os.path.exists(path):
+        return path
+    directory, name = os.path.split(path)
+    stem, ext = os.path.splitext(name)
+    index = 2
+    while True:
+        candidate = os.path.join(directory, f"{stem} ({index}){ext}")
+        if not os.path.exists(candidate):
+            return candidate
+        index += 1
+
+
+def _publish_staged_file(staged_path: str, relative_path: str) -> str:
+    """Atomically move a completed staged file into the visible downloads folder."""
+    destination_root = _downloads_dir()
+    safe_relative = os.path.normpath(relative_path).lstrip(os.sep)
+    if safe_relative in {"", "."} or safe_relative.startswith(".." + os.sep):
+        raise ValueError("Invalid downloaded file path")
+    destination = _available_path(os.path.join(destination_root, safe_relative))
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    os.replace(staged_path, destination)
+    return destination
+
+
+def _publish_staged_tree(staging_dir: str) -> list[str]:
+    """Move completed torrent payload files out of an isolated staging directory."""
+    published: list[str] = []
+    for root, _, names in os.walk(staging_dir):
+        for name in names:
+            # aria2 control files are not user-visible downloads.
+            if name.endswith(".aria2"):
+                continue
+            source = os.path.join(root, name)
+            relative = os.path.relpath(source, staging_dir)
+            published.append(_publish_staged_file(source, relative))
+    return published
+
+
 def _is_cancelled(download_id: str) -> bool:
     """Check if a cancel was requested via the worker API."""
     try:
@@ -47,7 +109,8 @@ def _is_cancelled(download_id: str) -> bool:
 def process_http_download(config: WorkerConfig, task: dict, current_task: dict) -> None:
     download_id = task["downloadId"]
     source_url  = task["sourceUrl"]
-    file_name   = task.get("fileName") or "download"
+    file_name   = _safe_file_name(task.get("fileName") or "download")
+    staging_dir = _partial_dir(download_id) if config.download_location == "local" else None
 
     logger.log("info", f"HTTP download: {file_name} → {config.download_location}")
     current_task.update({
@@ -67,12 +130,13 @@ def process_http_download(config: WorkerConfig, task: dict, current_task: dict) 
         if config.download_location == "mega":
             _http_stream_to_mega(config, resp, total, download_id, file_name, current_task)
         else:
-            _http_save_local(config, resp, total, download_id, file_name, current_task)
+            _http_save_local(config, resp, total, download_id, file_name, current_task, staging_dir)
 
     except Exception as e:
         logger.log("error", f"HTTP download failed: {e}")
         api.status_update(config, download_id, "failed", str(e))
-        _cleanup_local_file(_colab_dir(), file_name)
+        if staging_dir:
+            shutil.rmtree(staging_dir, ignore_errors=True)
     finally:
         current_task.clear()
 
@@ -135,9 +199,11 @@ def _http_save_local(
     download_id: str,
     file_name: str,
     current_task: dict,
+    staging_dir: str | None,
 ) -> None:
-    save_dir  = _colab_dir()
-    file_path = os.path.join(save_dir, file_name)
+    if not staging_dir:
+        raise RuntimeError("Local download staging directory is unavailable")
+    file_path = os.path.join(staging_dir, file_name)
 
     downloaded        = 0
     last_report_bytes = 0
@@ -153,7 +219,7 @@ def _http_save_local(
                 logger.log("info", f"Download cancelled: {file_name}")
                 current_task["status"] = "failed"
                 api.status_update(config, download_id, "failed", "Cancelled by user")
-                _cleanup_local_file(save_dir, file_name)
+                _cleanup_local_file(staging_dir, file_name)
                 return
 
             f.write(chunk)
@@ -172,10 +238,12 @@ def _http_save_local(
                 last_report_bytes = downloaded
                 last_report_time  = time.time()
 
+    published_path = _publish_staged_file(file_path, file_name)
+    shutil.rmtree(staging_dir, ignore_errors=True)
     current_task["progress"] = 100
     current_task["status"]   = "completed"
-    api.status_update(config, download_id, "completed")
-    logger.log("info", f"HTTP download completed locally: {file_name} ({downloaded:,} bytes)")
+    api.status_update(config, download_id, "completed", location_path=published_path)
+    logger.log("info", f"HTTP download completed locally: {published_path} ({downloaded:,} bytes)")
 
 
 def _cleanup_local_file(directory: str, file_name: str) -> None:
@@ -207,7 +275,7 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
         except Exception as e:
             logger.log("warning", f"Could not parse fileIndices: {e}")
 
-    display_name = file_name or "torrent"
+    display_name = _safe_file_name(file_name or "torrent", "torrent")
     logger.log("info", f"Torrent download via aria2c: {display_name} → {config.download_location}")
 
     current_task.update({
@@ -228,7 +296,7 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
         current_task.clear()
         return
 
-    save_path = _colab_dir()
+    save_path = _partial_dir(download_id)
     _clean_stale_aria2_files(save_path)
 
     cmd = _build_aria2c_cmd(save_path, magnet_link, file_indices)
@@ -238,6 +306,8 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
     last_report_time  = time.time()
     downloaded_path: Optional[str] = None
     progress_re = re.compile(r'\[#\w+\s+([\d.]+\w+)/([\d.]+\w+)\((\d+)%\)')
+    metadata_phase_logged = False
+    payload_download_started = False
 
     try:
         process = subprocess.Popen(
@@ -261,6 +331,21 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
                 downloaded_bytes = _parse_size(m.group(1))
                 total_bytes      = _parse_size(m.group(2))
                 pct              = int(m.group(3))
+
+                # aria2 may report its magnet metadata lookup as 100% even
+                # though it has no payload size (0B/0B). Keep the worker at
+                # 0% until it has discovered the selected torrent content.
+                if total_bytes <= 0:
+                    current_task["progress"] = 0
+                    if not metadata_phase_logged:
+                        logger.log("info", "Torrent metadata resolved — waiting for peers and file data")
+                        metadata_phase_logged = True
+                    continue
+
+                if not payload_download_started:
+                    payload_download_started = True
+                    logger.log("info", f"Torrent payload download started ({total_bytes:,} bytes)")
+
                 current_task["progress"] = pct
 
                 now = time.time()
@@ -281,7 +366,7 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
             api.status_update(config, download_id, "failed", msg)
             return
 
-        logger.log("info", f"Torrent download finished locally: {display_name}")
+        logger.log("info", f"Torrent download finished in staging: {display_name}")
 
         if config.download_location == "mega":
             current_task["status"] = "uploading"
@@ -290,10 +375,18 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
                                                      download_id, total_bytes)
             if not success:
                 return
+        else:
+            published = _publish_staged_tree(save_path)
+            if not published:
+                raise RuntimeError("aria2c completed without producing a local file")
+            logger.log("info", f"Published {len(published)} torrent file(s) to {_downloads_dir()}")
 
         current_task["progress"] = 100
         current_task["status"]   = "completed"
-        api.status_update(config, download_id, "completed")
+        location_path = None
+        if config.download_location == "local":
+            location_path = published[0] if len(published) == 1 else _downloads_dir()
+        api.status_update(config, download_id, "completed", location_path=location_path)
         logger.log("info", f"Torrent task completed: {display_name}")
 
     except Exception as e:
@@ -301,6 +394,7 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
         current_task["status"] = "failed"
         api.status_update(config, download_id, "failed", str(e))
     finally:
+        shutil.rmtree(save_path, ignore_errors=True)
         current_task.clear()
 
 
