@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: "Invalid JSON" }, { status: 400 });
   }
 
-  const { workerId, authToken, downloadId, status, errorMessage } = body ?? {};
+  const { workerId, authToken, downloadId, status, errorMessage, locationPath } = body ?? {};
 
   if (!workerId || !authToken) {
     return NextResponse.json({ success: false, message: "Missing credentials" }, { status: 401 });
@@ -47,6 +47,7 @@ export async function POST(req: NextRequest) {
     .set({
       status,
       ...(errorMessage ? { errorMessage } : {}),
+      ...(typeof locationPath === "string" && locationPath ? { locationPath } : {}),
       updatedAt: new Date(),
     })
     .where(eq(fileDownloads.id, downloadId))
