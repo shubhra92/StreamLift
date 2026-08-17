@@ -19,6 +19,7 @@ import requests
 
 from streamlift_worker import api, logger, mega
 from streamlift_worker.config import WorkerConfig
+from streamlift_worker.local_files import downloads_dir, record_completed_files
 
 
 def _now_iso() -> str:
@@ -32,9 +33,7 @@ def _colab_dir() -> str:
 
 def _downloads_dir() -> str:
     """Return the user-visible local download directory, creating it if needed."""
-    path = os.path.join(_colab_dir(), "streamlift-downloads")
-    os.makedirs(path, exist_ok=True)
-    return path
+    return downloads_dir()
 
 
 def _partial_dir(download_id: str) -> str:
@@ -240,6 +239,7 @@ def _http_save_local(
 
     published_path = _publish_staged_file(file_path, file_name)
     shutil.rmtree(staging_dir, ignore_errors=True)
+    record_completed_files(download_id, [published_path])
     current_task["progress"] = 100
     current_task["status"]   = "completed"
     api.status_update(config, download_id, "completed", location_path=published_path)
@@ -379,6 +379,7 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
             published = _publish_staged_tree(save_path)
             if not published:
                 raise RuntimeError("aria2c completed without producing a local file")
+            record_completed_files(download_id, published)
             logger.log("info", f"Published {len(published)} torrent file(s) to {_downloads_dir()}")
 
         current_task["progress"] = 100

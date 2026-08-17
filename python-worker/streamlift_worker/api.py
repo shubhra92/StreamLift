@@ -110,21 +110,6 @@ def status_update(
     _post(config, "/api/worker/status-update", payload)
 
 
-def flush_logs(config: WorkerConfig) -> None:
-    if logger.pending_count() == 0:
-        return
-    batch = logger.pop_batch(10)
-    result = _post(config, "/api/worker/logs", {
-        "workerId":  config.worker_id,
-        "authToken": config.auth_token,
-        "logs":      batch,
-    })
-    # If the call failed, put the batch back at the front so we retry next time
-    if not (result and result.get("success")):
-        from streamlift_worker.logger import _queue
-        _queue[:0] = batch
-
-
 # ── Mega session persistence ──────────────────────────────────────────────────
 
 def save_mega_session(config: WorkerConfig, session_id: str) -> None:

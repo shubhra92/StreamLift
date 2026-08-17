@@ -7,6 +7,8 @@ Endpoints:
   GET  /stream                        — session token, SSE
   POST /download                      — session token
   DELETE /download/{download_id}      — session token
+  POST /downloads/files               — session token, batch local-file availability
+  GET  /downloads/{id}/files/{index}  — session token, completed local file
   POST /internal/rotate-token         — auth token (internal use only)
 """
 
@@ -20,10 +22,11 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from streamlift_worker import logger
+from streamlift_worker.local_files import get_completed_files, resolve_completed_file
 from streamlift_worker.metrics import get_system_metrics
 
 # ── Module-level state shared with worker.py ──────────────────────────────────
@@ -176,6 +179,41 @@ class DownloadRequest(BaseModel):
     fileName:     str        = "download"
     downloadType: str        = "http"   # "http" | "torrent"
     fileIndices:  list[int] | None = None
+
+
+class FileAvailabilityRequest(BaseModel):
+    downloadIds: list[str]
+
+
+@app.post("/downloads/files")
+async def list_completed_files(
+    body: FileAvailabilityRequest,
+    x_session_token: Optional[str] = Header(default=None),
+):
+    _require_session_token(x_session_token)
+    # Bound the request so an authenticated browser cannot make the worker scan
+    # an unbounded list through the public tunnel.
+    ids = body.downloadIds[:100]
+    return {
+        "filesByDownload": {
+            download_id: get_completed_files(download_id)
+            for download_id in ids
+        },
+    }
+
+
+@app.get("/downloads/{download_id}/files/{file_index}")
+async def download_completed_file(
+    download_id: str,
+    file_index: int,
+    x_session_token: Optional[str] = Header(default=None),
+):
+    _require_session_token(x_session_token)
+    resolved = resolve_completed_file(download_id, file_index)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="Completed file is no longer available on this worker")
+    path, file_name = resolved
+    return FileResponse(path, filename=file_name, media_type="application/octet-stream")
 
 
 @app.post("/download")

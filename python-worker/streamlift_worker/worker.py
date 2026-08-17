@@ -34,7 +34,6 @@ def _heartbeat_loop(config: WorkerConfig, tunnel: PinggyTunnel) -> None:
             pinggy_url = tunnel.get_url() or ""
             metrics    = get_system_metrics()
             api.heartbeat(config, metrics, pinggy_url)
-            api.flush_logs(config)
         except Exception as e:
             logger.log("warning", f"Heartbeat error: {e}")
         api.stop_event.wait(timeout=HEARTBEAT_INTERVAL)
