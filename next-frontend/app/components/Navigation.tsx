@@ -4,17 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Download, Magnet, Cpu, User, ChevronDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { getCurrentGuest } from "@/app/lib/idb/guestGuard";
 
 function useGuestInfo() {
   const [shortId, setShortId] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/guest/me")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data?.guest?.shortId) setShortId(data.guest.shortId);
-      })
-      .catch(() => {});
+    void getCurrentGuest().then((guest) => setShortId(guest?.shortId ?? null));
   }, []);
 
   return shortId;

@@ -12,20 +12,30 @@
 import { getCursor, setCursor, clearAllIDB } from "./IDBStore";
 
 let checked = false;
+let verifiedGuestId: string | null = null;
+let guestRequest: Promise<CurrentGuest | null> | null = null;
+let guardRequest: Promise<string | null> | null = null;
+
+export interface CurrentGuest {
+  id: string;
+  shortId: string | null;
+}
 
 /**
  * Fetch the current guest id from the Next.js /api/guest/me route.
  * Returns null if unauthenticated or the request fails.
  */
-async function fetchCurrentGuestId(): Promise<string | null> {
-  try {
-    const res = await fetch("/api/guest/me", { credentials: "include" });
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json?.guest?.id ?? null;
-  } catch {
-    return null;
+export function getCurrentGuest(): Promise<CurrentGuest | null> {
+  if (!guestRequest) {
+    guestRequest = fetch("/api/guest/me", { credentials: "include" })
+      .then(async (res) => {
+        if (!res.ok) return null;
+        const guest = (await res.json())?.guest;
+        return guest?.id ? { id: guest.id as string, shortId: guest.shortId ?? null } : null;
+      })
+      .catch(() => null);
   }
+  return guestRequest;
 }
 
 /**
@@ -35,27 +45,34 @@ async function fetchCurrentGuestId(): Promise<string | null> {
  * Returns the current guestId (or null if unauthenticated).
  */
 export async function runGuestGuard(): Promise<string | null> {
-  if (checked) return null;
-  checked = true;
+  if (guardRequest) return guardRequest;
+  if (checked) return verifiedGuestId;
 
-  const currentGuestId = await fetchCurrentGuestId();
-  if (!currentGuestId) return null;
+  guardRequest = (async () => {
+    const guest = await getCurrentGuest();
+    if (!guest) return null;
+    const currentGuestId = guest.id;
 
-  const cachedGuestId = await getCursor("guest_id");
+    const cachedGuestId = await getCursor("guest_id");
 
-  if (cachedGuestId && cachedGuestId !== currentGuestId) {
-    // Guest has rotated — wipe everything
-    console.info("[IDB] Guest rotation detected — clearing cache");
-    await clearAllIDB();
-  }
+    if (cachedGuestId && cachedGuestId !== currentGuestId) {
+      console.info("[IDB] Guest rotation detected — clearing cache");
+      await clearAllIDB();
+    }
 
-  // Always persist the current guest id
-  await setCursor("guest_id", currentGuestId);
+    await setCursor("guest_id", currentGuestId);
+    verifiedGuestId = currentGuestId;
+    checked = true;
+    return currentGuestId;
+  })();
 
-  return currentGuestId;
+  return guardRequest;
 }
 
 /** Reset the guard flag (for testing or explicit re-initialisation). */
 export function resetGuestGuard(): void {
   checked = false;
+  verifiedGuestId = null;
+  guestRequest = null;
+  guardRequest = null;
 }

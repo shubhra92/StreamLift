@@ -13,6 +13,7 @@ import {
   timeAgo,
   logLevelClass,
   isVersionOutdated,
+  countryFlag,
 } from "./utils";
 import type { WorkerDetailsProps } from "./types";
 import type { WorkerLog } from "@/app/lib/workerStore";
@@ -145,6 +146,10 @@ export function WorkerDetails({ worker, status, onClose, panelRef }: WorkerDetai
   const online   = worker ? (status?.online ?? worker.online) : false;
   const version  = worker ? (status?.version ?? "1.0.0") : "1.0.0";
   const outdated = worker ? isVersionOutdated(version) : false;
+  const workerCountryFlag = countryFlag(worker?.countryCode);
+  const publicIp = online && worker?.ipAddress
+    ? `${workerCountryFlag ? `${workerCountryFlag} ` : ""}${worker.ipAddress}`
+    : "Not connected";
 
   // ── Connect to worker SSE when panel opens and worker is online ───────────
   useEffect(() => {
@@ -276,6 +281,7 @@ export function WorkerDetails({ worker, status, onClose, panelRef }: WorkerDetai
                 <Field label="Last Seen" value={timeAgo(status?.lastHeartbeat)} />
                 <Field label="Compute"   value={worker.computeType.charAt(0).toUpperCase() + worker.computeType.slice(1)} />
                 <Field label="Download To" value={worker.downloadLocation === "mega" ? "Mega" : "Local"} />
+                <Field label="Public IP" value={publicIp} mono={Boolean(worker?.ipAddress)} copyable={Boolean(online && worker?.ipAddress)} />
                 <Field label="Created"   value={formatDate(worker.createdAt?.toString())} />
                 {worker.megaEmail && <Field label="Mega Account" value={worker.megaEmail} />}
               </div>

@@ -20,6 +20,9 @@ export function DownloadList({
   onSelect,
   onDelete,
   onEdit,
+  workerFilesByDownload,
+  onDownloadWorkerFile,
+  workerFileTransfers,
 }: DownloadListProps) {
   return (
     <div className="bg-card rounded-xl shadow-md border overflow-hidden">
@@ -57,6 +60,9 @@ export function DownloadList({
                   onSelect={onSelect}
                   onDelete={onDelete}
                   onEdit={onEdit}
+                  workerFiles={workerFilesByDownload[download.id]}
+                  onDownloadWorkerFile={onDownloadWorkerFile}
+                  workerFileTransfer={Object.values(workerFileTransfers).find((transfer) => transfer.downloadId === download.id && (transfer.status === "preparing" || transfer.status === "downloading"))}
                 />
               ))
             )}

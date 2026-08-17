@@ -1,4 +1,6 @@
 import type { FileDownload } from "@/app/db/schema";
+import type { WorkerLocalFile } from "@/app/lib/workerConnection";
+import type { WorkerFileTransfer } from "@/app/lib/sync-worker/workerProtocol";
 
 export interface Progress {
   downloadedBytes: number;
@@ -20,6 +22,9 @@ export interface DownloadItemProps {
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onEdit: (file: FileDownload) => void;
+  workerFiles?: WorkerLocalFile[];
+  onDownloadWorkerFile?: (download: FileDownload, files: WorkerLocalFile[]) => void;
+  workerFileTransfer?: WorkerFileTransfer;
 }
 
 export interface DownloadListProps {
@@ -33,6 +38,9 @@ export interface DownloadListProps {
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onEdit: (file: FileDownload) => void;
+  workerFilesByDownload: Record<string, WorkerLocalFile[]>;
+  onDownloadWorkerFile: (download: FileDownload, files: WorkerLocalFile[]) => void;
+  workerFileTransfers: Record<string, WorkerFileTransfer>;
 }
 
 export interface DownloadDetailsProps {

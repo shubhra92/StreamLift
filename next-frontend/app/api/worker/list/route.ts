@@ -12,10 +12,9 @@ import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
 import { db } from "@/app/db";
 import { workers } from "@/app/db/schema";
 import { eq, and, gte, desc } from "drizzle-orm";
+import { clearStaleWorkerConnections, isWorkerOnline } from "@/app/lib/workerPresence";
 
 export const dynamic = "force-dynamic";
-
-const ONLINE_THRESHOLD_MS = 20_000;
 
 export async function GET(req: NextRequest) {
   const token = req.cookies.get(GUEST_COOKIE_NAME)?.value;
@@ -26,6 +25,8 @@ export async function GET(req: NextRequest) {
   if (!guest) {
     return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
   }
+
+  await clearStaleWorkerConnections(guest.id);
 
   const syncedAt = new Date().toISOString();
   const since    = req.nextUrl.searchParams.get("since") ?? undefined;
@@ -78,9 +79,7 @@ export async function GET(req: NextRequest) {
   }> = {};
 
   for (const w of allWorkers) {
-    const online = w.lastHeartbeat
-      ? now - new Date(w.lastHeartbeat).getTime() < ONLINE_THRESHOLD_MS
-      : false;
+    const online = isWorkerOnline(w.lastHeartbeat, now);
     runtimeStatus[w.id] = {
       online,
       lastHeartbeat: w.lastHeartbeat?.toISOString() ?? null,

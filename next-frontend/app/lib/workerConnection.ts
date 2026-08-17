@@ -20,6 +20,12 @@ export interface TriggerDownloadParams {
   fileIndices?: number[] | null;
 }
 
+export interface WorkerLocalFile {
+  index: number;
+  name: string;
+  size: number;
+}
+
 // Per-worker connection cache — keyed by workerId
 const _cache = new Map<string, WorkerConnection>();
 
@@ -125,6 +131,88 @@ export async function cancelWorkerDownload(
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail ?? `Cancel failed (${res.status})`);
   }
+}
+
+/** Return completed local files that the worker still has for each download. */
+export async function getWorkerLocalFiles(
+  workerId: string,
+  downloadIds: string[],
+): Promise<Record<string, WorkerLocalFile[]>> {
+  const res = await callWorker(workerId, "POST", "/downloads/files", { downloadIds });
+  if (!res.ok) {
+    throw new Error(`Worker file availability check failed (${res.status})`);
+  }
+  const data = await res.json();
+  return data.filesByDownload ?? {};
+}
+
+/** Download a completed local worker file directly to the user's device. */
+export async function downloadWorkerLocalFile(
+  workerId: string,
+  downloadId: string,
+  file: WorkerLocalFile,
+  onProgress?: (receivedBytes: number, totalBytes: number | null) => void,
+): Promise<void> {
+  // The picker must happen before a transfer exists. Cancelling it therefore
+  // creates no progress state and makes no request to the worker.
+  const picker = (window as any).showSaveFilePicker;
+  const handle = typeof picker === "function"
+    ? await picker({ suggestedName: file.name })
+    : null;
+
+  const res = await callWorker(
+    workerId,
+    "GET",
+    `/downloads/${encodeURIComponent(downloadId)}/files/${file.index}`,
+  );
+  if (!res.ok || !res.body) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? "This file is no longer available on the worker");
+  }
+
+  const totalBytes = Number(res.headers.get("Content-Length")) || file.size || null;
+  onProgress?.(0, totalBytes);
+  // Chromium browsers can write a response stream straight to the selected
+  // destination. Reading it ourselves lets StreamLift show real progress.
+  if (handle) {
+    const writable = await handle.createWritable();
+    const reader = res.body.getReader();
+    let receivedBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        await writable.write(value);
+        receivedBytes += value.byteLength;
+        onProgress?.(receivedBytes, totalBytes);
+      }
+      await writable.close();
+    } catch (error) {
+      await writable.abort().catch(() => undefined);
+      throw error;
+    }
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const chunks: BlobPart[] = [];
+  let receivedBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value.slice().buffer);
+    receivedBytes += value.byteLength;
+    onProgress?.(receivedBytes, totalBytes);
+  }
+  const blob = new Blob(chunks);
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = file.name;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 /**

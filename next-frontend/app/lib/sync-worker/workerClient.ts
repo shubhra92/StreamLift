@@ -26,6 +26,7 @@ import type {
   SyncEntity,
   ProgressPayload,
   WorkerStatusPayload,
+  WorkerFileTransfer,
 } from "./workerProtocol";
 import type { IDBFileDownload, IDBWorker } from "@/app/lib/idb/schema";
 import type { FileDownload, Worker } from "@/app/db/schema";
@@ -37,6 +38,7 @@ type WorkerDataCallback   = (rows: IDBWorker[]) => void;
 type ProgressCallback     = (payload: ProgressPayload) => void;
 type NetworkCallback      = (status: "online" | "offline") => void;
 type WorkerStatusCallback = (status: WorkerStatusPayload) => void;
+type WorkerFileTransferCallback = (transfers: Record<string, WorkerFileTransfer>) => void;
 
 // ─── WorkerClient ─────────────────────────────────────────────────────────────
 
@@ -46,6 +48,7 @@ class WorkerClient {
   private worker: SharedWorker | null = null;
   private port: MessagePort | null = null;
   private initialized = false;
+  private guestVerified = false;
   private ready = false;
   private pendingMessages: TabToWorkerMessage[] = [];
 
@@ -68,6 +71,8 @@ class WorkerClient {
 
   // ── Worker status subscribers: workerId → Set<callback> ──────────────────
   private workerStatusSubs: Map<string, Set<WorkerStatusCallback>> = new Map();
+  private workerFileTransferSubs: Set<WorkerFileTransferCallback> = new Set();
+  private workerFileTransfers: Record<string, WorkerFileTransfer> = {};
 
   // ── Server dispatch subscribers — notified when dispatcher picks a server download ──
   private dispatchServerDownloadSubs: Set<(download: any) => void> = new Set();
@@ -91,7 +96,11 @@ class WorkerClient {
     if (this.initialized) return;
     this.initialized = true;
 
-    await runGuestGuard();
+    const guestId = await runGuestGuard();
+    // Never read or expose cached data before proving it belongs to this guest.
+    if (!guestId) return;
+    this.guestVerified = true;
+    this.emitSubscribedIDB();
 
     if (typeof window === "undefined") return;
 
@@ -197,6 +206,16 @@ class WorkerClient {
         if (subs) subs.forEach((cb) => cb(msg.status));
         break;
       }
+
+      case "workerFileTransfer":
+        this.workerFileTransfers = { ...this.workerFileTransfers, [msg.transfer.id]: msg.transfer };
+        this.emitWorkerFileTransfers();
+        break;
+
+      case "workerFileTransfers":
+        this.workerFileTransfers = Object.fromEntries(msg.transfers.map((transfer) => [transfer.id, transfer]));
+        this.emitWorkerFileTransfers();
+        break;
 
       case "saveCursor": {
         const CURSOR_MAP: Record<string, string> = {
@@ -331,22 +350,28 @@ class WorkerClient {
       this.downloadSubs.add(cb as DownloadDataCallback);
       if (this.downloadSubs.size === 1) {
         this.needs.add("downloads");
-        void this.flushDeclare();
-        void this.emitFromIDB("downloads");
+        if (this.guestVerified) {
+          void this.flushDeclare();
+          void this.emitFromIDB("downloads");
+        }
       }
     } else if (entity === "torrents") {
       this.torrentSubs.add(cb as DownloadDataCallback);
       if (this.torrentSubs.size === 1) {
         this.needs.add("torrents");
-        void this.flushDeclare();
-        void this.emitFromIDB("torrents");
+        if (this.guestVerified) {
+          void this.flushDeclare();
+          void this.emitFromIDB("torrents");
+        }
       }
     } else if (entity === "workers") {
       this.workerSubs.add(cb as WorkerDataCallback);
       if (this.workerSubs.size === 1) {
         this.needs.add("workers");
-        void this.flushDeclare();
-        void this.emitFromIDB("workers");
+        if (this.guestVerified) {
+          void this.flushDeclare();
+          void this.emitFromIDB("workers");
+        }
       }
     }
   }
@@ -382,6 +407,22 @@ class WorkerClient {
   subscribeProgress(cb: ProgressCallback): () => void {
     this.progressSubs.add(cb);
     return () => this.progressSubs.delete(cb);
+  }
+
+  subscribeWorkerFileTransfers(cb: WorkerFileTransferCallback): () => void {
+    this.workerFileTransferSubs.add(cb);
+    cb(this.workerFileTransfers);
+    return () => this.workerFileTransferSubs.delete(cb);
+  }
+
+  reportWorkerFileTransfer(transfer: WorkerFileTransfer): void {
+    this.workerFileTransfers = { ...this.workerFileTransfers, [transfer.id]: transfer };
+    this.emitWorkerFileTransfers();
+    if (!this.isFallback) this.send({ type: "workerFileTransfer", transfer });
+  }
+
+  private emitWorkerFileTransfers(): void {
+    this.workerFileTransferSubs.forEach((cb) => cb(this.workerFileTransfers));
   }
 
   // ─── Server dispatch subscribe ────────────────────────────────────────────
@@ -505,6 +546,12 @@ class WorkerClient {
       const rows = await getAllWorkers();
       this.workerSubs.forEach((cb) => cb(rows));
     }
+  }
+
+  private emitSubscribedIDB(): void {
+    if (this.needs.size === 0) return;
+    void this.flushDeclare();
+    this.needs.forEach((entity) => void this.emitFromIDB(entity));
   }
 
   // ─── Delete helpers ───────────────────────────────────────────────────────

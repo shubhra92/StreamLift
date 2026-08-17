@@ -4,6 +4,7 @@ import { db } from "@/app/db";
 import { workers } from "@/app/db/schema";
 import { eq } from "drizzle-orm";
 import { generateSessionToken, sessionTokenExpiry } from "@/app/lib/sessionToken";
+import { resolveIpCountryCode } from "@/app/lib/ipGeolocation";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,17 @@ export async function POST(req: NextRequest) {
   // Generate a fresh session token for direct client access
   const sessionToken = generateSessionToken();
   const tokenExpiry  = sessionTokenExpiry();
+  const normalizedIpAddress = typeof ipAddress === "string" && ipAddress.trim() ? ipAddress.trim() : null;
+  const [existingWorker] = await db
+    .select({ ipAddress: workers.ipAddress, countryCode: workers.countryCode })
+    .from(workers)
+    .where(eq(workers.id, workerId))
+    .limit(1);
+  // Keep a known country while the same tunnel IP re-registers. A geo-IP
+  // lookup is only needed when Colab/Pinggy supplies a different public IP.
+  const countryCode = existingWorker?.ipAddress === normalizedIpAddress
+    ? existingWorker.countryCode
+    : await resolveIpCountryCode(normalizedIpAddress);
 
   // Persist pinggy URL + session token + heartbeat to DB
   await db
@@ -36,7 +48,8 @@ export async function POST(req: NextRequest) {
     .set({
       pinggyUrl:          pinggyUrl ?? null,
       lastHeartbeat:      new Date(),
-      ipAddress:          ipAddress ?? null,
+      ipAddress:          normalizedIpAddress,
+      countryCode,
       sessionToken,
       sessionTokenExpiry: tokenExpiry,
       updatedAt:          new Date(),
@@ -50,7 +63,6 @@ export async function POST(req: NextRequest) {
     config: {
       heartbeatEndpoint: "/api/worker/heartbeat",
       statusEndpoint:    "/api/worker/status-update",
-      logsEndpoint:      "/api/worker/logs",
     },
   });
 }

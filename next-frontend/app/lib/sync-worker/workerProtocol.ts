@@ -39,7 +39,9 @@ export type TabToWorkerMessage =
   /** Open a shared SSE stream for worker detail status */
   | { type: "watchWorker";   workerId: string }
   /** Release interest in a worker's status stream */
-  | { type: "unwatchWorker"; workerId: string };
+  | { type: "unwatchWorker"; workerId: string }
+  /** A tab reports its direct worker-file transfer for every tab to render. */
+  | { type: "workerFileTransfer"; transfer: WorkerFileTransfer };
 
 // ─── Worker → Tab ─────────────────────────────────────────────────────────────
 
@@ -63,6 +65,21 @@ export interface WorkerStatusPayload {
   logs?:        unknown[];
 }
 
+export interface WorkerFileTransfer {
+  id: string;
+  workerId: string;
+  downloadId: string;
+  fileIndex: number;
+  fileName: string;
+  status: "preparing" | "downloading" | "completed" | "failed";
+  receivedBytes: number;
+  totalBytes: number | null;
+  speedBytesPerSecond: number | null;
+  startedAt: number;
+  updatedAt: number;
+  error?: string;
+}
+
 export type WorkerToTabMessage =
   | {
       type: "data";
@@ -79,6 +96,8 @@ export type WorkerToTabMessage =
     }
   | { type: "progress";      payload: ProgressPayload }
   | { type: "workerStatus";  workerId: string; status: WorkerStatusPayload }
+  | { type: "workerFileTransfer"; transfer: WorkerFileTransfer }
+  | { type: "workerFileTransfers"; transfers: WorkerFileTransfer[] }
   | { type: "networkStatus"; status: "online" | "offline" }
   /** Worker tells tabs to persist the new cursor to IDB */
   | { type: "saveCursor";    entity: SyncEntity; cursor: string }

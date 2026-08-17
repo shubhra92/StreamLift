@@ -11,6 +11,7 @@ import { workers } from "@/app/db/schema";
 import { eq } from "drizzle-orm";
 import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
 import { isSessionTokenExpired, rotateSessionToken } from "@/app/lib/sessionToken";
+import { clearStaleWorkerConnections, isWorkerOnline } from "@/app/lib/workerPresence";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,8 @@ export async function GET(
   if (!guest) {
     return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
   }
+
+  await clearStaleWorkerConnections(guest.id);
 
   const { workerId } = await params;
 
@@ -55,10 +58,7 @@ export async function GET(
   }
 
   // Check online status — last heartbeat must be within 20 seconds
-  const ONLINE_THRESHOLD_MS = 20_000;
-  const isOnline = worker.lastHeartbeat
-    ? Date.now() - new Date(worker.lastHeartbeat).getTime() < ONLINE_THRESHOLD_MS
-    : false;
+  const isOnline = isWorkerOnline(worker.lastHeartbeat);
 
   if (!isOnline) {
     return NextResponse.json(

@@ -42,6 +42,7 @@ export const workers = pgTable('workers', {
   pinggyUrl: text('pinggy_url'),                         // current public tunnel URL
   lastHeartbeat: timestamp('last_heartbeat'),            // updated every 8s by worker
   ipAddress: text('ip_address'),                         // worker's public IP (set on register)
+  countryCode: text('country_code'),                     // ISO 3166-1 alpha-2 country for the current public IP
   sessionToken: text('session_token'),                   // short-lived client access token
   sessionTokenExpiry: timestamp('session_token_expiry'), // rotated every 4hr
   createdAt: timestamp('created_at').defaultNow(),

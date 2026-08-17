@@ -1,7 +1,7 @@
 /**
  * IndexedDB schema definition.
  *
- * Database: "streamlift-db"  version: 1
+ * Database: "streamlift-db"  version: 3
  *
  * Stores:
  *  - fileDownloads  — local replica of the fileDownloads table
@@ -77,8 +77,9 @@ let _db: IDBPDatabase<StreamLiftDB> | null = null;
 export async function getDB(): Promise<IDBPDatabase<StreamLiftDB>> {
   if (_db) return _db;
 
-  _db = await openDB<StreamLiftDB>("streamlift-db", 1, {
-    upgrade(db) {
+  _db = await openDB<StreamLiftDB>("streamlift-db", 3, {
+    upgrade(db, oldVersion) {
+      if (oldVersion < 1) {
       // ── fileDownloads store ──────────────────────────────────────────────
       const dlStore = db.createObjectStore("fileDownloads", { keyPath: "id" });
       dlStore.createIndex("by_downloadType", "downloadType");
@@ -89,8 +90,13 @@ export async function getDB(): Promise<IDBPDatabase<StreamLiftDB>> {
       const wStore = db.createObjectStore("workers", { keyPath: "id" });
       wStore.createIndex("by_updatedAt", "updatedAt");
 
-      // ── syncMeta store ───────────────────────────────────────────────────
-      db.createObjectStore("syncMeta");
+        // ── syncMeta store ─────────────────────────────────────────────────
+        db.createObjectStore("syncMeta");
+      }
+      const rawDb = db as unknown as IDBDatabase;
+      if (oldVersion < 3 && rawDb.objectStoreNames.contains("workerFileTransfers")) {
+        rawDb.deleteObjectStore("workerFileTransfers");
+      }
     },
   });
 

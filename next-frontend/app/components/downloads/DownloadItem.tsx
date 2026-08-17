@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "motion/react";
-import { Trash2, Pencil, Loader2 } from "lucide-react";
+import { Download, Trash2, Pencil, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -18,9 +18,25 @@ export function DownloadItem({
   onSelect,
   onDelete,
   onEdit,
+  workerFiles = [],
+  onDownloadWorkerFile,
+  workerFileTransfer,
 }: DownloadItemProps) {
   const canEdit = download.status === "pending";
   const canDelete = download.status !== "downloading" && !isDownloading;
+  const canDownload = download.status === "completed" && workerFiles.length > 0 && !!onDownloadWorkerFile;
+  const transferPercent = workerFileTransfer?.totalBytes
+    ? Math.min(100, Math.round((workerFileTransfer.receivedBytes / workerFileTransfer.totalBytes) * 100))
+    : null;
+  const workerDownloadButton = canDownload && (
+    <Button variant="ghost" size="icon" className="h-8 w-8" title={workerFileTransfer ? `Downloading${transferPercent !== null ? ` — ${transferPercent}%` : ""}` : "Download from worker"} disabled={!!workerFileTransfer}
+      onClick={(e) => { e.stopPropagation(); onDownloadWorkerFile?.(download, workerFiles); }}>
+      <span className="relative grid place-items-center">
+        {workerFileTransfer && transferPercent !== null && <svg className="absolute h-7 w-7 -rotate-90"><circle cx="14" cy="14" r="11" fill="none" stroke="currentColor" strokeWidth="2" className="text-muted"/><circle cx="14" cy="14" r="11" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-primary" strokeDasharray="69.1" strokeDashoffset={69.1 * (1 - transferPercent / 100)}/></svg>}
+        <Download className={`h-4 w-4 text-muted-foreground ${workerFileTransfer ? "animate-bounce" : ""}`} />
+      </span>
+    </Button>
+  );
   return (
     <motion.tr
       initial={{ opacity: 0, y: 10 }}
@@ -53,6 +69,7 @@ export function DownloadItem({
                   <Pencil className="h-4 w-4 text-muted-foreground" />
                 </Button>
               )}
+              {workerDownloadButton}
               {canDelete && (
                 <Button
                   variant="ghost"
@@ -130,7 +147,7 @@ export function DownloadItem({
         {formatDate(download.createdAt)}
       </TableCell>
       <TableCell className="hidden md:table-cell px-4 py-3">
-        {canDelete && (
+        {(canDelete || canDownload) && (
           <div className="flex items-center gap-1">
             {canEdit && (
               <Button
@@ -145,6 +162,7 @@ export function DownloadItem({
                 <Pencil className="h-4 w-4 text-muted-foreground" />
               </Button>
             )}
+            {workerDownloadButton}
             <Button
               variant="ghost"
               size="icon"

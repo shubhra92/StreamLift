@@ -74,6 +74,11 @@ var trackingType       = null;
 var sseSource          = null;
 var progressTimer      = null;
 
+// Browser-to-device transfers are currently written by the initiating tab
+// (the save picker needs a user gesture). The SharedWorker owns their state so
+// every open tab sees the same progress.
+var workerFileTransfers = new Map();
+
 // ─── Connection ───────────────────────────────────────────────────────────────
 
 self.onconnect = function(event) {
@@ -123,6 +128,7 @@ function handleMessage(port, msg) {
       if (!origin && msg.origin) origin = msg.origin;
       sendTo(port, { type: "ready" });
       sendTo(port, { type: "networkStatus", status: isOnline ? "online" : "offline" });
+      sendTo(port, { type: "workerFileTransfers", transfers: Array.from(workerFileTransfers.values()) });
       break;
     case "declare":
       handleDeclare(port, msg.needs || [], msg.cursors || {}, msg.idbIds || {});
@@ -149,6 +155,12 @@ function handleMessage(port, msg) {
       break;
     case "unwatchWorker":
       handleUnwatchWorker(msg.workerId);
+      break;
+    case "workerFileTransfer":
+      if (msg.transfer && msg.transfer.id) {
+        workerFileTransfers.set(msg.transfer.id, msg.transfer);
+        broadcast({ type: "workerFileTransfer", transfer: msg.transfer });
+      }
       break;
   }
 }

@@ -3,10 +3,9 @@ import { db } from "@/app/db";
 import { workers } from "@/app/db/schema";
 import { eq } from "drizzle-orm";
 import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
+import { clearStaleWorkerConnections, isWorkerOnline } from "@/app/lib/workerPresence";
 
 export const dynamic = "force-dynamic";
-
-const ONLINE_THRESHOLD_MS = 20_000; // 20 seconds
 
 export async function GET(
   req: NextRequest,
@@ -33,15 +32,22 @@ export async function GET(
     return NextResponse.json({ success: false, message: "Worker not found" }, { status: 404 });
   }
 
-  const online = worker.lastHeartbeat
-    ? Date.now() - new Date(worker.lastHeartbeat).getTime() < ONLINE_THRESHOLD_MS
-    : false;
+  await clearStaleWorkerConnections(guest.id);
+
+  const [freshWorker] = await db
+    .select()
+    .from(workers)
+    .where(eq(workers.id, workerId))
+    .limit(1);
+  if (!freshWorker) return NextResponse.json({ success: false, message: "Worker not found" }, { status: 404 });
+
+  const online = isWorkerOnline(freshWorker.lastHeartbeat);
 
   return NextResponse.json({
     online,
-    ipAddress:     worker.ipAddress    ?? null,
-    lastHeartbeat: worker.lastHeartbeat?.toISOString() ?? null,
-    pinggyUrl:     worker.pinggyUrl    ?? null,
-    version:       worker.version,
+    ipAddress:     freshWorker.ipAddress    ?? null,
+    lastHeartbeat: freshWorker.lastHeartbeat?.toISOString() ?? null,
+    pinggyUrl:     freshWorker.pinggyUrl    ?? null,
+    version:       freshWorker.version,
   });
 }

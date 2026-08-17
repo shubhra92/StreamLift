@@ -12,11 +12,11 @@ import { db } from "@/app/db";
 import { workers } from "@/app/db/schema";
 import { eq } from "drizzle-orm";
 import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
+import { clearStaleWorkerConnections, isWorkerOnline } from "@/app/lib/workerPresence";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const ONLINE_THRESHOLD_MS = 20_000;
 const PUSH_INTERVAL_MS    = 5_000;
 
 export async function GET(
@@ -36,6 +36,7 @@ export async function GET(
     async start(controller) {
       const push = async () => {
         try {
+          await clearStaleWorkerConnections(guest.id);
           const [worker] = await db
             .select({ id: workers.id, guestId: workers.guestId, lastHeartbeat: workers.lastHeartbeat, pinggyUrl: workers.pinggyUrl, version: workers.version })
             .from(workers)
@@ -49,9 +50,7 @@ export async function GET(
             return;
           }
 
-          const online = worker.lastHeartbeat
-            ? Date.now() - new Date(worker.lastHeartbeat).getTime() < ONLINE_THRESHOLD_MS
-            : false;
+          const online = isWorkerOnline(worker.lastHeartbeat);
 
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({
             online,

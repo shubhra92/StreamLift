@@ -54,3 +54,11 @@ export function isVersionOutdated(version: string): boolean {
   if (mi !== mib) return mi < mib;
   return pa < pb;
 }
+
+/** Convert an ISO 3166-1 alpha-2 country code to its flag emoji. */
+export function countryFlag(countryCode: string | null | undefined): string | null {
+  if (!countryCode || !/^[A-Za-z]{2}$/.test(countryCode)) return null;
+  return String.fromCodePoint(
+    ...countryCode.toUpperCase().split("").map((letter) => 0x1F1E6 + letter.charCodeAt(0) - 65),
+  );
+}

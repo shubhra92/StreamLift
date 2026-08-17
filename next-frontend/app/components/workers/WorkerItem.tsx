@@ -6,7 +6,7 @@ import { Copy, Trash2, Loader2, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TableCell, TableRow } from "@/components/ui/table";
-import { formatDate } from "./utils";
+import { countryFlag, formatDate } from "./utils";
 import type { WorkerItemProps } from "./types";
 
 const computeLabel: Record<string, string> = {
@@ -23,6 +23,8 @@ const locationLabel: Record<string, string> = {
 export function WorkerItem({ worker, isSelected, isDeleting, onSelect, onDelete, onCopyScript }: WorkerItemProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [copied, setCopied] = useState(false);
+  const workerCountryFlag = countryFlag(worker.countryCode);
+  const workerIp = worker.online ? worker.ipAddress : null;
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -128,7 +130,7 @@ export function WorkerItem({ worker, isSelected, isDeleting, onSelect, onDelete,
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground">
-            IP: {worker.ipAddress ?? "Not connected"}
+            IP: {workerIp ? <><span aria-hidden="true">{workerCountryFlag ? `${workerCountryFlag} ` : ""}</span>{workerIp}</> : "Not connected"}
           </p>
           {confirmDelete && (
             <p className="text-xs text-destructive">Click delete again to confirm</p>
@@ -180,7 +182,12 @@ export function WorkerItem({ worker, isSelected, isDeleting, onSelect, onDelete,
 
       {/* IP Address */}
       <TableCell className="hidden md:table-cell px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">
-        {worker.ipAddress ?? "Not connected"}
+        {workerIp ? (
+          <span title={worker.countryCode ? `Tunnel country: ${worker.countryCode}` : "Tunnel country unavailable"}>
+            {workerCountryFlag && <span aria-hidden="true" className="mr-1">{workerCountryFlag}</span>}
+            {workerIp}
+          </span>
+        ) : "Not connected"}
       </TableCell>
 
       {/* Created */}

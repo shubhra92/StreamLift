@@ -12,11 +12,18 @@ import type { FileDownload } from "./db/schema"; //need go deep
 import type { IDBFileDownload } from "./lib/idb/schema"; //need go deep
 import type { FileInfo } from "./components/downloads";
 import { startDownload } from "./lib/startDownload";
+import {
+  downloadWorkerLocalFile,
+  getWorkerLocalFiles,
+  type WorkerLocalFile,
+} from "./lib/workerConnection";
+import type { WorkerFileTransfer } from "./lib/sync-worker/workerProtocol";
 import WorkerClient from "./lib/sync-worker/workerClient"; //need go deep
 import { OfflineBanner } from "./components/OfflineBanner"; //need go deep
 import {
   DownloadList,
   DownloadDetails,
+  LocalDownloadTray,
   AddDownloadModal,
   EditDownloadModal,
 } from "./components/downloads"; //need go deep
@@ -41,6 +48,8 @@ export default function Home() {
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [editingFile, setEditingFile] = useState<FileDownload | null>(null);
+  const [workerFilesByDownload, setWorkerFilesByDownload] = useState<Record<string, WorkerLocalFile[]>>({});
+  const [workerFileTransfers, setWorkerFileTransfers] = useState<Record<string, WorkerFileTransfer>>({});
 
   // Refs for outside-click detection on the details panel
   const listRef = useRef<HTMLDivElement>(null);
@@ -60,7 +69,17 @@ export default function Home() {
 
   const { downloads: idbDownloads, networkStatus, syncNow } = useDownloads();
   const downloads = idbDownloads.map(toFileDownload);
-  const { workers } = useWorkers({ enabled: isModalOpen });
+  const workerFileAvailabilityKey = downloads
+    .filter((download) => download.status === "completed" && !!download.workerId)
+    .map((download) => `${download.id}:${download.workerId}:${download.updatedAt?.getTime() ?? 0}`)
+    .sort()
+    .join("|");
+  const { workers } = useWorkers();
+  const onlineWorkerKey = workers
+    .filter((worker) => worker.online)
+    .map((worker) => worker.id)
+    .sort()
+    .join("|");
   const client = useRef(WorkerClient.getInstance());
 
   const isFnEnd = useRef(true);
@@ -128,6 +147,38 @@ export default function Home() {
   useEffect(() => {
     if (downloads.length > 0) void startActiveDownload(downloads);
   }, [idbDownloads]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Ask each assigned worker for files it still has. The list receives no
+  // download icon until the worker confirms a completed local artifact exists.
+  useEffect(() => {
+    const groups = new Map<string, string[]>();
+    for (const download of downloads) {
+      if (download.status !== "completed" || !download.workerId || !workers.some((worker) => worker.id === download.workerId && worker.online)) continue;
+      const ids = groups.get(download.workerId) ?? [];
+      ids.push(download.id);
+      groups.set(download.workerId, ids);
+    }
+
+    if (groups.size === 0) {
+      setWorkerFilesByDownload({});
+      return;
+    }
+
+    let cancelled = false;
+    void Promise.all(
+      [...groups.entries()].map(async ([workerId, downloadIds]) => {
+        try { return await getWorkerLocalFiles(workerId, downloadIds); }
+        catch { return {}; }
+      }),
+    ).then((responses) => {
+      if (cancelled) return;
+      setWorkerFilesByDownload(Object.assign({}, ...responses));
+    });
+
+    return () => { cancelled = true; };
+  }, [workerFileAvailabilityKey, onlineWorkerKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => client.current.subscribeWorkerFileTransfers(setWorkerFileTransfers), []);
 
   // Handle server/cloud dispatch from SharedWorker — claim and start via Express
   useEffect(() => {
@@ -266,6 +317,41 @@ export default function Home() {
     }
   };
 
+  const handleDownloadWorkerFile = async (download: FileDownload, files: WorkerLocalFile[]) => {
+    if (!download.workerId || files.length === 0) return;
+
+    let file = files[0];
+    if (files.length > 1) {
+      const options = files.map((item, index) => `${index + 1}. ${item.name}`).join("\n");
+      const chosen = window.prompt(`Choose a torrent file to download:\n\n${options}`, "1");
+      const index = Number(chosen) - 1;
+      if (!Number.isInteger(index) || index < 0 || index >= files.length) return;
+      file = files[index];
+    }
+
+    const transferId = `${download.workerId}:${download.id}:${file.index}`;
+    const startedAt = Date.now();
+    let previousBytes = 0;
+    let previousAt = startedAt;
+    let lastReportedAt = 0;
+    const report = (receivedBytes: number, totalBytes: number | null, status: WorkerFileTransfer["status"], error?: string) => {
+      const now = Date.now();
+      const speed = now > previousAt ? ((receivedBytes - previousBytes) * 1000) / (now - previousAt) : null;
+      previousBytes = receivedBytes; previousAt = now;
+      if (status === "downloading" && now - lastReportedAt < 250) return;
+      lastReportedAt = now;
+      client.current.reportWorkerFileTransfer({ id: transferId, workerId: download.workerId!, downloadId: download.id, fileIndex: file.index, fileName: file.name, status, receivedBytes, totalBytes, speedBytesPerSecond: speed, startedAt, updatedAt: now, error });
+    };
+    try {
+      await downloadWorkerLocalFile(download.workerId, download.id, file, (received, total) => report(received, total, "downloading"));
+      report(file.size, file.size, "completed");
+    } catch (error: any) {
+      if (error?.name === "AbortError") return;
+      report(previousBytes, file.size, "failed", error?.message);
+      alert(error?.message ?? "Could not download this file from the worker");
+    }
+  };
+
   const selectedDownload = downloads.find((d) => d.id === selectedId);
 
   return (
@@ -300,6 +386,9 @@ export default function Home() {
             onSelect={setSelectedId}
             onDelete={handleDelete}
             onEdit={setEditingFile}
+            workerFilesByDownload={workerFilesByDownload}
+            onDownloadWorkerFile={handleDownloadWorkerFile}
+            workerFileTransfers={workerFileTransfers}
           />
         </div>
 
@@ -310,6 +399,8 @@ export default function Home() {
           onClose={() => setSelectedId(null)}
           panelRef={panelRef}
         />
+
+        <LocalDownloadTray transfers={workerFileTransfers} workerNames={Object.fromEntries(workers.map((worker) => [worker.id, worker.name]))} />
 
         {/* Spacer: exact height of the panel so covered rows can be scrolled into view */}
         {selectedId && <div style={{ height: panelHeight }} className="shrink-0" aria-hidden="true" />}

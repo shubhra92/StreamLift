@@ -13,13 +13,12 @@ import { db } from "@/app/db";
 import { workers } from "@/app/db/schema";
 import { eq } from "drizzle-orm";
 import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
+import { clearStaleWorkerConnections, isWorkerOnline } from "@/app/lib/workerPresence";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const PUSH_INTERVAL_MS   = 5_000;
-const ONLINE_THRESHOLD_MS = 20_000;
-
 export async function GET(req: NextRequest) {
   const token = req.cookies.get(GUEST_COOKIE_NAME)?.value;
   if (!token) return new Response("Unauthorized", { status: 401 });
@@ -33,15 +32,14 @@ export async function GET(req: NextRequest) {
     async start(controller) {
       const push = async () => {
         try {
+          await clearStaleWorkerConnections(guest.id);
           const guestWorkers = await db
             .select()
             .from(workers)
             .where(eq(workers.guestId, guest.id));
 
           for (const w of guestWorkers) {
-            const online = w.lastHeartbeat
-              ? Date.now() - new Date(w.lastHeartbeat).getTime() < ONLINE_THRESHOLD_MS
-              : false;
+            const online = isWorkerOnline(w.lastHeartbeat);
 
             const payload = {
               workerId: w.id,
