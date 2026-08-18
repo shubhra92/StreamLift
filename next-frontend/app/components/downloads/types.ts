@@ -24,6 +24,7 @@ export interface DownloadItemProps {
   onEdit: (file: FileDownload) => void;
   workerFiles?: WorkerLocalFile[];
   onDownloadWorkerFile?: (download: FileDownload, files: WorkerLocalFile[]) => void;
+  onDownloadWorkerFileExternalLink?: (download: FileDownload, files: WorkerLocalFile[]) => void;
   workerFileTransfer?: WorkerFileTransfer;
 }
 
@@ -40,6 +41,7 @@ export interface DownloadListProps {
   onEdit: (file: FileDownload) => void;
   workerFilesByDownload: Record<string, WorkerLocalFile[]>;
   onDownloadWorkerFile: (download: FileDownload, files: WorkerLocalFile[]) => void;
+  onDownloadWorkerFileExternalLink: (download: FileDownload, files: WorkerLocalFile[]) => void;
   workerFileTransfers: Record<string, WorkerFileTransfer>;
 }
 

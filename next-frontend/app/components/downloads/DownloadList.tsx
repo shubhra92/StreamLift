@@ -22,8 +22,13 @@ export function DownloadList({
   onEdit,
   workerFilesByDownload,
   onDownloadWorkerFile,
+  onDownloadWorkerFileExternalLink,
   workerFileTransfers,
 }: DownloadListProps) {
+  const hasAnyDownloadable = downloads.some(
+    (d) => d.status === "completed" && (workerFilesByDownload[d.id]?.length ?? 0) > 0
+  );
+
   return (
     <div className="bg-card rounded-xl shadow-md border overflow-hidden">
       {/* table-fixed: columns respect explicit widths; w-full: fills container */}
@@ -37,7 +42,7 @@ export function DownloadList({
             <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-36">Location</TableHead>
             <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-36">Status</TableHead>
             <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-40">Created</TableHead>
-            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-24"></TableHead>
+            <TableHead className={`px-4 py-3 text-sm font-medium text-gray-600 ${hasAnyDownloadable ? 'w-36' : 'w-24'}`}></TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -62,6 +67,7 @@ export function DownloadList({
                   onEdit={onEdit}
                   workerFiles={workerFilesByDownload[download.id]}
                   onDownloadWorkerFile={onDownloadWorkerFile}
+                  onDownloadWorkerFileExternalLink={onDownloadWorkerFileExternalLink}
                   workerFileTransfer={Object.values(workerFileTransfers).find((transfer) => transfer.downloadId === download.id && (transfer.status === "preparing" || transfer.status === "downloading"))}
                 />
               ))

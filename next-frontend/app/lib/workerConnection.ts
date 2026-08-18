@@ -324,3 +324,49 @@ export async function openWorkerStream(
 export function invalidateWorkerConnection(workerId: string): void {
   _cache.delete(workerId);
 }
+
+/**
+ * Start a native browser download through a worker-owned, file-only ticket.
+ * The ticket exists only in the Python worker's memory; neither the URL nor
+ * token is persisted by Next.js or in the database.
+ */
+export async function openWorkerLocalFileInBrowser(
+  workerId: string,
+  downloadId: string,
+  file: WorkerLocalFile,
+): Promise<void> {
+  // Must be synchronous with the user's click or browsers will block the tab.
+  const browserTab = window.open("about:blank", "_blank");
+  if (!browserTab) {
+    throw new Error("Your browser blocked the download tab. Allow popups for StreamLift and try again.");
+  }
+
+  try {
+    browserTab.document.title = "Preparing download…";
+
+    const res = await callWorker(
+      workerId,
+      "POST",
+      `/downloads/${encodeURIComponent(downloadId)}/files/${file.index}/browser-link`,
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail ?? "This file is no longer available on the worker");
+    }
+
+    const data = await res.json() as { startPath?: string };
+    if (!data.startPath?.startsWith("/")) {
+      throw new Error("Worker did not return a valid browser download link");
+    }
+
+    // Read after callWorker in case it refreshed the cached worker session.
+    const conn = await getConnection(workerId);
+    console.log(`${"http"+conn.pinggyUrl.slice(5)}${data.startPath}`)
+    // browserTab.location.replace(`${"http"+conn.pinggyUrl.slice(5)}${data.startPath}`);
+    browserTab.location.href = `${"http"+conn.pinggyUrl.slice(5)}${data.startPath}`
+    // window.location.href = `${"http"+conn.pinggyUrl.slice(5)}${data.startPath}`
+  } catch (error) {
+    browserTab.close();
+    throw error;
+  }
+}

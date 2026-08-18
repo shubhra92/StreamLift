@@ -191,3 +191,35 @@
     white-space: nowrap !important;
   }
 }
+
+/* downloadingIcon | cugw  */
+.download-icon-cugw {
+  width: 48px;
+  height: 48px;
+  color: #000;
+  overflow: hidden;
+}
+
+.download-icon-cugw svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.moving-arrow-cugw {
+  animation: download-arrow-cugw 1.2s linear infinite;
+}
+
+@keyframes download-arrow-cugw {
+  0% {
+    transform: translateY(-32px);
+  }
+
+  70% {
+    transform: translateY(18px);
+  }
+
+  100% {
+    transform: translateY(58px);
+  }
+}

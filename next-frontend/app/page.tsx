@@ -14,6 +14,7 @@ import type { FileInfo } from "./components/downloads";
 import { startDownload } from "./lib/startDownload";
 import {
   downloadWorkerLocalFile,
+  openWorkerLocalFileInBrowser,
   getWorkerLocalFiles,
   type WorkerLocalFile,
 } from "./lib/workerConnection";
@@ -352,6 +353,25 @@ export default function Home() {
     }
   };
 
+  const handleDownloadWorkerFileExternalLink = async (download: FileDownload, files: WorkerLocalFile[]) => {
+    if (!download.workerId || files.length === 0) return;
+
+    let file = files[0];
+    if (files.length > 1) {
+      const options = files.map((item, index) => `${index + 1}. ${item.name}`).join("\n");
+      const chosen = window.prompt(`Choose a torrent file to download:\n\n${options}`, "1");
+      const index = Number(chosen) - 1;
+      if (!Number.isInteger(index) || index < 0 || index >= files.length) return;
+      file = files[index];
+    }
+
+    try {
+      await openWorkerLocalFileInBrowser(download.workerId, download.id, file);
+    } catch (error: any) {
+      alert(error?.message ?? "Could not download this file from the worker");
+    }
+  };
+
   const selectedDownload = downloads.find((d) => d.id === selectedId);
 
   return (
@@ -388,6 +408,7 @@ export default function Home() {
             onEdit={setEditingFile}
             workerFilesByDownload={workerFilesByDownload}
             onDownloadWorkerFile={handleDownloadWorkerFile}
+            onDownloadWorkerFileExternalLink={handleDownloadWorkerFileExternalLink}
             workerFileTransfers={workerFileTransfers}
           />
         </div>

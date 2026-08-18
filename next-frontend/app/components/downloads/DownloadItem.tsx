@@ -8,6 +8,7 @@ import { TableCell, TableRow } from "@/components/ui/table";
 import { formatDate, formatFileSize, getStatusClass, getStatusVariant } from "./utils";
 import type { DownloadItemProps } from "./types";
 import { LocationLabel } from "./LocationLabel";
+import { DownloadingIcon, GlobeDownload } from "@/components/ui/custom-icons";
 
 export function DownloadItem({
   download,
@@ -20,6 +21,7 @@ export function DownloadItem({
   onEdit,
   workerFiles = [],
   onDownloadWorkerFile,
+  onDownloadWorkerFileExternalLink,
   workerFileTransfer,
 }: DownloadItemProps) {
   const canEdit = download.status === "pending";
@@ -29,13 +31,21 @@ export function DownloadItem({
     ? Math.min(100, Math.round((workerFileTransfer.receivedBytes / workerFileTransfer.totalBytes) * 100))
     : null;
   const workerDownloadButton = canDownload && (
+    <>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8 text-destructive hover:text-destructive "
+        onClick={(e) => {e.stopPropagation(); onDownloadWorkerFileExternalLink?.(download, workerFiles); }}
+      >
+        <GlobeDownload className="h-4 w-4" />
+      </Button>
     <Button variant="ghost" size="icon" className="h-8 w-8" title={workerFileTransfer ? `Downloading${transferPercent !== null ? ` — ${transferPercent}%` : ""}` : "Download from worker"} disabled={!!workerFileTransfer}
       onClick={(e) => { e.stopPropagation(); onDownloadWorkerFile?.(download, workerFiles); }}>
-      <span className="relative grid place-items-center">
-        {workerFileTransfer && transferPercent !== null && <svg className="absolute h-7 w-7 -rotate-90"><circle cx="14" cy="14" r="11" fill="none" stroke="currentColor" strokeWidth="2" className="text-muted"/><circle cx="14" cy="14" r="11" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-primary" strokeDasharray="69.1" strokeDashoffset={69.1 * (1 - transferPercent / 100)}/></svg>}
-        <Download className={`h-4 w-4 text-muted-foreground ${workerFileTransfer ? "animate-bounce" : ""}`} />
-      </span>
+        {workerFileTransfer ? <DownloadingIcon color="#2563EB"/>
+        :<Download className={`h-4 w-4 text-muted-foreground ${workerFileTransfer ? "animate-bounce" : ""}`} />}
     </Button>
+    </>
   );
   return (
     <motion.tr

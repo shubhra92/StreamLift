@@ -20,6 +20,7 @@ import { startDownload } from "../lib/startDownload";
 import {
   downloadWorkerLocalFile,
   getWorkerLocalFiles,
+  openWorkerLocalFileInBrowser,
   type WorkerLocalFile,
 } from "../lib/workerConnection";
 import type { WorkerFileTransfer } from "../lib/sync-worker/workerProtocol";
@@ -336,6 +337,25 @@ export default function TorrentsPage() {
     }
   };
 
+  const handleDownloadWorkerFileExternalLink = async (download: FileDownload, files: WorkerLocalFile[]) => {
+    if (!download.workerId || files.length === 0) return;
+
+    let file = files[0];
+    if (files.length > 1) {
+      const options = files.map((item, index) => `${index + 1}. ${item.name}`).join("\n");
+      const chosen = window.prompt(`Choose a torrent file to download:\n\n${options}`, "1");
+      const index = Number(chosen) - 1;
+      if (!Number.isInteger(index) || index < 0 || index >= files.length) return;
+      file = files[index];
+    }
+
+    try {
+      await openWorkerLocalFileInBrowser(download.workerId, download.id, file);
+    } catch (error: any) {
+      alert(error?.message ?? "Could not download this file from the worker");
+    }
+  };
+
   return (
     <main className="bg-background p-4 md:p-6">
       <div className="max-w-5xl mx-auto">
@@ -372,6 +392,7 @@ export default function TorrentsPage() {
             onEdit={setEditingFile}
             workerFilesByDownload={workerFilesByDownload}
             onDownloadWorkerFile={handleDownloadWorkerFile}
+            onDownloadWorkerFileExternalLink={handleDownloadWorkerFileExternalLink}
             workerFileTransfers={workerFileTransfers}
           />
         </div>

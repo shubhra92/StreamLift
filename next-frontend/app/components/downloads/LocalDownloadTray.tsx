@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { WorkerFileTransfer } from "@/app/lib/sync-worker/workerProtocol";
 import { formatFileSize } from "./utils";
+import { DownloadingIcon } from "@/components/ui/custom-icons";
 
 interface LocalDownloadTrayProps {
   transfers: Record<string, WorkerFileTransfer>;
@@ -98,10 +99,10 @@ export function LocalDownloadTray({ transfers, workerNames }: LocalDownloadTrayP
         )}
       </AnimatePresence>
 
-      <Button size="icon" className="relative h-12 w-12 rounded-full shadow-lg" aria-label="Show local download progress" onClick={() => {
+      <Button size="icon" className="relative h-10 w-10 rounded-full shadow-lg" aria-label="Show local download progress" onClick={() => {
         if (!dragged.current) setMiniOpen((open) => !open);
       }}>
-        <Download className="h-5 w-5 animate-bounce" />
+        <DownloadingIcon color="#ffffff" />
         <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-destructive px-1 text-[10px] font-bold text-destructive-foreground">{active.length}</span>
       </Button>
 
