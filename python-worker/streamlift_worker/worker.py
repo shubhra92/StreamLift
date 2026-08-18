@@ -21,7 +21,12 @@ from streamlift_worker import api, logger
 from streamlift_worker.config import HEARTBEAT_INTERVAL, WorkerConfig
 from streamlift_worker.mega import get_mega_client
 from streamlift_worker.metrics import get_public_ip, get_system_metrics
-from streamlift_worker.server import app, init_server, update_session_token
+from streamlift_worker.server import (
+    app,
+    init_server,
+    update_public_http_url,
+    update_session_token,
+)
 from streamlift_worker.tunnel import PinggyTunnel
 
 # Shared task state — written by downloader.py, read by server.py
@@ -98,13 +103,16 @@ def run(config: WorkerConfig) -> None:
         sys.exit(1)
 
     # ── Step 5: Initialise FastAPI server state ───────────────────────────────
-    init_server(config, _current_task, session_token)
+    init_server(config, _current_task, session_token, tunnel.get_http_url())
     logger.log("info", "Worker API ready and accepting connections")
     logger.log("info", f"Public URL: {pinggy_url}")
+    logger.log("info", f"Public HTTP download URL: {tunnel.get_http_url()}")
 
     # Re-register with new URL whenever the tunnel restarts
     def _on_tunnel_url_change(new_url: str) -> None:
         logger.log("info", f"Tunnel URL changed to {new_url}, re-registering...")
+        update_public_http_url(tunnel.get_http_url())
+        logger.log("info", f"HTTP download URL changed to {tunnel.get_http_url()}")
         new_session_token = api.register(config, ip, new_url)
         if new_session_token:
             update_session_token(new_session_token)
