@@ -71,6 +71,11 @@ export interface WorkerFileTransferPart {
   end: number;             // byte offset end (inclusive)
   receivedBytes: number;   // bytes received for this part
   status: "pending" | "downloading" | "completed" | "failed";
+  speedBytesPerSecond?: number; // instantaneous throughput (smoothed EMA)
+  restartCount?: number;   // total reconnects (auto slow/stall + manual)
+  manualRestartCount?: number; // reconnects triggered by the UI refresh button
+  reconnecting?: boolean;  // a reconnect is in flight (button disabled)
+  reconnectingManual?: boolean; // in-flight reconnect was user-triggered (drives the animation)
 }
 
 export interface WorkerFileTransfer {

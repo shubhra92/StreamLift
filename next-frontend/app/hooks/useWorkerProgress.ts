@@ -12,7 +12,7 @@
  */
 
 import { useState, useEffect, useRef } from "react";
-import { openWorkerStream, invalidateWorkerConnection } from "@/app/lib/workerConnection";
+import { openWorkerStream } from "@/app/lib/workerConnection";
 
 export interface WorkerProgress {
   downloadedBytes: number;
@@ -86,9 +86,9 @@ export function useWorkerProgress(
         }
       },
       (_errMsg: string) => {
-        if (!cancelled) {
-          invalidateWorkerConnection(workerId);
-        }
+        // No-op on transient stream errors — the tunnel URL and session token
+        // do not change, so the cached connection stays valid for downloads.
+        // (Invalidating it here used to make every part hit the backend.)
       },
     ).then((handle) => {
       if (cancelled) { handle.close(); return; }

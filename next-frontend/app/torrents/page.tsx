@@ -22,6 +22,7 @@ import {
   getWorkerLocalFiles,
   openWorkerLocalFileInBrowser,
   isMultiPartPossible,
+  restartWorkerPart,
   type WorkerLocalFile,
 } from "../lib/workerConnection";
 import type { WorkerFileTransfer, WorkerFileTransferPart } from "../lib/sync-worker/workerProtocol";
@@ -322,11 +323,12 @@ export default function TorrentsPage() {
       lastReportedAt = now;
       client.current.reportWorkerFileTransfer({ id: transferId, workerId: download.workerId!, downloadId: download.id, fileIndex: file.index, fileName: file.name, status, receivedBytes, totalBytes, speedBytesPerSecond: speed, startedAt, updatedAt: now, error, parts: latestParts });
     };
+    const control = downloadWorkerLocalFile(download.workerId, download.id, file, (received, total, parts) => {
+      latestParts = parts;
+      report(received, total, "downloading");
+    }, parts);
     try {
-      await downloadWorkerLocalFile(download.workerId, download.id, file, (received, total, parts) => {
-        latestParts = parts;
-        report(received, total, "downloading");
-      }, parts);
+      await control.promise;
       report(file.size, file.size, "completed");
     } catch (error: any) {
       if (error?.name === "AbortError") return;
@@ -423,7 +425,11 @@ export default function TorrentsPage() {
           panelRef={panelRef}
         />
 
-        <LocalDownloadTray transfers={workerFileTransfers} workerNames={Object.fromEntries(workers.map((worker) => [worker.id, worker.name]))} />
+        <LocalDownloadTray
+          transfers={workerFileTransfers}
+          workerNames={Object.fromEntries(workers.map((worker) => [worker.id, worker.name]))}
+          onRestartPart={restartWorkerPart}
+        />
 
         {/* Spacer: exact height of the panel so covered rows can be scrolled into view */}
         {selectedId && <div style={{ height: panelHeight }} className="shrink-0" aria-hidden="true" />}

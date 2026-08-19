@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Download, Expand, X } from "lucide-react";
+import { Download, Expand, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { WorkerFileTransfer, WorkerFileTransferPart } from "@/app/lib/sync-worker/workerProtocol";
@@ -12,6 +12,7 @@ import { DownloadingIcon } from "@/components/ui/custom-icons";
 interface LocalDownloadTrayProps {
   transfers: Record<string, WorkerFileTransfer>;
   workerNames: Record<string, string>;
+  onRestartPart?: (transferId: string, partIndex: number) => void;
 }
 
 type TrayCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -37,7 +38,17 @@ function partPercent(part: WorkerFileTransferPart): number {
 }
 
 /** One progress bar per part, side by side in a single line. */
-function PartSegments({ parts, expanded }: { parts: WorkerFileTransferPart[]; expanded: boolean }) {
+function PartSegments({
+  parts,
+  expanded,
+  transferId,
+  onRestartPart,
+}: {
+  parts: WorkerFileTransferPart[];
+  expanded: boolean;
+  transferId: string;
+  onRestartPart?: (transferId: string, partIndex: number) => void;
+}) {
   return (
     <div className="space-y-1">
       <div className="flex gap-1">
@@ -66,8 +77,49 @@ function PartSegments({ parts, expanded }: { parts: WorkerFileTransferPart[]; ex
       {expanded && (
         <div className="flex flex-wrap gap-x-3 gap-y-0.5">
           {parts.map((part) => (
-            <span key={part.index} className="text-[10px] text-muted-foreground">
+            <span key={part.index} className="flex items-center gap-0.5 text-[10px] text-muted-foreground">
               P{part.index + 1} {partPercent(part).toFixed(0)}%
+              {part.status === "downloading" && (
+                <span className="tabular-nums text-emerald-600" title="Current throughput for this part">
+                  {speed(part.speedBytesPerSecond ?? null)}
+                </span>
+              )}
+              {(part.status === "downloading" || part.status === "pending") && onRestartPart && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-4 w-4"
+                  disabled={!!part.reconnecting}
+                  onClick={() => onRestartPart(transferId, part.index)}
+                  title={part.reconnecting
+                    ? "Reconnecting — wait until the connection finishes"
+                    : "Refresh this part's connection (resumes from current offset)"}
+                  aria-label={`Refresh part ${part.index + 1}`}
+                >
+                  {part.reconnecting ? (
+                    part.reconnectingManual ? (
+                      // Manual refresh in flight — spin until it succeeds or fails
+                      <RefreshCw className="h-3 w-3 animate-spin text-blue-600" />
+                    ) : (
+                      // Auto reconnect in flight — just disabled, no animation
+                      <RefreshCw className="h-3 w-3 opacity-40" />
+                    )
+                  ) : (
+                    <RefreshCw className="h-3 w-3" />
+                  )}
+                </Button>
+              )}
+              {!!part.restartCount && (
+                <span className="rounded bg-blue-500/10 px-1 text-[9px] font-semibold text-blue-600" title={`Reconnected ${part.restartCount} times (auto slow/stall)`}>
+                  ↻{(part.restartCount ?? 0) - (part.manualRestartCount ?? 0)}
+                </span>
+              )}
+              {!!part.manualRestartCount && (
+                <span className="rounded bg-amber-500/10 px-1 text-[9px] font-semibold text-amber-600" title={`Manually refreshed ${part.manualRestartCount} times`}>
+                  ↻{part.manualRestartCount}M
+                </span>
+              )}
             </span>
           ))}
         </div>
@@ -76,7 +128,7 @@ function PartSegments({ parts, expanded }: { parts: WorkerFileTransferPart[]; ex
   );
 }
 
-function TransferRow({ transfer, workerNames, expanded = false }: { transfer: WorkerFileTransfer; workerNames: Record<string, string>; expanded?: boolean }) {
+function TransferRow({ transfer, workerNames, expanded = false, onRestartPart }: { transfer: WorkerFileTransfer; workerNames: Record<string, string>; expanded?: boolean; onRestartPart?: (transferId: string, partIndex: number) => void }) {
   const progress = percent(transfer);
   const parallel = transfer.parts && transfer.parts.length > 1 ? transfer.parts : null;
   const activePartCount = parallel ? parallel.filter((p) => p.status === "downloading").length : 0;
@@ -87,7 +139,7 @@ function TransferRow({ transfer, workerNames, expanded = false }: { transfer: Wo
         <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{progress === null ? "Preparing" : `${progress.toFixed(1)}%`}</span>
       </div>
       {parallel ? (
-        <PartSegments parts={parallel} expanded={expanded} />
+        <PartSegments parts={parallel} expanded={expanded} transferId={transfer.id} onRestartPart={onRestartPart} />
       ) : (
         <div className="h-2 overflow-hidden rounded-full bg-muted">
           <motion.div className="h-full rounded-full bg-primary" animate={{ width: `${progress ?? 0}%` }} transition={{ duration: 0.25 }} />
@@ -106,7 +158,7 @@ function TransferRow({ transfer, workerNames, expanded = false }: { transfer: Wo
   );
 }
 
-export function LocalDownloadTray({ transfers, workerNames }: LocalDownloadTrayProps) {
+export function LocalDownloadTray({ transfers, workerNames, onRestartPart }: LocalDownloadTrayProps) {
   const [miniOpen, setMiniOpen] = useState(false);
   const [fullOpen, setFullOpen] = useState(false);
   const [corner, setCorner] = useState<TrayCorner>("bottom-right");
@@ -166,7 +218,7 @@ export function LocalDownloadTray({ transfers, workerNames }: LocalDownloadTrayP
             <DialogTitle>Local downloads</DialogTitle>
             <DialogDescription> </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">{active.map((item) => <TransferRow key={item.id} transfer={item} workerNames={workerNames} expanded />)}</div>
+          <div className="space-y-3">{active.map((item) => <TransferRow key={item.id} transfer={item} workerNames={workerNames} expanded onRestartPart={onRestartPart} />)}</div>
         </DialogContent>
       </Dialog>
     </motion.div>

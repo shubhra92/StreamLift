@@ -11,7 +11,11 @@ import type { WorkerFileTransferPart } from "./sync-worker/workerProtocol";
 
 const ENV = {
   "NEXT_PUBLIC_MAX_PARALLEL_PARTS": process.env.NEXT_PUBLIC_MAX_PARALLEL_PARTS,
-  "NEXT_PUBLIC_MIN_PART_SIZE_MB": process.env.NEXT_PUBLIC_MIN_PART_SIZE_MB
+  "NEXT_PUBLIC_MIN_PART_SIZE_MB": process.env.NEXT_PUBLIC_MIN_PART_SIZE_MB,
+  "NEXT_PUBLIC_SLOW_SPEED_KBS": process.env.NEXT_PUBLIC_SLOW_SPEED_KBS,
+  "NEXT_PUBLIC_SLOW_WINDOW_SEC": process.env.NEXT_PUBLIC_SLOW_WINDOW_SEC,
+  "NEXT_PUBLIC_STALL_TIMEOUT_SEC": process.env.NEXT_PUBLIC_STALL_TIMEOUT_SEC,
+  "NEXT_PUBLIC_MAX_SLOW_RESTARTS": process.env.NEXT_PUBLIC_MAX_SLOW_RESTARTS,
 } as const
 
 /** Read a positive integer from an env var, falling back to `fallback`. */
@@ -25,12 +29,21 @@ function envInt(name: keyof typeof ENV, fallback: number): number {
 // Parallel download tuning. Free tunnel services usually throttle bandwidth
 // per connection, so several concurrent Range streams can outperform one.
 // Configurable via .env.local (NEXT_PUBLIC_ prefix — these are client-visible):
-//   NEXT_PUBLIC_MAX_PARALLEL_PARTS=6      — concurrent stream connections
-//   NEXT_PUBLIC_MIN_PART_SIZE_MB=10       — files smaller than this stay single-stream
+//   NEXT_PUBLIC_MAX_PARALLEL_PARTS=6       — concurrent stream connections
+//   NEXT_PUBLIC_MIN_PART_SIZE_MB=10        — files smaller than this stay single-stream
+//   NEXT_PUBLIC_SLOW_SPEED_KBS=15          — a part under this (KB/s) counts as slow
+//   NEXT_PUBLIC_SLOW_WINDOW_SEC=15         — sustained slow for this long → reconnect
+//   NEXT_PUBLIC_STALL_TIMEOUT_SEC=10       — zero bytes for this long → reconnect
+//   NEXT_PUBLIC_MAX_SLOW_RESTARTS=6        — max voluntary reconnects per part
 const MAX_PARALLEL_PARTS = envInt("NEXT_PUBLIC_MAX_PARALLEL_PARTS", 4);
 const MIN_PART_SIZE = envInt("NEXT_PUBLIC_MIN_PART_SIZE_MB", 5) * 1024 * 1024;
-const PART_MAX_ATTEMPTS = 4;           // per part, incl. mid-stream resume attempts
+const PART_MAX_ATTEMPTS = 8;           // per part, incl. mid-stream resume attempts
 const PART_RETRY_DELAY_MS = 800;
+const SLOW_SPEED_KBS = envInt("NEXT_PUBLIC_SLOW_SPEED_KBS", 15);
+const SLOW_WINDOW_MS = envInt("NEXT_PUBLIC_SLOW_WINDOW_SEC", 15) * 1000;
+const STALL_TIMEOUT_MS = envInt("NEXT_PUBLIC_STALL_TIMEOUT_SEC", 10) * 1000;
+const MAX_SLOW_RESTARTS = envInt("NEXT_PUBLIC_MAX_SLOW_RESTARTS", 6);
+const HEADER_TIMEOUT_MS = 15000;  // a dead tunnel must fail fast, not hang
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -58,7 +71,7 @@ function buildParts(totalBytes: number, requestedParts: number): WorkerFileTrans
   if (totalBytes <= 0) return [];
   const partCount = Math.min(Math.max(1, requestedParts), getMaxPartsForSize(totalBytes));
   if (partCount <= 1) {
-    return [{ index: 0, start: 0, end: totalBytes - 1, receivedBytes: 0, status: "pending" }];
+    return [{ index: 0, start: 0, end: totalBytes - 1, receivedBytes: 0, status: "pending", restartCount: 0 }];
   }
   const parts: WorkerFileTransferPart[] = [];
   const partSize = Math.ceil(totalBytes / partCount);
@@ -71,6 +84,7 @@ function buildParts(totalBytes: number, requestedParts: number): WorkerFileTrans
       end: Math.min(start + partSize - 1, totalBytes - 1),
       receivedBytes: 0,
       status: "pending",
+      restartCount: 0,
     });
   }
   return parts;
@@ -187,23 +201,38 @@ export interface WorkerLocalFile {
 // Per-worker connection cache — keyed by workerId
 const _cache = new Map<string, WorkerConnection>();
 
+// Shared in-flight connection fetches — when the cache misses (e.g. after a
+// token refresh), concurrent callers (parallel parts + SSE) must not each
+// round-trip the backend; one fetch serves them all.
+const _connectionInFlight = new Map<string, Promise<WorkerConnection>>();
+
 /** Fetch (or return cached) connection details for a worker. */
 async function getConnection(workerId: string): Promise<WorkerConnection> {
   const cached = _cache.get(workerId);
   if (cached) return cached;
 
-  const res = await fetch(`/api/worker/${workerId}/connection`);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.message ?? `Failed to get worker connection (${res.status})`);
-  }
-  const data = await res.json();
-  const conn: WorkerConnection = {
-    pinggyUrl:    data.pinggyUrl,
-    sessionToken: data.sessionToken,
-  };
-  _cache.set(workerId, conn);
-  return conn;
+  const inFlight = _connectionInFlight.get(workerId);
+  if (inFlight) return inFlight;
+
+  const fetchConnection = (async () => {
+    const res = await fetch(`/api/worker/${workerId}/connection`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message ?? `Failed to get worker connection (${res.status})`);
+    }
+    const data = await res.json();
+    const conn: WorkerConnection = {
+      pinggyUrl:    data.pinggyUrl,
+      sessionToken: data.sessionToken,
+    };
+    _cache.set(workerId, conn);
+    return conn;
+  })().finally(() => {
+    _connectionInFlight.delete(workerId);
+  });
+
+  _connectionInFlight.set(workerId, fetchConnection);
+  return fetchConnection;
 }
 
 // Shared in-flight refresh — concurrent 401s (e.g. parallel parts) must share
@@ -216,6 +245,16 @@ async function refreshToken(workerId: string): Promise<WorkerConnection> {
   if (refreshInFlight) return refreshInFlight;
   refreshInFlight = doRefreshToken(workerId).finally(() => { refreshInFlight = null; });
   return refreshInFlight;
+}
+
+// Live download controls, keyed by transferId (`workerId:downloadId:fileIndex`).
+// Module-scoped so they survive page navigation — the page remounts but the
+// in-flight download (and its per-part controllers) do not.
+const _activeControls = new Map<string, WorkerDownloadControl>();
+
+/** Restart a part of an active worker→browser download by transferId. */
+export function restartWorkerPart(transferId: string, partIndex: number): void {
+  _activeControls.get(transferId)?.restartPart(partIndex);
 }
 
 async function doRefreshToken(workerId: string): Promise<WorkerConnection> {
@@ -327,187 +366,456 @@ export async function getWorkerLocalFiles(
  * connection, so parallel streams are faster). If the worker does not honour
  * Range requests, the download transparently falls back to a single stream.
  */
-export async function downloadWorkerLocalFile(
+export interface WorkerDownloadControl {
+  /** Ask a part to drop its current stream and resume from its offset. */
+  restartPart: (index: number) => void;
+}
+
+export function downloadWorkerLocalFile(
   workerId: string,
   downloadId: string,
   file: WorkerLocalFile,
   onProgress?: (receivedBytes: number, totalBytes: number | null, parts?: WorkerFileTransferPart[]) => void,
   requestedParts?: number,
-): Promise<void> {
-  // The picker must happen before a transfer exists. Cancelling it therefore
-  // creates no progress state and makes no request to the worker.
-  const picker = (window as any).showSaveFilePicker;
-  const handle = typeof picker === "function"
-    ? await picker({ suggestedName: file.name })
-    : null;
+): WorkerDownloadControl & { promise: Promise<void> } {
+  // Per-part restart coordination, shared between the auto slow/stall
+  // detector inside downloadPart and manual restarts from the UI.
+  const restartFlags = new Map<number, { requested: boolean; manual: boolean; autoRestarts: number }>();
+  const partControllers = new Map<number, AbortController>();
 
-  const totalBytes = file.size || 0;
-  const parts = buildParts(totalBytes, requestedParts ?? MAX_PARALLEL_PARTS);
-  const filePath = `/downloads/${encodeURIComponent(downloadId)}/files/${file.index}`;
+  const run = async (): Promise<void> => {
+    // The picker must happen before a transfer exists. Cancelling it therefore
+    // creates no progress state and makes no request to the worker — the
+    // AbortError propagates and callers treat it as a clean silent no-op.
+    const picker = (window as any).showSaveFilePicker;
+    const handle = typeof picker === "function"
+      ? await picker({ suggestedName: file.name })
+      : null;
 
-  // Single stream — no range needed (small files, unknown size)
-  if (parts.length <= 1) {
-    await writeResponseStream(workerId, filePath, handle, file, totalBytes, onProgress);
-    return;
-  }
+    const totalBytes = file.size || 0;
+    const parts = buildParts(totalBytes, requestedParts ?? MAX_PARALLEL_PARTS);
+    const filePath = `/downloads/${encodeURIComponent(downloadId)}/files/${file.index}`;
 
-  // ── Parallel multi-part download ─────────────────────────────────────────
-  const controller = new AbortController();
-  let writable: any = null;
-  const blobParts = new Map<number, ArrayBuffer[]>();
-  let totalReceived = 0;
-
-  const reportProgress = () => onProgress?.(totalReceived, totalBytes, parts);
-
-  const writeChunk = (part: WorkerFileTransferPart, chunk: Uint8Array) => {
-    if (writable) {
-      return writable.write({ type: "write", position: part.start + part.receivedBytes, data: chunk });
+    // Single stream — no range needed (small files, unknown size)
+    if (parts.length <= 1) {
+      await writeResponseStream(workerId, filePath, handle, file, totalBytes, onProgress);
+      return;
     }
-    const buffers = blobParts.get(part.index) ?? [];
-    buffers.push(chunk.slice().buffer);
-    blobParts.set(part.index, buffers);
-    return Promise.resolve();
-  };
+
+    // ── Parallel multi-part download ───────────────────────────────────────
+    const controller = new AbortController();
+    let writable: any = null;
+    const blobParts = new Map<number, ArrayBuffer[]>();
+    let totalReceived = 0;
+
+    const reportProgress = () => onProgress?.(totalReceived, totalBytes, parts);
+
+    const writeChunk = (part: WorkerFileTransferPart, chunk: Uint8Array) => {
+      if (writable) {
+        return writable.write({ type: "write", position: part.start + part.receivedBytes, data: chunk });
+      }
+      const buffers = blobParts.get(part.index) ?? [];
+      buffers.push(chunk.slice().buffer);
+      blobParts.set(part.index, buffers);
+      return Promise.resolve();
+    };
+
+    // Reconnect gate: at most ONE part may be reconnecting at a time (plus a
+    // little jitter), so slow/stalled parts can't restart in a cascade that
+    // starves every connection on the tunnel and pauses the whole download.
+    let activeReconnects = 0;
+    const reconnectWaiters: (() => void)[] = [];
+    const acquireReconnectSlot = async () => {
+      if (activeReconnects === 0) {
+        activeReconnects = 1;
+        return;
+      }
+      await new Promise<void>((resolve) => reconnectWaiters.push(resolve));
+      activeReconnects = 1;
+    };
+    const releaseReconnectSlot = () => {
+      activeReconnects = 0;
+      reconnectWaiters.shift()?.();
+    };
+
+    /** Wait to reconnect this part: one slot at a time, growing backoff. */
+    const waitBeforeReconnect = async (reconnectCount: number) => {
+      await acquireReconnectSlot();
+      try {
+        await sleep(Math.min(2000 * Math.max(1, reconnectCount), 8000) + Math.random() * 500);
+      } finally {
+        releaseReconnectSlot();
+      }
+    };
 
   /**
    * Download one part with mid-stream resume: if the stream breaks partway
    * (common with flaky tunnels), the part retries from its current offset
    * instead of failing — already-written bytes are never re-fetched.
+   *
+   * Slow or stalled parts are also reconnected proactively: tunnel services
+   * throttle per connection, so a part that crawls along on a throttled
+   * connection can often be rescued by opening a fresh connection from the
+   * same offset.
    */
   const downloadPart = async (part: WorkerFileTransferPart): Promise<void> => {
     part.status = "downloading";
     reportProgress();
 
-    for (let attempt = 1; attempt <= PART_MAX_ATTEMPTS; attempt++) {
-      const startOffset = part.start + part.receivedBytes;
-      if (startOffset > part.end) {
-        part.status = "completed";
-        reportProgress();
-        return;
-      }
+    // The restart flag lives across attempts; the AbortController does not —
+    // an aborted signal stays aborted forever, so a reconnecting part must
+    // get a FRESH controller (and fresh fetch signal) on its next attempt,
+    // otherwise the new request instantly rejects with AbortError and the
+    // part is misread as cancelled. The controller is recreated inside the
+    // loop below; it follows the parent transfer's cancel and is exposed via
+    // restartPart() for manual UI-triggered reconnects.
+    const flag = { requested: false, manual: false, autoRestarts: 0 };
+    restartFlags.set(part.index, flag);
 
-      let res: Response;
-      try {
-        res = await callWorker(
-          workerId,
-          "GET",
-          // Query-param range: query strings always survive proxies, unlike
-          // Range headers which some tunnels strip. The Range header is still
-          // sent as a bonus for servers that understand it.
-          `${filePath}?range=bytes=${startOffset}-${part.end}`,
-          undefined,
-          { Range: `bytes=${startOffset}-${part.end}` },
-          controller.signal,
-        );
-      } catch (error: any) {
-        if (error?.name === "AbortError") throw error;
-        console.warn(`[workerConnection] part ${part.index + 1} fetch failed (attempt ${attempt}/${PART_MAX_ATTEMPTS}):`, error?.message ?? error);
-        if (attempt === PART_MAX_ATTEMPTS) throw error;
-        await sleep(PART_RETRY_DELAY_MS * attempt);
-        continue;
-      }
+    let partController = new AbortController();
+    const onParentAbort = () => partController.abort();
+    controller.signal.addEventListener("abort", onParentAbort, { once: true });
 
-      // 200 = server ignored our range — parallel download not possible
-      if (res.status === 200) {
-        const contentType = res.headers.get("Content-Type") ?? "";
-        if (contentType.includes("text/html")) {
-          // Tunnel served an interstitial page instead of the file
-          console.warn(`[workerConnection] part ${part.index + 1} got an HTML screen (attempt ${attempt}/${PART_MAX_ATTEMPTS})`);
-          if (attempt === PART_MAX_ATTEMPTS) throw new Error("Tunnel served an interstitial page instead of the file");
+    const cleanup = () => {
+      controller.signal.removeEventListener("abort", onParentAbort);
+      partControllers.delete(part.index);
+      restartFlags.delete(part.index);
+    };
+
+    let tunnelFailures = 0;
+
+    try {
+      for (let attempt = 1; attempt <= PART_MAX_ATTEMPTS; attempt++) {
+        // Fresh controller for this attempt (see comment above). The restart flags
+        // are reset first, so a click that grabs the new controller can never
+        // be wiped by our own reset after it landed.
+        flag.requested = false;
+        flag.manual = false;
+        partController = new AbortController();
+        partControllers.set(part.index, partController);
+
+        // The whole transfer was cancelled — stop before starting a new stream
+        if (controller.signal.aborted) {
+          throw new DOMException("The operation was aborted.", "AbortError");
+        }
+
+        const startOffset = part.start + part.receivedBytes;
+        if (startOffset > part.end) {
+          cleanup();
+          part.status = "completed";
+          part.reconnecting = false;
+          part.reconnectingManual = false;
+          reportProgress();
+          return;
+        }
+
+        let res: Response;
+        // Timeout only the header phase: a dead tunnel must fail fast (and
+        // count as a tunnel-level failure → connection refresh) instead of
+        // hanging forever. The timer is cleared once headers arrive, so the
+        // body stream is unaffected.
+        const headerController = new AbortController();
+        const headerTimeoutId = setTimeout(() => {
+          headerController.abort(new DOMException("Tunnel did not respond in time", "TimeoutError"));
+        }, HEADER_TIMEOUT_MS);
+        const requestSignal = AbortSignal.any([partController.signal, headerController.signal]);
+        try {
+          res = await callWorker(
+            workerId,
+            "GET",
+            // Query-param range: query strings always survive proxies, unlike
+            // Range headers which some tunnels strip. The Range header is still
+            // sent as a bonus for servers that understand it.
+            `${filePath}?range=bytes=${startOffset}-${part.end}`,
+            undefined,
+            { Range: `bytes=${startOffset}-${part.end}` },
+            requestSignal,
+          );
+        } catch (error: any) {
+          if (error?.name === "AbortError") {
+            // A real cancel aborts the parent controller first — anything
+            // else that killed this part's stream is a voluntary reconnect
+            // (auto slow/stall, manual refresh, or a header timeout that
+            // landed as AbortError on older browsers).
+if (controller.signal.aborted) throw error; // real cancel
+            flag.requested = false;
+            const wasManual = flag.manual;
+            flag.manual = false;
+            if (wasManual) part.manualRestartCount = (part.manualRestartCount ?? 0) + 1;
+            part.restartCount = (part.restartCount ?? 0) + 1;
+            part.reconnecting = true;
+            part.reconnectingManual = wasManual;
+            reportProgress();
+            await waitBeforeReconnect(flag.autoRestarts);
+            continue;
+          }
+          // Network-level failure (the request never completed) — the tunnel
+          // itself may be down or its URL stale (worker re-tunnelled). Count
+          // these; every 2nd one drops the cached connection so the next
+          // request re-fetches a fresh URL/token from the backend (dedup'd).
+          tunnelFailures++;
+          console.warn(`[workerConnection] part ${part.index + 1} fetch failed (attempt ${attempt}/${PART_MAX_ATTEMPTS}):`, error?.message ?? error);
+          if (attempt === PART_MAX_ATTEMPTS) throw error;
+          if (tunnelFailures % 2 === 0) {
+            console.warn(`[workerConnection] ${tunnelFailures} tunnel-level failures — refreshing worker connection from backend`);
+            invalidateWorkerConnection(workerId);
+          }
+          await waitBeforeReconnect(tunnelFailures);
+          continue;
+        } finally {
+          clearTimeout(headerTimeoutId);
+        }
+
+        // 200 = server ignored our range — parallel download not possible
+        if (res.status === 200) {
+          const contentType = res.headers.get("Content-Type") ?? "";
+          if (contentType.includes("text/html")) {
+            // Tunnel served an interstitial page instead of the file — same
+            // tunnel-level treatment: count it, refresh on repeat, back off.
+            tunnelFailures++;
+            console.warn(`[workerConnection] part ${part.index + 1} got an HTML screen (attempt ${attempt}/${PART_MAX_ATTEMPTS})`);
+            if (attempt === PART_MAX_ATTEMPTS) throw new Error("Tunnel served an interstitial page instead of the file");
+            if (tunnelFailures % 2 === 0) {
+              console.warn(`[workerConnection] ${tunnelFailures} tunnel-level failures — refreshing worker connection from backend`);
+              invalidateWorkerConnection(workerId);
+            }
+            await waitBeforeReconnect(tunnelFailures);
+            continue;
+          }
+          throw new RangeNotSupportedError();
+        }
+        if (res.status !== 206 || !res.body) {
+          const err = await res.json().catch(() => ({}));
+          const message = err.detail ?? `Part ${part.index + 1} failed (${res.status})`;
+          console.warn(`[workerConnection] part ${part.index + 1} bad response (attempt ${attempt}/${PART_MAX_ATTEMPTS}): ${res.status}`);
+          if (attempt === PART_MAX_ATTEMPTS) throw new Error(message);
           await sleep(PART_RETRY_DELAY_MS * attempt);
           continue;
         }
-        throw new RangeNotSupportedError();
-      }
-      if (res.status !== 206 || !res.body) {
-        const err = await res.json().catch(() => ({}));
-        const message = err.detail ?? `Part ${part.index + 1} failed (${res.status})`;
-        console.warn(`[workerConnection] part ${part.index + 1} bad response (attempt ${attempt}/${PART_MAX_ATTEMPTS}): ${res.status}`);
-        if (attempt === PART_MAX_ATTEMPTS) throw new Error(message);
-        await sleep(PART_RETRY_DELAY_MS * attempt);
-        continue;
-      }
 
-      // Verify the server actually returned the exact range we asked for.
-      // Content-Range can be hidden from the browser by CORS on some
-      // workers/proxies — in that case fall back to Content-Length matching.
-      const contentRange = res.headers.get("Content-Range");
-      const match = contentRange?.match(/^bytes\s+(\d+)-(\d+)\/\d+$/);
-      const expectedLength = part.end - startOffset + 1;
-      const contentLength = Number(res.headers.get("Content-Length"));
-      const rangeMatches =
-        (match && Number(match[1]) === startOffset && Number(match[2]) === part.end) ||
-        (contentRange === null && contentLength === expectedLength);
-      if (!rangeMatches) {
-        console.warn(`[workerConnection] part ${part.index + 1} unexpected Content-Range:`, contentRange, `Content-Length: ${contentLength}`);
-        throw new RangeNotSupportedError();
-      }
-
-      // Read the stream; a break mid-stream resumes on the next attempt
-      const reader = res.body.getReader();
-      let streamError: unknown = null;
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          await writeChunk(part, value);
-          part.receivedBytes += value.byteLength;
-          totalReceived += value.byteLength;
-          reportProgress();
+        // Verify the server actually returned the exact range we asked for.
+        // Content-Range can be hidden from the browser by CORS on some
+        // workers/proxies — in that case fall back to Content-Length matching.
+        const contentRange = res.headers.get("Content-Range");
+        const match = contentRange?.match(/^bytes\s+(\d+)-(\d+)\/\d+$/);
+        const expectedLength = part.end - startOffset + 1;
+        const contentLength = Number(res.headers.get("Content-Length"));
+        const rangeMatches =
+          (match && Number(match[1]) === startOffset && Number(match[2]) === part.end) ||
+          (contentRange === null && contentLength === expectedLength);
+        if (!rangeMatches) {
+          console.warn(`[workerConnection] part ${part.index + 1} unexpected Content-Range:`, contentRange, `Content-Length: ${contentLength}`);
+          throw new RangeNotSupportedError();
         }
-      } catch (error: any) {
-        if (error?.name === "AbortError") throw error;
-        streamError = error;
-      }
-      if (streamError) {
-        console.warn(`[workerConnection] part ${part.index + 1} stream broke at ${part.receivedBytes}/${part.end - part.start + 1} bytes (attempt ${attempt}/${PART_MAX_ATTEMPTS}):`, (streamError as any)?.message ?? streamError);
-        if (attempt === PART_MAX_ATTEMPTS) throw streamError;
-        await sleep(PART_RETRY_DELAY_MS * attempt);
-        continue;
-      }
 
-      part.status = "completed";
+        // Read the stream; a break mid-stream resumes on the next attempt.
+        // While reading, watch for slow/stalled throughput and reconnect the
+        // part on a fresh connection when it crawls below SLOW_SPEED_KBS.
+        const reader = res.body.getReader();
+        let windowStartAt = Date.now();
+        let bytesAtWindowStart = 0;
+        let lastChunkAt = Date.now();
+        let streamError: unknown = null;
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            await writeChunk(part, value);
+            part.receivedBytes += value.byteLength;
+            totalReceived += value.byteLength;
+            if (part.reconnecting) {
+              // Bytes are flowing again — the reconnect finished.
+              part.reconnecting = false;
+              part.reconnectingManual = false;
+            }
+            reportProgress();
+
+            const now = Date.now();
+            // Smoothed per-part throughput (EMA): the first chunk of a
+            // reconnect attempt measures from a fresh base, so the display
+            // recovers quickly instead of showing the reconnect gap.
+            const dt = (now - lastChunkAt) / 1000;
+            if (dt > 0) {
+              const instant = value.byteLength / dt;
+              part.speedBytesPerSecond =
+                part.speedBytesPerSecond ? part.speedBytesPerSecond * 0.7 + instant * 0.3 : instant;
+            }
+            const elapsed = now - windowStartAt;
+            let restartReason: string | null = null;
+            if (now - lastChunkAt >= STALL_TIMEOUT_MS) {
+              restartReason = `stalled for ${STALL_TIMEOUT_MS / 1000}s`;
+            } else if (elapsed >= SLOW_WINDOW_MS) {
+              const speedKbs = (part.receivedBytes - bytesAtWindowStart) / (elapsed / 1000) / 1024;
+              if (speedKbs < SLOW_SPEED_KBS) restartReason = `slow (${speedKbs.toFixed(1)} KB/s)`;
+              bytesAtWindowStart = part.receivedBytes;
+              windowStartAt = now;
+            }
+            lastChunkAt = now;
+
+            if (restartReason) {
+              if (flag.autoRestarts >= MAX_SLOW_RESTARTS) {
+                throw new Error(`Part ${part.index + 1} ${restartReason} — gave up after ${flag.autoRestarts} reconnects`);
+              }
+              flag.autoRestarts++;
+              console.warn(`[workerConnection] part ${part.index + 1} ${restartReason} — reconnecting (${flag.autoRestarts}/${MAX_SLOW_RESTARTS}) at ${((part.receivedBytes - part.start) / (part.end - part.start + 1) * 100).toFixed(0)}% of part`);
+              flag.requested = true;
+              partController.abort();
+              break;
+            }
+          }
+        } catch (error: any) {
+          if (error?.name === "AbortError") {
+            // Real cancel = the parent controller aborted first; anything
+            // else is a voluntary reconnect (auto slow/stall or manual).
+            if (controller.signal.aborted) throw error; // real cancel
+            flag.requested = false;
+            const wasManual = flag.manual;
+            flag.manual = false;
+            if (wasManual) part.manualRestartCount = (part.manualRestartCount ?? 0) + 1;
+            part.restartCount = (part.restartCount ?? 0) + 1;
+            part.reconnecting = true;
+            part.reconnectingManual = wasManual;
+            reportProgress();
+            await waitBeforeReconnect(flag.autoRestarts);
+            continue;
+          }
+          streamError = error;
+        }
+        if (flag.requested) {
+          // Reconnect triggered between chunks (no read was pending to reject)
+          flag.requested = false;
+          const wasManual = flag.manual;
+          flag.manual = false;
+          if (wasManual) part.manualRestartCount = (part.manualRestartCount ?? 0) + 1;
+          part.restartCount = (part.restartCount ?? 0) + 1;
+          part.reconnecting = true;
+          part.reconnectingManual = wasManual;
+          reportProgress();
+          await waitBeforeReconnect(flag.autoRestarts);
+          continue;
+        }
+        if (streamError) {
+          console.warn(`[workerConnection] part ${part.index + 1} stream broke at ${part.receivedBytes}/${part.end - part.start + 1} bytes (attempt ${attempt}/${PART_MAX_ATTEMPTS}):`, (streamError as any)?.message ?? streamError);
+          if (attempt === PART_MAX_ATTEMPTS) throw streamError;
+          await sleep(PART_RETRY_DELAY_MS * attempt);
+          continue;
+        }
+
+        cleanup();
+        part.status = "completed";
+        part.reconnecting = false;
+        part.reconnectingManual = false;
+        reportProgress();
+        return;
+      }
+    } catch (error) {
+      part.status = "failed";
+      part.reconnecting = false;
+      part.reconnectingManual = false;
+      cleanup();
       reportProgress();
-      return;
+      throw error;
     }
   };
 
-  try {
-    if (handle) {
-      // keepExistingData: positional writes must not truncate the file
-      writable = await handle.createWritable({ keepExistingData: true });
-    }
-    await Promise.all(parts.map(downloadPart));
+    // Two-pass download: if any part fails, the whole transfer is retried
+    // once (parts resume from their receivedBytes) before giving up. A real
+    // cancel or a range-unsupported server aborts immediately.
+    const runPass = async (): Promise<boolean> => {
+      const results = await Promise.allSettled(parts.map(downloadPart));
+      if (results.every((result) => result.status === "fulfilled")) return true;
 
-    if (writable) {
-      await writable.close();
-    } else {
-      const orderedBuffers = Array.from(blobParts.entries())
-        .sort((a, b) => a[0] - b[0])
-        .flatMap(([, buffers]) => buffers);
-      const blob = new Blob(orderedBuffers);
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = file.name;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
-    }
-  } catch (error) {
-    controller.abort();
-    if (writable) await writable.abort().catch(() => undefined);
-    console.warn("[workerConnection] parallel transfer failed:", error);
+      const failure = results.find((result) => result.status === "rejected") as PromiseRejectedResult | undefined;
+      if (!failure) return true;
+      if (failure.reason instanceof RangeNotSupportedError) throw failure.reason;
+      if ((failure.reason as any)?.name === "AbortError") throw failure.reason;
 
-    // Worker doesn't support ranges — re-download as a single stream
-    if (error instanceof RangeNotSupportedError) {
-      console.warn("[workerConnection] worker does not support range queries — falling back to single stream");
-      await writeResponseStream(workerId, filePath, handle, file, totalBytes, onProgress);
-      return;
+      console.warn("[workerConnection] some parts failed — retrying the whole transfer once:", failure.reason);
+      for (const part of parts) {
+        if (part.status !== "completed") {
+          part.status = "pending";
+          partControllers.delete(part.index);
+          restartFlags.delete(part.index);
+        }
+      }
+      reportProgress();
+      return false;
+    };
+
+    try {
+      if (handle) {
+        // keepExistingData: positional writes must not truncate the file
+        writable = await handle.createWritable({ keepExistingData: true });
+      }
+
+      let ok = await runPass();
+      if (!ok) ok = await runPass();
+      if (!ok) throw new Error("Download failed after retry — some parts could not be fetched");
+
+      if (writable) {
+        await writable.close();
+      } else {
+        const orderedBuffers = Array.from(blobParts.entries())
+          .sort((a, b) => a[0] - b[0])
+          .flatMap(([, buffers]) => buffers);
+        const blob = new Blob(orderedBuffers);
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = file.name;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      controller.abort();
+      if (writable) await writable.abort().catch(() => undefined);
+      console.warn("[workerConnection] parallel transfer failed:", error);
+
+      // Worker doesn't support ranges — re-download as a single stream
+      if (error instanceof RangeNotSupportedError) {
+        console.warn("[workerConnection] worker does not support range queries — falling back to single stream");
+        await writeResponseStream(workerId, filePath, handle, file, totalBytes, onProgress);
+        return;
+      }
+      throw error;
     }
-    throw error;
+  };
+
+  const transferId = `${workerId}:${downloadId}:${file.index}`;
+  const promise = run();
+  const control: WorkerDownloadControl = {
+    restartPart: (index: number) => {
+      const flag = restartFlags.get(index);
+      const partController = partControllers.get(index);
+      if (!flag || !partController) return;
+      flag.requested = true;
+      flag.manual = true;
+      // Manual refresh has no limit and resets the auto slow/stall budget:
+      // the next 8 auto reconnects trigger again from a clean counter.
+      flag.autoRestarts = 0;
+      partController.abort();
+    },
+  };
+  _activeControls.set(transferId, control);
+  // .then(ok, err) instead of .finally(): a finally-chained promise inherits
+  // the rejection and — being unawaited — turns every failed download (and
+  // picker cancels) into an "Uncaught (in promise) ..." console error.
+  promise.then(
+    () => maybeDropControl(),
+    () => maybeDropControl(),
+  );
+  function maybeDropControl() {
+    // Only drop our own registration (a later download of the same file
+    // must not lose its control when this older one settles).
+    if (_activeControls.get(transferId) === control) _activeControls.delete(transferId);
   }
+
+  return {
+    promise,
+    restartPart: control.restartPart,
+  };
 }
 
 /**
@@ -527,6 +835,9 @@ export async function openWorkerStream(
 
   const scheduleRetry = (message: string, delay: number) => {
     if (closed) return;
+    // The tunnel may have been re-created (Pinggy URL changes on restart),
+    // so drop the cached connection — the next getConnection() (dedup'd,
+    // one shared backend fetch) picks up a fresh URL/token.
     invalidateWorkerConnection(workerId);
     onError?.(message);
     retryTimer = setTimeout(() => { void connect(); }, delay);
