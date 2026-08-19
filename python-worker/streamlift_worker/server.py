@@ -16,6 +16,8 @@ Endpoints:
 
 import asyncio
 import json
+import os
+import re
 import secrets
 import threading
 import time
@@ -138,6 +140,9 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # Content-Range is NOT CORS-safelisted — without this, browsers hide it
+    # from fetch() and the client cannot validate byte-range responses.
+    expose_headers=["Content-Range", "Accept-Ranges", "Content-Length", "Content-Disposition"],
 )
 
 
@@ -255,12 +260,60 @@ async def list_completed_files(
     }
 
 
+# ── GET /downloads/{download_id}/files/{file_index} ──────────────────────────
+
+# Byte range via query param (?range=bytes=start-end). Query strings always
+# survive proxies, unlike Range headers, which some tunnels strip — this is
+# what the frontend uses for parallel multi-connection downloads.
+_RANGE_RE = re.compile(r"^bytes=(\d+)-(\d+)?$")
+_RANGE_CHUNK = 1024 * 1024
+
+
+def _stream_file_range(path: str, start: int, end: int):
+    """Yield the file bytes in [start, end] inclusive, in 1 MB chunks."""
+    remaining = end - start + 1
+    with open(path, "rb") as handle:
+        handle.seek(start)
+        while remaining > 0:
+            chunk = handle.read(min(_RANGE_CHUNK, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+
+
+def _range_response(path: str, range_spec: str):
+    """Build a 206 partial-content response for 'bytes=start-end'."""
+    match = _RANGE_RE.match(range_spec)
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid range — expected bytes=start-end")
+    size = os.path.getsize(path)
+    start = int(match.group(1))
+    end = int(match.group(2)) if match.group(2) is not None else size - 1
+    if start >= size:
+        raise HTTPException(status_code=416, detail=f"Requested range not satisfiable (size={size})")
+    end = min(end, size - 1)
+    return StreamingResponse(
+        _stream_file_range(path, start, end),
+        status_code=206,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Range":   f"bytes {start}-{end}/{size}",
+            "Content-Length":  str(end - start + 1),
+            "Accept-Ranges":   "bytes",
+            "Cache-Control":   "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/downloads/{download_id}/files/{file_index}")
 async def download_completed_file(
     download_id: str,
     file_index: int,
     x_session_token: Optional[str] = Header(default=None),
     download_token: Optional[str] = None,
+    range: Optional[str] = None,
 ):
     if x_session_token:
         _require_session_token(x_session_token)
@@ -271,6 +324,8 @@ async def download_completed_file(
         _remove_browser_download_token(download_token)
         raise HTTPException(status_code=404, detail="Completed file is no longer available on this worker")
     path, file_name = resolved
+    if range:
+        return _range_response(path, range)
     return FileResponse(path, filename=file_name, media_type="application/octet-stream")
 
 
