@@ -98,13 +98,9 @@ function PartSegments({
                   aria-label={`Refresh part ${part.index + 1}`}
                 >
                   {part.reconnecting ? (
-                    part.reconnectingManual ? (
-                      // Manual refresh in flight — spin until it succeeds or fails
-                      <RefreshCw className="h-3 w-3 animate-spin text-blue-600" />
-                    ) : (
-                      // Auto reconnect in flight — just disabled, no animation
-                      <RefreshCw className="h-3 w-3 opacity-40" />
-                    )
+                    // Reconnect in flight (auto or manual) — spin until the
+                    // connection finishes (success or failed).
+                    <RefreshCw className="h-3 w-3 animate-spin text-blue-600" />
                   ) : (
                     <RefreshCw className="h-3 w-3" />
                   )}

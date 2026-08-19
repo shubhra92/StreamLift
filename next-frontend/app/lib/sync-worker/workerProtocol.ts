@@ -74,8 +74,7 @@ export interface WorkerFileTransferPart {
   speedBytesPerSecond?: number; // instantaneous throughput (smoothed EMA)
   restartCount?: number;   // total reconnects (auto slow/stall + manual)
   manualRestartCount?: number; // reconnects triggered by the UI refresh button
-  reconnecting?: boolean;  // a reconnect is in flight (button disabled)
-  reconnectingManual?: boolean; // in-flight reconnect was user-triggered (drives the animation)
+  reconnecting?: boolean;  // a reconnect is in flight (button disabled + spinning)
 }
 
 export interface WorkerFileTransfer {

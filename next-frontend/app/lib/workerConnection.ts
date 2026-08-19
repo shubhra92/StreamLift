@@ -504,7 +504,6 @@ export function downloadWorkerLocalFile(
           cleanup();
           part.status = "completed";
           part.reconnecting = false;
-          part.reconnectingManual = false;
           reportProgress();
           return;
         }
@@ -544,8 +543,10 @@ if (controller.signal.aborted) throw error; // real cancel
             if (wasManual) part.manualRestartCount = (part.manualRestartCount ?? 0) + 1;
             part.restartCount = (part.restartCount ?? 0) + 1;
             part.reconnecting = true;
-            part.reconnectingManual = wasManual;
             reportProgress();
+            // Voluntary reconnects are unlimited — don't consume the failure
+            // retry budget (attempt resets to 1 via the for-loop increment).
+            attempt = 0;
             await waitBeforeReconnect(flag.autoRestarts);
             continue;
           }
@@ -626,7 +627,6 @@ if (controller.signal.aborted) throw error; // real cancel
             if (part.reconnecting) {
               // Bytes are flowing again — the reconnect finished.
               part.reconnecting = false;
-              part.reconnectingManual = false;
             }
             reportProgress();
 
@@ -667,15 +667,17 @@ if (controller.signal.aborted) throw error; // real cancel
           if (error?.name === "AbortError") {
             // Real cancel = the parent controller aborted first; anything
             // else is a voluntary reconnect (auto slow/stall or manual).
-            if (controller.signal.aborted) throw error; // real cancel
+if (controller.signal.aborted) throw error; // real cancel
             flag.requested = false;
             const wasManual = flag.manual;
             flag.manual = false;
             if (wasManual) part.manualRestartCount = (part.manualRestartCount ?? 0) + 1;
             part.restartCount = (part.restartCount ?? 0) + 1;
             part.reconnecting = true;
-            part.reconnectingManual = wasManual;
             reportProgress();
+            // Voluntary reconnects are unlimited — don't consume the failure
+            // retry budget (attempt resets to 1 via the for-loop increment).
+            attempt = 0;
             await waitBeforeReconnect(flag.autoRestarts);
             continue;
           }
@@ -689,8 +691,10 @@ if (controller.signal.aborted) throw error; // real cancel
           if (wasManual) part.manualRestartCount = (part.manualRestartCount ?? 0) + 1;
           part.restartCount = (part.restartCount ?? 0) + 1;
           part.reconnecting = true;
-          part.reconnectingManual = wasManual;
           reportProgress();
+          // Voluntary reconnects are unlimited — don't consume the failure
+          // retry budget (attempt resets to 1 via the for-loop increment).
+          attempt = 0;
           await waitBeforeReconnect(flag.autoRestarts);
           continue;
         }
@@ -704,14 +708,17 @@ if (controller.signal.aborted) throw error; // real cancel
         cleanup();
         part.status = "completed";
         part.reconnecting = false;
-        part.reconnectingManual = false;
         reportProgress();
         return;
       }
+
+      // The attempt loop can only exit via return/throw; voluntary reconnects
+      // reset the counter, so reaching here means the failure retry budget was
+      // exhausted without the part completing — fail loudly, never silently.
+      throw new Error(`Part ${part.index + 1} could not finish after ${PART_MAX_ATTEMPTS} attempts`);
     } catch (error) {
       part.status = "failed";
       part.reconnecting = false;
-      part.reconnectingManual = false;
       cleanup();
       reportProgress();
       throw error;
