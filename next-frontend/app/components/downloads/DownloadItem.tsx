@@ -30,21 +30,40 @@ export function DownloadItem({
   const transferPercent = workerFileTransfer?.totalBytes
     ? Math.min(100, Math.round((workerFileTransfer.receivedBytes / workerFileTransfer.totalBytes) * 100))
     : null;
+  const workerExternalLinkButton = canDownload && (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="h-8 w-8 text-destructive hover:text-destructive"
+      title="Download via external link"
+      onClick={(e) => {
+        e.stopPropagation();
+        onDownloadWorkerFileExternalLink?.(download, workerFiles);
+      }}
+    >
+      <GlobeDownload className="h-4 w-4" />
+    </Button>
+  );
+  const workerTabDownloadButton = canDownload && (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="h-8 w-8"
+      title={workerFileTransfer ? `Downloading${transferPercent !== null ? ` — ${transferPercent}%` : ""}` : "Download from worker"}
+      disabled={!!workerFileTransfer}
+      onClick={(e) => {
+        e.stopPropagation();
+        onDownloadWorkerFile?.(download, workerFiles);
+      }}
+    >
+      {workerFileTransfer ? <DownloadingIcon color="#2563EB" />
+        : <Download className={`h-4 w-4 text-muted-foreground ${workerFileTransfer ? "animate-bounce" : ""}`} />}
+    </Button>
+  );
   const workerDownloadButton = canDownload && (
     <>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-8 w-8 text-destructive hover:text-destructive "
-        onClick={(e) => {e.stopPropagation(); onDownloadWorkerFileExternalLink?.(download, workerFiles); }}
-      >
-        <GlobeDownload className="h-4 w-4" />
-      </Button>
-    <Button variant="ghost" size="icon" className="h-8 w-8" title={workerFileTransfer ? `Downloading${transferPercent !== null ? ` — ${transferPercent}%` : ""}` : "Download from worker"} disabled={!!workerFileTransfer}
-      onClick={(e) => { e.stopPropagation(); onDownloadWorkerFile?.(download, workerFiles); }}>
-        {workerFileTransfer ? <DownloadingIcon color="#2563EB"/>
-        :<Download className={`h-4 w-4 text-muted-foreground ${workerFileTransfer ? "animate-bounce" : ""}`} />}
-    </Button>
+      {workerExternalLinkButton}
+      {workerTabDownloadButton}
     </>
   );
   return (
@@ -79,7 +98,6 @@ export function DownloadItem({
                   <Pencil className="h-4 w-4 text-muted-foreground" />
                 </Button>
               )}
-              {workerDownloadButton}
               {canDelete && (
                 <Button
                   variant="ghost"
@@ -114,12 +132,22 @@ export function DownloadItem({
               />
             </div>
           ) : (
+            <div className="flex items-center">
               <Badge
                 // variant={getStatusVariant(download.status)}
                 className={getStatusClass(download.status)}
               >
                 {download.status}
               </Badge>
+              {canDownload && (
+                <>
+                  <span className="text-center text-gray-400 shrink-0 ml-2">•</span>
+                  {workerExternalLinkButton}
+                  <span className="text-center text-gray-400 shrink-0">•</span>
+                  {workerTabDownloadButton}
+                </>
+              )}
+            </div>
           )}
         </div>
       </TableCell>

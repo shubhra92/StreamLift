@@ -21,15 +21,17 @@ import {
   downloadWorkerLocalFile,
   getWorkerLocalFiles,
   openWorkerLocalFileInBrowser,
+  isMultiPartPossible,
   type WorkerLocalFile,
 } from "../lib/workerConnection";
-import type { WorkerFileTransfer } from "../lib/sync-worker/workerProtocol";
+import type { WorkerFileTransfer, WorkerFileTransferPart } from "../lib/sync-worker/workerProtocol";
 import { OfflineBanner } from "../components/OfflineBanner";
 import {
   DownloadList,
   DownloadDetails,
   LocalDownloadTray,
   EditDownloadModal,
+  PartCountDialog,
 } from "../components/downloads";
 import { AddTorrentModal } from "../components/torrents/AddTorrentModal";
 import type { SelectedFilesMeta } from "../components/torrents/AddTorrentModal";
@@ -56,6 +58,7 @@ export default function TorrentsPage() {
   const [editingFile, setEditingFile] = useState<FileDownload | null>(null);
   const [workerFilesByDownload, setWorkerFilesByDownload] = useState<Record<string, WorkerLocalFile[]>>({});
   const [workerFileTransfers, setWorkerFileTransfers] = useState<Record<string, WorkerFileTransfer>>({});
+  const [pendingPartDownload, setPendingPartDownload] = useState<{ download: FileDownload; file: WorkerLocalFile } | null>(null);
 
   const { downloads: idbDownloads, networkStatus, syncNow } = useTorrents();
   const downloads = idbDownloads.map(toFileDownload);
@@ -302,6 +305,36 @@ export default function TorrentsPage() {
 
   useEffect(() => client.current.subscribeWorkerFileTransfers(setWorkerFileTransfers), []);
 
+  const runWorkerFileDownload = async (download: FileDownload, file: WorkerLocalFile, parts: number) => {
+    if (!download.workerId) return;
+
+    const transferId = `${download.workerId}:${download.id}:${file.index}`;
+    const startedAt = Date.now();
+    let previousBytes = 0;
+    let previousAt = startedAt;
+    let lastReportedAt = 0;
+    let latestParts: WorkerFileTransferPart[] | undefined;
+    const report = (receivedBytes: number, totalBytes: number | null, status: WorkerFileTransfer["status"], error?: string) => {
+      const now = Date.now();
+      const speed = now > previousAt ? ((receivedBytes - previousBytes) * 1000) / (now - previousAt) : null;
+      previousBytes = receivedBytes; previousAt = now;
+      if (status === "downloading" && now - lastReportedAt < 250) return;
+      lastReportedAt = now;
+      client.current.reportWorkerFileTransfer({ id: transferId, workerId: download.workerId!, downloadId: download.id, fileIndex: file.index, fileName: file.name, status, receivedBytes, totalBytes, speedBytesPerSecond: speed, startedAt, updatedAt: now, error, parts: latestParts });
+    };
+    try {
+      await downloadWorkerLocalFile(download.workerId, download.id, file, (received, total, parts) => {
+        latestParts = parts;
+        report(received, total, "downloading");
+      }, parts);
+      report(file.size, file.size, "completed");
+    } catch (error: any) {
+      if (error?.name === "AbortError") return;
+      report(previousBytes, file.size, "failed", error?.message);
+      alert(error?.message ?? "Could not download this file from the worker");
+    }
+  };
+
   const handleDownloadWorkerFile = async (download: FileDownload, files: WorkerLocalFile[]) => {
     if (!download.workerId || files.length === 0) return;
 
@@ -314,27 +347,12 @@ export default function TorrentsPage() {
       file = files[index];
     }
 
-    const transferId = `${download.workerId}:${download.id}:${file.index}`;
-    const startedAt = Date.now();
-    let previousBytes = 0;
-    let previousAt = startedAt;
-    let lastReportedAt = 0;
-    const report = (receivedBytes: number, totalBytes: number | null, status: WorkerFileTransfer["status"], error?: string) => {
-      const now = Date.now();
-      const speed = now > previousAt ? ((receivedBytes - previousBytes) * 1000) / (now - previousAt) : null;
-      previousBytes = receivedBytes; previousAt = now;
-      if (status === "downloading" && now - lastReportedAt < 250) return;
-      lastReportedAt = now;
-      client.current.reportWorkerFileTransfer({ id: transferId, workerId: download.workerId!, downloadId: download.id, fileIndex: file.index, fileName: file.name, status, receivedBytes, totalBytes, speedBytesPerSecond: speed, startedAt, updatedAt: now, error });
-    };
-    try {
-      await downloadWorkerLocalFile(download.workerId, download.id, file, (received, total) => report(received, total, "downloading"));
-      report(file.size, file.size, "completed");
-    } catch (error: any) {
-      if (error?.name === "AbortError") return;
-      report(previousBytes, file.size, "failed", error?.message);
-      alert(error?.message ?? "Could not download this file from the worker");
+    // Ask for the part count when parallel splitting is possible
+    if (isMultiPartPossible(file.size)) {
+      setPendingPartDownload({ download, file });
+      return;
     }
+    await runWorkerFileDownload(download, file, 1);
   };
 
   const handleDownloadWorkerFileExternalLink = async (download: FileDownload, files: WorkerLocalFile[]) => {
@@ -424,6 +442,18 @@ export default function TorrentsPage() {
         onClose={() => setEditingFile(null)}
         onSubmit={handleEditSubmit}
         loading={loading}
+      />
+
+      <PartCountDialog
+        isOpen={pendingPartDownload !== null}
+        fileSize={pendingPartDownload?.file.size ?? 0}
+        onClose={() => setPendingPartDownload(null)}
+        onConfirm={(parts) => {
+          if (pendingPartDownload) {
+            void runWorkerFileDownload(pendingPartDownload.download, pendingPartDownload.file, parts);
+          }
+          setPendingPartDownload(null);
+        }}
       />
     </main>
   );

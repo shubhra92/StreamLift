@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Download, Expand, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import type { WorkerFileTransfer } from "@/app/lib/sync-worker/workerProtocol";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import type { WorkerFileTransfer, WorkerFileTransferPart } from "@/app/lib/sync-worker/workerProtocol";
 import { formatFileSize } from "./utils";
 import { DownloadingIcon } from "@/components/ui/custom-icons";
 
@@ -31,20 +31,74 @@ function speed(value: number | null): string {
   return value && value > 0 ? `${formatFileSize(value)}/s` : "Calculating speed…";
 }
 
+function partPercent(part: WorkerFileTransferPart): number {
+  const partLength = part.end - part.start + 1;
+  return partLength > 0 ? Math.min(100, (part.receivedBytes / partLength) * 100) : 0;
+}
+
+/** One progress bar per part, side by side in a single line. */
+function PartSegments({ parts, expanded }: { parts: WorkerFileTransferPart[]; expanded: boolean }) {
+  return (
+    <div className="space-y-1">
+      <div className="flex gap-1">
+        {parts.map((part) => {
+          const pct = partPercent(part);
+          const fillClass =
+            part.status === "completed" ? "bg-green-500" :
+            part.status === "failed" ? "bg-red-500" :
+            part.status === "downloading" ? "bg-blue-500" :
+            "bg-muted-foreground/20";
+          return (
+            <div
+              key={part.index}
+              className="h-2 flex-1 overflow-hidden rounded-full bg-muted"
+              title={`Part ${part.index + 1}: ${part.status} (${pct.toFixed(0)}%)`}
+            >
+              <motion.div
+                className={`h-full rounded-full ${fillClass}`}
+                animate={{ width: `${pct}%` }}
+                transition={{ duration: 0.25 }}
+              />
+            </div>
+          );
+        })}
+      </div>
+      {expanded && (
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+          {parts.map((part) => (
+            <span key={part.index} className="text-[10px] text-muted-foreground">
+              P{part.index + 1} {partPercent(part).toFixed(0)}%
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TransferRow({ transfer, workerNames, expanded = false }: { transfer: WorkerFileTransfer; workerNames: Record<string, string>; expanded?: boolean }) {
   const progress = percent(transfer);
+  const parallel = transfer.parts && transfer.parts.length > 1 ? transfer.parts : null;
+  const activePartCount = parallel ? parallel.filter((p) => p.status === "downloading").length : 0;
   return (
     <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
       <div className="flex items-start justify-between gap-3">
         <p className={`min-w-0 flex-1 text-sm font-medium ${expanded ? "break-all leading-5" : "truncate"}`} title={transfer.fileName}>{transfer.fileName}</p>
         <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{progress === null ? "Preparing" : `${progress.toFixed(1)}%`}</span>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-muted">
-        <motion.div className="h-full rounded-full bg-primary" animate={{ width: `${progress ?? 0}%` }} transition={{ duration: 0.25 }} />
-      </div>
+      {parallel ? (
+        <PartSegments parts={parallel} expanded={expanded} />
+      ) : (
+        <div className="h-2 overflow-hidden rounded-full bg-muted">
+          <motion.div className="h-full rounded-full bg-primary" animate={{ width: `${progress ?? 0}%` }} transition={{ duration: 0.25 }} />
+        </div>
+      )}
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
         <span>{formatFileSize(transfer.receivedBytes)} / {transfer.totalBytes ? formatFileSize(transfer.totalBytes) : "unknown"}</span>
         <span>{speed(transfer.speedBytesPerSecond)}</span>
+        {parallel && (
+          <span className="text-blue-600">{parallel.length} parts · {activePartCount} downloading in parallel</span>
+        )}
         {expanded && <span>From worker: {workerNames[transfer.workerId] ?? "Colab"}</span>}
       </div>
       {expanded && <p className="text-xs text-muted-foreground">Saving to the location you selected on this device.</p>}
@@ -108,7 +162,10 @@ export function LocalDownloadTray({ transfers, workerNames }: LocalDownloadTrayP
 
       <Dialog open={fullOpen} onOpenChange={setFullOpen}>
         <DialogContent className="max-h-[80vh] w-[calc(100vw-2rem)] overflow-x-hidden overflow-y-auto sm:max-w-2xl">
-          <DialogHeader><DialogTitle>Local downloads</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>Local downloads</DialogTitle>
+            <DialogDescription> </DialogDescription>
+          </DialogHeader>
           <div className="space-y-3">{active.map((item) => <TransferRow key={item.id} transfer={item} workerNames={workerNames} expanded />)}</div>
         </DialogContent>
       </Dialog>

@@ -65,6 +65,14 @@ export interface WorkerStatusPayload {
   logs?:        unknown[];
 }
 
+export interface WorkerFileTransferPart {
+  index: number;           // part index (0-based)
+  start: number;           // byte offset start
+  end: number;             // byte offset end (inclusive)
+  receivedBytes: number;   // bytes received for this part
+  status: "pending" | "downloading" | "completed" | "failed";
+}
+
 export interface WorkerFileTransfer {
   id: string;
   workerId: string;
@@ -78,6 +86,8 @@ export interface WorkerFileTransfer {
   startedAt: number;
   updatedAt: number;
   error?: string;
+  /** Per-part progress for parallel (multi-connection) transfers. Absent = single-stream. */
+  parts?: WorkerFileTransferPart[];
 }
 
 export type WorkerToTabMessage =
