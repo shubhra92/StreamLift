@@ -75,6 +75,7 @@ export interface WorkerFileTransferPart {
   restartCount?: number;   // total reconnects (auto slow/stall + manual)
   manualRestartCount?: number; // reconnects triggered by the UI refresh button
   reconnecting?: boolean;  // a reconnect is in flight (button disabled + spinning)
+  autoRestartLimit?: number; // current auto-reconnect limit; grows on manual refresh
 }
 
 export interface WorkerFileTransfer {

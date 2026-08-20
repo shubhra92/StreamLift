@@ -281,7 +281,7 @@ export function WorkerDetails({ worker, status, onClose, panelRef }: WorkerDetai
                 <Field label="Last Seen" value={timeAgo(status?.lastHeartbeat)} />
                 <Field label="Compute"   value={worker.computeType.charAt(0).toUpperCase() + worker.computeType.slice(1)} />
                 <Field label="Download To" value={worker.downloadLocation === "mega" ? "Mega" : "Local"} />
-                <Field label="Public IP" value={publicIp} mono={Boolean(worker?.ipAddress)} copyable={Boolean(online && worker?.ipAddress)} />
+                <Field label="Public IP" value={publicIp} mono={Boolean(worker?.ipAddress)} />
                 <Field label="Created"   value={formatDate(worker.createdAt?.toString())} />
                 {worker.megaEmail && <Field label="Mega Account" value={worker.megaEmail} />}
               </div>

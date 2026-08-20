@@ -34,7 +34,8 @@ function envInt(name: keyof typeof ENV, fallback: number): number {
 //   NEXT_PUBLIC_SLOW_SPEED_KBS=15          — a part under this (KB/s) counts as slow
 //   NEXT_PUBLIC_SLOW_WINDOW_SEC=15         — sustained slow for this long → reconnect
 //   NEXT_PUBLIC_STALL_TIMEOUT_SEC=10       — zero bytes for this long → reconnect
-//   NEXT_PUBLIC_MAX_SLOW_RESTARTS=6        — max voluntary reconnects per part
+//   NEXT_PUBLIC_MAX_SLOW_RESTARTS=8        — max auto reconnects per part (raised
+//                                            by manual refresh: limit += 8 each click)
 const MAX_PARALLEL_PARTS = envInt("NEXT_PUBLIC_MAX_PARALLEL_PARTS", 4);
 const MIN_PART_SIZE = envInt("NEXT_PUBLIC_MIN_PART_SIZE_MB", 5) * 1024 * 1024;
 const PART_MAX_ATTEMPTS = 8;           // per part, incl. mid-stream resume attempts
@@ -42,7 +43,7 @@ const PART_RETRY_DELAY_MS = 800;
 const SLOW_SPEED_KBS = envInt("NEXT_PUBLIC_SLOW_SPEED_KBS", 15);
 const SLOW_WINDOW_MS = envInt("NEXT_PUBLIC_SLOW_WINDOW_SEC", 15) * 1000;
 const STALL_TIMEOUT_MS = envInt("NEXT_PUBLIC_STALL_TIMEOUT_SEC", 10) * 1000;
-const MAX_SLOW_RESTARTS = envInt("NEXT_PUBLIC_MAX_SLOW_RESTARTS", 6);
+export const MAX_SLOW_RESTARTS = envInt("NEXT_PUBLIC_MAX_SLOW_RESTARTS", 6);
 const HEADER_TIMEOUT_MS = 15000;  // a dead tunnel must fail fast, not hang
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -380,7 +381,7 @@ export function downloadWorkerLocalFile(
 ): WorkerDownloadControl & { promise: Promise<void> } {
   // Per-part restart coordination, shared between the auto slow/stall
   // detector inside downloadPart and manual restarts from the UI.
-  const restartFlags = new Map<number, { requested: boolean; manual: boolean; autoRestarts: number }>();
+  const restartFlags = new Map<number, { requested: boolean; manual: boolean; autoRestarts: number; autoRestartLimit: number; backoffLevel: number }>();
   const partControllers = new Map<number, AbortController>();
 
   const run = async (): Promise<void> => {
@@ -469,7 +470,7 @@ export function downloadWorkerLocalFile(
     // part is misread as cancelled. The controller is recreated inside the
     // loop below; it follows the parent transfer's cancel and is exposed via
     // restartPart() for manual UI-triggered reconnects.
-    const flag = { requested: false, manual: false, autoRestarts: 0 };
+    const flag = { requested: false, manual: false, autoRestarts: 0, autoRestartLimit: MAX_SLOW_RESTARTS, backoffLevel: 0 };
     restartFlags.set(part.index, flag);
 
     let partController = new AbortController();
@@ -493,6 +494,12 @@ export function downloadWorkerLocalFile(
         flag.manual = false;
         partController = new AbortController();
         partControllers.set(part.index, partController);
+        part.autoRestartLimit = flag.autoRestartLimit;
+        // A connection attempt is now in flight (initial, reconnect, or
+        // failure retry) — the UI spins the refresh button until bytes flow,
+        // the part completes, or the part fails.
+        part.reconnecting = true;
+        reportProgress();
 
         // The whole transfer was cancelled — stop before starting a new stream
         if (controller.signal.aborted) {
@@ -543,11 +550,12 @@ if (controller.signal.aborted) throw error; // real cancel
             if (wasManual) part.manualRestartCount = (part.manualRestartCount ?? 0) + 1;
             part.restartCount = (part.restartCount ?? 0) + 1;
             part.reconnecting = true;
+            part.autoRestartLimit = flag.autoRestartLimit;
             reportProgress();
             // Voluntary reconnects are unlimited — don't consume the failure
             // retry budget (attempt resets to 1 via the for-loop increment).
             attempt = 0;
-            await waitBeforeReconnect(flag.autoRestarts);
+            await waitBeforeReconnect(flag.backoffLevel);
             continue;
           }
           // Network-level failure (the request never completed) — the tunnel
@@ -556,6 +564,13 @@ if (controller.signal.aborted) throw error; // real cancel
           // request re-fetches a fresh URL/token from the backend (dedup'd).
           tunnelFailures++;
           console.warn(`[workerConnection] part ${part.index + 1} fetch failed (attempt ${attempt}/${PART_MAX_ATTEMPTS}):`, error?.message ?? error);
+          // A failed connection also counts toward the auto budget: the
+          // retry keeps consuming it until the limit or success.
+          flag.autoRestarts++;
+          part.restartCount = (part.restartCount ?? 0) + 1;
+          if (flag.autoRestarts >= flag.autoRestartLimit) {
+            throw new Error(`Part ${part.index + 1} connection kept failing — gave up after ${flag.autoRestarts} auto reconnects (limit ${flag.autoRestartLimit})`);
+          }
           if (attempt === PART_MAX_ATTEMPTS) throw error;
           if (tunnelFailures % 2 === 0) {
             console.warn(`[workerConnection] ${tunnelFailures} tunnel-level failures — refreshing worker connection from backend`);
@@ -575,6 +590,11 @@ if (controller.signal.aborted) throw error; // real cancel
             // tunnel-level treatment: count it, refresh on repeat, back off.
             tunnelFailures++;
             console.warn(`[workerConnection] part ${part.index + 1} got an HTML screen (attempt ${attempt}/${PART_MAX_ATTEMPTS})`);
+            flag.autoRestarts++;
+            part.restartCount = (part.restartCount ?? 0) + 1;
+            if (flag.autoRestarts >= flag.autoRestartLimit) {
+              throw new Error(`Part ${part.index + 1} tunnel kept serving an interstitial page — gave up after ${flag.autoRestarts} auto reconnects (limit ${flag.autoRestartLimit})`);
+            }
             if (attempt === PART_MAX_ATTEMPTS) throw new Error("Tunnel served an interstitial page instead of the file");
             if (tunnelFailures % 2 === 0) {
               console.warn(`[workerConnection] ${tunnelFailures} tunnel-level failures — refreshing worker connection from backend`);
@@ -653,11 +673,12 @@ if (controller.signal.aborted) throw error; // real cancel
             lastChunkAt = now;
 
             if (restartReason) {
-              if (flag.autoRestarts >= MAX_SLOW_RESTARTS) {
-                throw new Error(`Part ${part.index + 1} ${restartReason} — gave up after ${flag.autoRestarts} reconnects`);
+              if (flag.autoRestarts >= flag.autoRestartLimit) {
+                throw new Error(`Part ${part.index + 1} ${restartReason} — gave up after ${flag.autoRestarts} auto reconnects (limit ${flag.autoRestartLimit})`);
               }
               flag.autoRestarts++;
-              console.warn(`[workerConnection] part ${part.index + 1} ${restartReason} — reconnecting (${flag.autoRestarts}/${MAX_SLOW_RESTARTS}) at ${((part.receivedBytes - part.start) / (part.end - part.start + 1) * 100).toFixed(0)}% of part`);
+              flag.backoffLevel++;
+              console.warn(`[workerConnection] part ${part.index + 1} ${restartReason} — reconnecting (${flag.autoRestarts}/${flag.autoRestartLimit}) at ${((part.receivedBytes - part.start) / (part.end - part.start + 1) * 100).toFixed(0)}% of part`);
               flag.requested = true;
               partController.abort();
               break;
@@ -674,11 +695,12 @@ if (controller.signal.aborted) throw error; // real cancel
             if (wasManual) part.manualRestartCount = (part.manualRestartCount ?? 0) + 1;
             part.restartCount = (part.restartCount ?? 0) + 1;
             part.reconnecting = true;
+            part.autoRestartLimit = flag.autoRestartLimit;
             reportProgress();
             // Voluntary reconnects are unlimited — don't consume the failure
             // retry budget (attempt resets to 1 via the for-loop increment).
             attempt = 0;
-            await waitBeforeReconnect(flag.autoRestarts);
+            await waitBeforeReconnect(flag.backoffLevel);
             continue;
           }
           streamError = error;
@@ -691,15 +713,23 @@ if (controller.signal.aborted) throw error; // real cancel
           if (wasManual) part.manualRestartCount = (part.manualRestartCount ?? 0) + 1;
           part.restartCount = (part.restartCount ?? 0) + 1;
           part.reconnecting = true;
+          part.autoRestartLimit = flag.autoRestartLimit;
           reportProgress();
           // Voluntary reconnects are unlimited — don't consume the failure
           // retry budget (attempt resets to 1 via the for-loop increment).
           attempt = 0;
-          await waitBeforeReconnect(flag.autoRestarts);
+          await waitBeforeReconnect(flag.backoffLevel);
           continue;
         }
         if (streamError) {
           console.warn(`[workerConnection] part ${part.index + 1} stream broke at ${part.receivedBytes}/${part.end - part.start + 1} bytes (attempt ${attempt}/${PART_MAX_ATTEMPTS}):`, (streamError as any)?.message ?? streamError);
+          // A broken stream also counts toward the auto budget — the new
+          // connection it creates is an auto reconnect too.
+          flag.autoRestarts++;
+          part.restartCount = (part.restartCount ?? 0) + 1;
+          if (flag.autoRestarts >= flag.autoRestartLimit) {
+            throw new Error(`Part ${part.index + 1} stream kept breaking — gave up after ${flag.autoRestarts} auto reconnects (limit ${flag.autoRestartLimit})`);
+          }
           if (attempt === PART_MAX_ATTEMPTS) throw streamError;
           await sleep(PART_RETRY_DELAY_MS * attempt);
           continue;
@@ -799,9 +829,13 @@ if (controller.signal.aborted) throw error; // real cancel
       if (!flag || !partController) return;
       flag.requested = true;
       flag.manual = true;
-      // Manual refresh has no limit and resets the auto slow/stall budget:
-      // the next 8 auto reconnects trigger again from a clean counter.
-      flag.autoRestarts = 0;
+      // Manual refresh extends the auto-reconnect budget instead of resetting
+      // it: newLimit = MAX_SLOW_RESTARTS + currentAutoCount, so the count
+      // keeps running (e.g. 3/8 → 3/11) and each click grants +8 more
+      // headroom from the current count. The reconnect backoff restarts from
+      // a low level so a manual refresh reconnects quickly.
+      flag.autoRestartLimit = flag.autoRestarts + MAX_SLOW_RESTARTS;
+      flag.backoffLevel = 0;
       partController.abort();
     },
   };

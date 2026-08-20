@@ -6,6 +6,7 @@ import { Download, Expand, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { WorkerFileTransfer, WorkerFileTransferPart } from "@/app/lib/sync-worker/workerProtocol";
+import { MAX_SLOW_RESTARTS } from "@/app/lib/workerConnection";
 import { formatFileSize } from "./utils";
 import { DownloadingIcon } from "@/components/ui/custom-icons";
 
@@ -93,7 +94,7 @@ function PartSegments({
                   disabled={!!part.reconnecting}
                   onClick={() => onRestartPart(transferId, part.index)}
                   title={part.reconnecting
-                    ? "Reconnecting — wait until the connection finishes"
+                    ? "Connecting — wait until the connection finishes"
                     : "Refresh this part's connection (resumes from current offset)"}
                   aria-label={`Refresh part ${part.index + 1}`}
                 >
@@ -106,9 +107,9 @@ function PartSegments({
                   )}
                 </Button>
               )}
-              {!!part.restartCount && (
-                <span className="rounded bg-blue-500/10 px-1 text-[9px] font-semibold text-blue-600" title={`Reconnected ${part.restartCount} times (auto slow/stall)`}>
-                  ↻{(part.restartCount ?? 0) - (part.manualRestartCount ?? 0)}
+              {(part.restartCount ?? 0) - (part.manualRestartCount ?? 0) > 0 && (
+                <span className="rounded bg-blue-500/10 px-1 text-[9px] font-semibold text-blue-600" title="Auto reconnects (slow/stall, breaks, failures) toward the part's auto limit; manual refresh extends the limit">
+                  ↻{(part.restartCount ?? 0) - (part.manualRestartCount ?? 0)} / {part.autoRestartLimit ?? MAX_SLOW_RESTARTS}
                 </span>
               )}
               {!!part.manualRestartCount && (
