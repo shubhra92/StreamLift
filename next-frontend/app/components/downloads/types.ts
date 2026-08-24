@@ -31,8 +31,8 @@ export interface DownloadItemProps {
 export interface DownloadListProps {
   downloads: FileDownload[];
   downloadingFileId: string | null;
-  /** ID of the row currently being deleted — shows spinner on its delete button */
-  deletingId: string | null;
+  /** IDs of rows currently being deleted — shows spinner on their delete buttons */
+  deletingIds: Set<string>;
   /** ID of the row whose detail panel is currently open */
   selectedId: string | null;
   progress: Progress | null;

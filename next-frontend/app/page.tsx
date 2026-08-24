@@ -50,7 +50,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [editingFile, setEditingFile] = useState<FileDownload | null>(null);
   const [workerFilesByDownload, setWorkerFilesByDownload] = useState<Record<string, WorkerLocalFile[]>>({});
   const [workerFileTransfers, setWorkerFileTransfers] = useState<Record<string, WorkerFileTransfer>>({});
@@ -285,7 +285,7 @@ export default function Home() {
   };
 
   const handleDelete = async (id: string) => {
-    setDeletingId(id);
+    setDeletingIds((prev) => new Set(prev).add(id));
     try {
       const result = await deleteDownload(id);
       if (result.success) {
@@ -300,7 +300,11 @@ export default function Home() {
         alert(result.message);
       }
     } finally {
-      setDeletingId(null);
+      setDeletingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
   };
 
@@ -420,7 +424,7 @@ export default function Home() {
           <DownloadList
             downloads={downloads}
             downloadingFileId={downloadingFileId}
-            deletingId={deletingId}
+            deletingIds={deletingIds}
             selectedId={selectedId}
             progress={progress}
             onSelect={setSelectedId}

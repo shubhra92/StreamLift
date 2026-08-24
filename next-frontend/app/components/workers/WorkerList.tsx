@@ -11,7 +11,7 @@ import {
 import { WorkerItem } from "./WorkerItem";
 import type { WorkerListProps } from "./types";
 
-export function WorkerList({ workers, selectedId, deletingId, onSelect, onDelete, onCopyScript }: WorkerListProps) {
+export function WorkerList({ workers, selectedId, deletingIds, onSelect, onDelete, onCopyScript }: WorkerListProps) {
   return (
     <div className="bg-card rounded-xl shadow-md border overflow-hidden">
       <Table className="w-full table-fixed">
@@ -40,7 +40,7 @@ export function WorkerList({ workers, selectedId, deletingId, onSelect, onDelete
                   key={worker.id}
                   worker={worker}
                   isSelected={selectedId === worker.id}
-                  isDeleting={deletingId === worker.id}
+                  isDeleting={deletingIds.has(worker.id)}
                   onSelect={() => onSelect(worker.id)}
                   onDelete={() => onDelete(worker.id)}
                   onCopyScript={() => onCopyScript(worker.id)}

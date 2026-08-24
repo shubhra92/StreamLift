@@ -13,7 +13,7 @@ export type WorkerWithStatus = Omit<Worker, "lastHeartbeat" | "sessionTokenExpir
 export interface WorkerListProps {
   workers: WorkerWithStatus[];
   selectedId: string | null;
-  deletingId: string | null;
+  deletingIds: Set<string>;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onCopyScript: (id: string) => void;

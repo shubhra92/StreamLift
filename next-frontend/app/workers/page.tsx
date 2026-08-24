@@ -32,7 +32,7 @@ export default function WorkersPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
 
   const listRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -85,7 +85,7 @@ export default function WorkersPage() {
   };
 
   const handleDeleteWorker = async (workerId: string) => {
-    setDeletingId(workerId);
+    setDeletingIds((prev) => new Set(prev).add(workerId));
     try {
       const result = await deleteWorker(workerId);
       if (result.success) {
@@ -98,7 +98,11 @@ export default function WorkersPage() {
         alert(result.message ?? "Failed to delete worker");
       }
     } finally {
-      setDeletingId(null);
+      setDeletingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(workerId);
+        return next;
+      });
     }
   };
 
@@ -170,7 +174,7 @@ export default function WorkersPage() {
           <WorkerList
             workers={workers}
             selectedId={selectedId}
-            deletingId={deletingId}
+            deletingIds={deletingIds}
             onSelect={(id) => setSelectedId((prev) => (prev === id ? null : id))}
             onDelete={handleDeleteWorker}
             onCopyScript={handleCopyScript}

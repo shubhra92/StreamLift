@@ -14,7 +14,7 @@ import type { DownloadListProps } from "./types";
 export function DownloadList({
   downloads,
   downloadingFileId,
-  deletingId,
+  deletingIds,
   selectedId,
   progress,
   onSelect,
@@ -59,7 +59,7 @@ export function DownloadList({
                   key={download.id}
                   download={download}
                   isDownloading={downloadingFileId === download.id}
-                  isDeleting={deletingId === download.id}
+                  isDeleting={deletingIds.has(download.id)}
                   isSelected={selectedId === download.id}
                   progress={downloadingFileId === download.id ? progress : null}
                   onSelect={onSelect}
