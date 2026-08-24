@@ -3,8 +3,12 @@ Worker configuration — populated entirely from CLI args.
 No .env file needed; the user just runs the one-liner from the UI.
 """
 
+import time
 from dataclasses import dataclass, field
 from typing import Literal
+
+# Process start time — used for uptime calculation in heartbeat and SSE stream
+START_TIME = time.time()
 
 ComputeType      = Literal["low", "medium", "high"]
 DownloadLocation = Literal["local", "mega"]

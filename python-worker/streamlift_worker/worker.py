@@ -18,7 +18,7 @@ import time
 import uvicorn
 
 from streamlift_worker import api, logger
-from streamlift_worker.config import HEARTBEAT_INTERVAL, WorkerConfig
+from streamlift_worker.config import HEARTBEAT_INTERVAL, WorkerConfig, START_TIME
 from streamlift_worker.mega import get_mega_client
 from streamlift_worker.metrics import get_public_ip, get_system_metrics
 from streamlift_worker.server import (
@@ -38,7 +38,7 @@ def _heartbeat_loop(config: WorkerConfig, tunnel: PinggyTunnel) -> None:
         try:
             pinggy_url = tunnel.get_url() or ""
             metrics    = get_system_metrics()
-            api.heartbeat(config, metrics, pinggy_url)
+            api.heartbeat(config, metrics, pinggy_url, int(time.time() - START_TIME))
         except Exception as e:
             logger.log("warning", f"Heartbeat error: {e}")
         api.stop_event.wait(timeout=HEARTBEAT_INTERVAL)

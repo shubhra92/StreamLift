@@ -303,6 +303,7 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
     logger.log("info", "aria2c started — waiting for peers...")
 
     total_bytes = downloaded_bytes = 0
+    max_total_bytes = 0
     last_report_time  = time.time()
     downloaded_path: Optional[str] = None
     progress_re = re.compile(r'\[#\w+\s+([\d.]+\w+)/([\d.]+\w+)\((\d+)%\)')
@@ -342,9 +343,20 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
                         metadata_phase_logged = True
                     continue
 
+                # Track max total_bytes seen — aria2 first reports metadata size
+                # (~10-20KB), then discovers actual file size (much larger).
+                # Only treat as "payload download" when total_bytes grows significantly.
+                if total_bytes > max_total_bytes:
+                    max_total_bytes = total_bytes
+
+                # Wait until we've seen a substantial size jump (metadata -> payload)
                 if not payload_download_started:
-                    payload_download_started = True
-                    logger.log("info", f"Torrent payload download started ({total_bytes:,} bytes)")
+                    if max_total_bytes > 1024 * 1024:  # > 1MB indicates real content
+                        payload_download_started = True
+                        logger.log("info", f"Torrent payload download started ({max_total_bytes:,} bytes)")
+                    else:
+                        current_task["progress"] = 0
+                        continue
 
                 current_task["progress"] = pct
 

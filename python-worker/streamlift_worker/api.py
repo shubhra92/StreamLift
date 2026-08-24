@@ -76,7 +76,7 @@ def register(config: WorkerConfig, ip_address: str, pinggy_url: str) -> Optional
     return None
 
 
-def heartbeat(config: WorkerConfig, metrics: dict, pinggy_url: str) -> None:
+def heartbeat(config: WorkerConfig, metrics: dict, pinggy_url: str, uptime_seconds: int = 0) -> None:
     """
     Send heartbeat — updates last_heartbeat + pinggy_url in DB.
     No longer returns newTasks — task dispatch is triggered by client directly.
@@ -84,8 +84,9 @@ def heartbeat(config: WorkerConfig, metrics: dict, pinggy_url: str) -> None:
     _post(config, "/api/worker/heartbeat", {
         "workerId":  config.worker_id,
         "authToken": config.auth_token,
-        "metrics":   metrics,
         "pinggyUrl": pinggy_url,
+        "uptimeSeconds": uptime_seconds,
+        # metrics removed — delivered via SSE stream only
     })
 
 

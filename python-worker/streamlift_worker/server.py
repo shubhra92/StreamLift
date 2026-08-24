@@ -34,6 +34,7 @@ from pydantic import BaseModel
 from streamlift_worker import logger
 from streamlift_worker.local_files import get_completed_files, resolve_completed_file
 from streamlift_worker.metrics import get_system_metrics
+from streamlift_worker.config import START_TIME
 
 # ── Module-level state shared with worker.py ──────────────────────────────────
 
@@ -197,6 +198,7 @@ async def stream(
                     "metrics":     metrics,
                     "logs":        peek_recent(20),
                     "timestamp":   datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "uptimeSeconds": int(time.time() - START_TIME),
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
 
