@@ -7,6 +7,7 @@ export type WorkerWithStatus = Omit<Worker, "lastHeartbeat" | "sessionTokenExpir
   ipAddress:          string | null;
   lastHeartbeat:      string | null;
   sessionTokenExpiry: string | null;
+  totalUptime:        number;
 };
 
 export interface WorkerListProps {

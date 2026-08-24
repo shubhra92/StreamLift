@@ -24,6 +24,7 @@ function toWorkerWithStatus(w: IDBWorker): WorkerWithStatus {
     updatedAt:          w.updatedAt ? new Date(w.updatedAt) : null,
     lastHeartbeat:      w.lastHeartbeat ?? null,
     sessionTokenExpiry: null,  // not needed on client — only used server-side
+    totalUptime:        0,     // DB column removed — fallback to SSE uptime
   };
 }
 

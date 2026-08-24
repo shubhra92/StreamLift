@@ -130,6 +130,7 @@ interface LiveData {
   metrics?:     { cpuUsage: number; ramUsage: number; downloadSpeed: number; uploadSpeed: number };
   currentTask?: { downloadId: string; fileName: string; status: string; progress: number; startedAt: string } | null;
   logs?:        WorkerLog[];
+  uptimeSeconds?: number;
 }
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -173,6 +174,7 @@ export function WorkerDetails({ worker, status, onClose, panelRef }: WorkerDetai
           metrics:     data.metrics     ?? undefined,
           currentTask: data.currentTask ?? null,
           logs:        Array.isArray(data.logs) ? data.logs as WorkerLog[] : undefined,
+          uptimeSeconds: data.uptimeSeconds ?? undefined,
         });
       },
       (errMsg: string) => {
@@ -310,7 +312,7 @@ export function WorkerDetails({ worker, status, onClose, panelRef }: WorkerDetai
                 <div className="grid grid-cols-3 gap-3">
                   <Field label="Downloads"   value={String(worker.totalDownloads ?? 0)} />
                   <Field label="Transferred" value={formatBytes(worker.totalBytes ?? 0)} />
-                  <Field label="Uptime"      value={formatUptime(worker.totalUptime ?? 0)} />
+                  <Field label="Uptime"      value={formatUptime(liveData.uptimeSeconds ?? worker.totalUptime ?? 0)} />
                 </div>
               </div>
             </div>
