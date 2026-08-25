@@ -2,7 +2,7 @@ import { Controller, Get, Param, Res, NotFoundException } from '@nestjs/common';
 import type { Response } from 'express';
 import { progressMap } from '../../common/progress.store.js';
 
-@Controller('api/progress')
+@Controller('progress')
 export class ProgressController {
   /** GET /api/progress/:id  — single poll */
   @Get(':id')

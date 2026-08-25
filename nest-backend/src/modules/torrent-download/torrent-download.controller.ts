@@ -8,7 +8,7 @@ import { progressMap } from '../../common/progress.store.js';
 import { db, fileDownloads } from '../../db/index.js';
 import { eq } from 'drizzle-orm';
 
-@Controller('api/torrent-download')
+@Controller('torrent-download')
 export class TorrentDownloadController {
   constructor(
     private readonly svc: TorrentDownloadService,
@@ -44,7 +44,8 @@ export class TorrentDownloadController {
     if (!magnet_link) throw new BadRequestException('magnet_link is required');
     if (!magnet_link.startsWith('magnet:?')) throw new BadRequestException('Invalid magnet link format');
 
-    if (file_id && progressMap.get(file_id)) {
+    const existing = file_id ? progressMap.get(file_id) : undefined;
+    if (existing && !existing.done) {
       return { status: true, message: 'torrent download already started', data: { fileStatusId: file_id } };
     }
 
@@ -53,7 +54,7 @@ export class TorrentDownloadController {
       : null;
 
     if (record && !file_indices && record.selectedFileIndices) {
-      file_indices = JSON.parse(record.selectedFileIndices);
+      try { file_indices = JSON.parse(record.selectedFileIndices); } catch (_) {}
     }
 
     if (!record) {
@@ -75,8 +76,8 @@ export class TorrentDownloadController {
     return { status: true, message: 'torrent download started', data: { fileStatusId: id } };
   }
 
-  /** POST /api/torrent-download/mega */
-  @Post('mega')
+  /** POST /api/torrent-download/cloud */
+  @Post('cloud')
   @HttpCode(200)
   async uploadMega(@Body() body: TorrentDownloadDto) {
     const { magnet_link, file_name, file_id } = body;
@@ -85,7 +86,8 @@ export class TorrentDownloadController {
     if (!magnet_link) throw new BadRequestException('magnet_link is required');
     if (!magnet_link.startsWith('magnet:?')) throw new BadRequestException('Invalid magnet link format');
 
-    if (file_id && progressMap.get(file_id)) {
+    const existingMega = file_id ? progressMap.get(file_id) : undefined;
+    if (existingMega && !existingMega.done) {
       return { status: true, message: 'torrent download already started', data: { fileStatusId: file_id } };
     }
 
@@ -94,12 +96,12 @@ export class TorrentDownloadController {
       : null;
 
     if (record && !file_indices && record.selectedFileIndices) {
-      file_indices = JSON.parse(record.selectedFileIndices);
+      try { file_indices = JSON.parse(record.selectedFileIndices); } catch (_) {}
     }
 
     if (!record) {
       [record] = await db.insert(fileDownloads).values({
-        location: 'mega',
+        location: 'cloud',
         sourceUrl: magnet_link,
         downloadType: 'torrent',
         selectedFileIndices: file_indices ? JSON.stringify(file_indices) : null,
@@ -111,7 +113,7 @@ export class TorrentDownloadController {
     const guestId = record.guestId ?? null;
     progressMap.set(id, { downloadedBytes: 0, totalBytes: record.fileSize ?? null, percentFixed2: null, percent: null });
 
-    this.svc.streamToMega(id, magnet_link, { fileName: record.fileName ?? file_name, fileIndices: file_indices, guestId }).catch(console.error);
+    this.svc.streamToCloud(id, magnet_link, { fileName: record.fileName ?? file_name, fileIndices: file_indices, guestId }).catch(console.error);
 
     return { status: true, message: 'torrent to MEGA started', data: { fileStatusId: id } };
   }

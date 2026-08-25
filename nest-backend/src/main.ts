@@ -6,6 +6,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.enableCors();
+  app.setGlobalPrefix('api');
 
   // Health check — before any module middleware
   const httpAdapter = app.getHttpAdapter();

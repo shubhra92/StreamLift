@@ -19,7 +19,7 @@ npm-debug.log*
 downloads/
 
 # drizzle migrations (keep generated SQL if you want, exclude if auto-migrating)
-# drizzle/
+drizzle/
 
 # NestJS incremental compilation cache
 tsconfig.tsbuildinfo

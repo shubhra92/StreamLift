@@ -43,7 +43,6 @@ export const workers = pgTable('workers', {
   version: text('version').default('1.0.0'),
   totalDownloads: integer('total_downloads').default(0),
   totalBytes: bigint('total_bytes', { mode: 'number' }).default(0),
-  totalUptime: integer('total_uptime').default(0),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

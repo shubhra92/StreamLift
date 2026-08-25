@@ -5,7 +5,7 @@ import { progressMap } from '../../common/progress.store.js';
 import { db, fileDownloads } from '../../db/index.js';
 import { eq } from 'drizzle-orm';
 
-@Controller('api/stream-download')
+@Controller('stream-download')
 export class StreamDownloadController {
   constructor(private readonly svc: StreamDownloadService) {}
 
@@ -41,15 +41,16 @@ export class StreamDownloadController {
     return { status: true, message: 'download started', data: { fileStatusId: id } };
   }
 
-  /** POST /api/stream-download/mega */
-  @Post('mega')
+  /** POST /api/stream-download/cloud */
+  @Post('cloud')
   @HttpCode(200)
   async uploadMega(@Body() body: StreamDownloadDto) {
     const { source_url, file_name, file_id } = body;
 
     if (!source_url) throw new BadRequestException('source_url is required');
 
-    if (file_id && progressMap.get(file_id)) {
+    const existing = file_id ? progressMap.get(file_id) : undefined;
+    if (existing && !existing.done) {
       return { status: true, message: 'file download already started', data: { fileStatusId: file_id } };
     }
 
@@ -60,7 +61,7 @@ export class StreamDownloadController {
     if (!record) {
       [record] = await db
         .insert(fileDownloads)
-        .values({ location: 'mega', sourceUrl: source_url, ...(file_name ? { fileName: file_name } : {}) })
+        .values({ location: 'cloud', sourceUrl: source_url, ...(file_name ? { fileName: file_name } : {}) })
         .returning();
     }
 
@@ -68,7 +69,7 @@ export class StreamDownloadController {
     const guestId = record.guestId ?? null;
     progressMap.set(id, { downloadedBytes: 0, totalBytes: null, percentFixed2: null, percent: null });
 
-    this.svc.streamToMega(id, source_url, { fileName: file_name, guestId }).catch(console.error);
+    this.svc.streamToCloud(id, source_url, { fileName: file_name, guestId }).catch(console.error);
 
     return { status: true, message: 'upload to MEGA started', data: { fileStatusId: id } };
   }

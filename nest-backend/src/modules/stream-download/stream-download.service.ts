@@ -4,6 +4,7 @@ import { join } from 'path';
 import { db, fileDownloads } from '../../db/index.js';
 import { eq } from 'drizzle-orm';
 import { progressMap } from '../../common/progress.store.js';
+import { getCloudUploadFns } from '../../utils/cloud-provider.js';
 import { MegaService } from '../mega/mega.service.js';
 
 @Injectable()
@@ -170,111 +171,15 @@ export class StreamDownloadService {
     });
   }
 
-  // ── Stream URL → MEGA ───────────────────────────────────────────────────────
+  // ── Stream URL → Cloud (via provider abstraction) ─────────────────────────────
 
-  async streamToMega(
+  async streamToCloud(
     id: string,
     url: string,
     options: { fileName?: string | null; guestId?: string | null } = {},
   ): Promise<void> {
+    const { streamUrlToCloud } = await getCloudUploadFns();
     const mega = await this.megaService.getInstance();
-    if ((mega as any).ready?.then) await (mega as any).ready;
-
-    const response = await this.fetchWithRetry(url);
-    if (!response.ok) {
-      const msg = await response.text();
-      await db
-        .update(fileDownloads)
-        .set({ status: 'failed', errorMessage: msg, updatedAt: new Date() })
-        .where(eq(fileDownloads.id, id));
-      this.failProgress(id);
-      throw new Error(`Download failed: ${response.status}`);
-    }
-
-    const [fileType, ext] = (response.headers.get('content-type') ?? '/bin').split('/');
-    const filename = this.parseFilename(response, ext, options.fileName ?? undefined);
-    const totalBytes = Number(response.headers.get('content-length')) || 0;
-    let downloadedBytes = 0;
-
-    const uploadTarget = options.guestId
-      ? await this.megaService.getOrCreateFolder((mega as any).root, options.guestId)
-      : (mega as any).root;
-
-    const fileStream = uploadTarget.upload({ name: filename, size: totalBytes });
-
-    await db
-      .update(fileDownloads)
-      .set({
-        locationPath: filename,
-        fileName: filename,
-        fileType,
-        status: 'downloading',
-        fileSize: totalBytes,
-        updatedAt: new Date(),
-      })
-      .where(eq(fileDownloads.id, id));
-
-    await new Promise<void>((resolve, reject) => {
-      fileStream.on('complete', () => {
-        this.logger.log('MEGA upload completed ✅');
-        db.update(fileDownloads)
-          .set({ status: 'completed', updatedAt: new Date() })
-          .where(eq(fileDownloads.id, id))
-          .then(() => {
-            progressMap.set(id, { downloadedBytes, totalBytes, percent: 100, percentFixed2: '100.00', done: true });
-            resolve();
-          })
-          .catch(() => resolve());
-      });
-
-      fileStream.on('error', (err: Error) => {
-        db.update(fileDownloads)
-          .set({ status: 'failed', errorMessage: err.message, updatedAt: new Date() })
-          .where(eq(fileDownloads.id, id))
-          .finally(() => {
-            progressMap.set(id, { downloadedBytes: null, totalBytes: null, percentFixed2: null, percent: null, done: true });
-            reject(err);
-          });
-      });
-
-      response.body!.pipeTo(
-        new WritableStream({
-          write(chunk) {
-            downloadedBytes += chunk.length;
-            progressMap.set(id, {
-              downloadedBytes,
-              totalBytes: totalBytes || null,
-              percentFixed2: totalBytes
-                ? ((downloadedBytes / totalBytes) * 100).toFixed(2)
-                : null,
-              percent: totalBytes
-                ? Math.round((downloadedBytes / totalBytes) * 100)
-                : null,
-            });
-
-            return new Promise<void>((res, rej) => {
-              const ok = fileStream.write(chunk, (err: Error | null | undefined) => {
-                if (err) rej(err);
-                else res();
-              });
-              if (!ok) fileStream.once('drain', res);
-            });
-          },
-          close() {
-            fileStream.end();
-          },
-          abort(err) {
-            fileStream.destroy?.();
-            db.update(fileDownloads)
-              .set({ status: 'failed', errorMessage: (err as any)?.message ?? 'stream aborted', updatedAt: new Date() })
-              .where(eq(fileDownloads.id, id))
-              .finally(() => {
-                progressMap.set(id, { downloadedBytes: null, totalBytes: null, percentFixed2: null, percent: null, done: true });
-                reject(err);
-              });
-          },
-        }),
-      );
-    });
+    await streamUrlToCloud(id, url, options, mega);
   }
 }

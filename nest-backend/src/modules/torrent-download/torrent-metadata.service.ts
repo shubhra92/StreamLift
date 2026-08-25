@@ -4,14 +4,22 @@ import WebTorrent from 'webtorrent';
 // Swallow known webtorrent internal errors that fire after client.destroy()
 // These are webtorrent bugs — they cannot be caught normally.
 process.on('uncaughtException', (err: Error) => {
-  if (
-    err instanceof TypeError &&
-    err.stack?.includes('webtorrent')
-  ) {
+  const msg = err.message ?? '';
+  const stack = err.stack ?? '';
+
+  // Swallow known webtorrent internal errors that fire after client.destroy()
+  if (err instanceof TypeError && stack.includes('webtorrent')) {
     console.error('⚠️  webtorrent internal error (safe to ignore):', err.message);
-    return; // swallow — do NOT re-throw
+    return;
   }
-  // Re-throw anything unrelated to webtorrent
+
+  // Swallow MEGA session errors (ESID -15) — MegaService handles re-login
+  if (msg.includes('ESID') || msg.includes('Invalid or expired user session')) {
+    console.error('⚠️  MEGA session error (handled by MegaService):', err.message);
+    return;
+  }
+
+  // Re-throw anything else
   throw err;
 });
 

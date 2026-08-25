@@ -8,6 +8,7 @@ export class MegaService implements OnModuleInit {
   private readonly logger = new Logger(MegaService.name);
   private mega: InstanceType<typeof Storage> | null = null;
   private ready = false;
+  private reinitializing = false;
 
   async onModuleInit() {
     try {
@@ -23,6 +24,40 @@ export class MegaService implements OnModuleInit {
   async getInstance(): Promise<InstanceType<typeof Storage>> {
     if (this.mega && this.ready) return this.mega;
     return this.init();
+  }
+
+  /**
+   * Called when the MEGA session becomes invalid (ESID -15, etc.).
+   * Invalidates the cache so the next getInstance() triggers a fresh login.
+   */
+  private async handleSessionError(err: Error) {
+    this.logger.error('MEGA session error: ' + err.message);
+    this.mega = null;
+    this.ready = false;
+
+    // Deactivate the stale session in DB so init() doesn't try to restore it
+    try {
+      await this.deleteSessionFromDb();
+      this.logger.log('Stale MEGA session deactivated in DB');
+    } catch (e: any) {
+      this.logger.error('Failed to deactivate stale session: ' + e.message);
+    }
+  }
+
+  /**
+   * Attach an error handler to the MEGA Storage instance so that
+   * an expired session (ESID -15) doesn't crash the Node process.
+   */
+  private attachErrorHandler(mega: InstanceType<typeof Storage>) {
+    (mega as any).on?.('error', (err: Error) => {
+      this.logger.error('MEGA Storage error event: ' + err.message);
+      if (!this.reinitializing) {
+        this.reinitializing = true;
+        this.handleSessionError(err).finally(() => {
+          this.reinitializing = false;
+        });
+      }
+    });
   }
 
   // ── IP helpers ──────────────────────────────────────────────────────────────
@@ -173,6 +208,7 @@ export class MegaService implements OnModuleInit {
 
         await (this.mega as any).reload();
         this.ready = true;
+        this.attachErrorHandler(this.mega);
         this.logger.log('MEGA session restored ✅');
         return this.mega;
       } catch (err: any) {
@@ -193,6 +229,7 @@ export class MegaService implements OnModuleInit {
 
     await (this.mega as any).ready;
     this.ready = true;
+    this.attachErrorHandler(this.mega);
 
     const sessionData = (this.mega as any).toJSON();
     if (sessionData?.options) delete sessionData.options.password;
