@@ -349,6 +349,9 @@ export default function Home() {
     }, parts);
     try {
       await control.promise;
+      lastReportedAt = 0;
+      report(file.size, file.size, "downloading");
+      await new Promise((r) => setTimeout(r, 600));
       report(file.size, file.size, "completed");
     } catch (error: any) {
       if (error?.name === "AbortError") return;

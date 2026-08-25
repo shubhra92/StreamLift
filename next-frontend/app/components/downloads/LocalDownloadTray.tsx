@@ -117,6 +117,11 @@ function PartSegments({
                   ↻{part.manualRestartCount}M
                 </span>
               )}
+              {!!part.phase2 && (
+                <span className="rounded bg-purple-500/10 px-1 text-[9px] font-semibold text-purple-600" title="Phase 2: auto-retried after other parts completed">
+                  P2
+                </span>
+              )}
             </span>
           ))}
         </div>

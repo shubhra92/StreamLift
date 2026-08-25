@@ -253,6 +253,11 @@ async function refreshToken(workerId: string): Promise<WorkerConnection> {
 // in-flight download (and its per-part controllers) do not.
 const _activeControls = new Map<string, WorkerDownloadControl>();
 
+// Restart callbacks for failed parts — keyed by transferId. Allows manual
+// restart to re-run downloadPart for a part that has already failed and
+// cleaned up its flags/controller.
+const _restartCallbacks = new Map<string, (partIndex: number) => void>();
+
 /** Restart a part of an active worker→browser download by transferId. */
 export function restartWorkerPart(transferId: string, partIndex: number): void {
   _activeControls.get(transferId)?.restartPart(partIndex);
@@ -459,7 +464,7 @@ export function downloadWorkerLocalFile(
    * connection can often be rescued by opening a fresh connection from the
    * same offset.
    */
-  const downloadPart = async (part: WorkerFileTransferPart): Promise<void> => {
+  const downloadPart = async (part: WorkerFileTransferPart, initialAutoRestarts: number = 0): Promise<void> => {
     part.status = "downloading";
     reportProgress();
 
@@ -470,7 +475,7 @@ export function downloadWorkerLocalFile(
     // part is misread as cancelled. The controller is recreated inside the
     // loop below; it follows the parent transfer's cancel and is exposed via
     // restartPart() for manual UI-triggered reconnects.
-    const flag = { requested: false, manual: false, autoRestarts: 0, autoRestartLimit: MAX_SLOW_RESTARTS, backoffLevel: 0 };
+    const flag = { requested: false, manual: false, autoRestarts: initialAutoRestarts, autoRestartLimit: initialAutoRestarts + MAX_SLOW_RESTARTS, backoffLevel: 0 };
     restartFlags.set(part.index, flag);
 
     let partController = new AbortController();
@@ -749,34 +754,84 @@ if (controller.signal.aborted) throw error; // real cancel
     } catch (error) {
       part.status = "failed";
       part.reconnecting = false;
+      // Save autoRestarts so the restart callback can extend the limit
+      (part as any)._lastAutoRestarts = flag.autoRestarts;
       cleanup();
       reportProgress();
       throw error;
     }
   };
 
-    // Two-pass download: if any part fails, the whole transfer is retried
-    // once (parts resume from their receivedBytes) before giving up. A real
-    // cancel or a range-unsupported server aborts immediately.
-    const runPass = async (): Promise<boolean> => {
-      const results = await Promise.allSettled(parts.map(downloadPart));
-      if (results.every((result) => result.status === "fulfilled")) return true;
+    // Register restart callback so manual refresh can re-run a failed part.
+    _restartCallbacks.set(transferId, (partIndex: number) => {
+      const part = parts[partIndex];
+      if (!part || part.status === "completed") return;
+      const lastAutoRestarts = (part as any)._lastAutoRestarts ?? 0;
+      part.restartCount = (part.restartCount ?? 0) + 1;
+      part.manualRestartCount = (part.manualRestartCount ?? 0) + 1;
+      part.status = "pending";
+      part.reconnecting = false;
+      reportProgress();
+      downloadPart(part, lastAutoRestarts).catch(() => {});
+    });
 
-      const failure = results.find((result) => result.status === "rejected") as PromiseRejectedResult | undefined;
-      if (!failure) return true;
-      if (failure.reason instanceof RangeNotSupportedError) throw failure.reason;
-      if ((failure.reason as any)?.name === "AbortError") throw failure.reason;
+    // Start all parts and poll until every part reaches a terminal state
+    // (completed or failed). Restarted parts (via the restart callback) run as
+    // independent promises — the polling loop detects status changes and keeps
+    // waiting until they finish, so the transfer only completes or fails once
+    // ALL parts (including restarted ones) are done.
+    //
+    // When all active parts finish but some are failed (hit their auto-reconnect
+    // limit), Phase 2 kicks in: failed parts are automatically restarted with an
+    // extended limit (+MAX_SLOW_RESTARTS), same as a manual refresh click. If
+    // Phase 2 parts also fail, the transfer ends in failure.
+    const runAllParts = async (): Promise<void> => {
+      let specialError: Error | null = null;
+      let phase2Triggered = false;
 
-      console.warn("[workerConnection] some parts failed — retrying the whole transfer once:", failure.reason);
       for (const part of parts) {
         if (part.status !== "completed") {
-          part.status = "pending";
-          partControllers.delete(part.index);
-          restartFlags.delete(part.index);
+          downloadPart(part).catch((err) => {
+            if (err instanceof RangeNotSupportedError || (err as any)?.name === "AbortError") {
+              specialError = err;
+            }
+          });
         }
       }
-      reportProgress();
-      return false;
+
+      while (true) {
+        await new Promise<void>((r) => setTimeout(r, 100));
+
+        if (specialError) throw specialError;
+
+        if (parts.every((p) => p.status === "completed")) return;
+
+        const hasActive = parts.some((p) => p.status === "downloading" || p.status === "pending");
+        const failedParts = parts.filter((p) => p.status === "failed");
+
+        if (!hasActive && failedParts.length > 0) {
+          if (!phase2Triggered) {
+            // Phase 2: auto-retry failed parts with extended limit
+            phase2Triggered = true;
+            for (const part of failedParts) {
+              const lastAutoRestarts = (part as any)._lastAutoRestarts ?? 0;
+              part.phase2 = true;
+              part.restartCount = (part.restartCount ?? 0) + 1;
+              part.status = "pending";
+              part.reconnecting = false;
+              reportProgress();
+              downloadPart(part, lastAutoRestarts).catch((err) => {
+                if (err instanceof RangeNotSupportedError || (err as any)?.name === "AbortError") {
+                  specialError = err;
+                }
+              });
+            }
+            continue;
+          }
+          // Phase 2 already ran and parts failed again — final failure
+          throw new Error("Download failed — some parts could not be fetched");
+        }
+      }
     };
 
     try {
@@ -785,9 +840,7 @@ if (controller.signal.aborted) throw error; // real cancel
         writable = await handle.createWritable({ keepExistingData: true });
       }
 
-      let ok = await runPass();
-      if (!ok) ok = await runPass();
-      if (!ok) throw new Error("Download failed after retry — some parts could not be fetched");
+      await runAllParts();
 
       if (writable) {
         await writable.close();
@@ -806,12 +859,19 @@ if (controller.signal.aborted) throw error; // real cancel
         URL.revokeObjectURL(url);
       }
     } catch (error) {
-      controller.abort();
-      if (writable) await writable.abort().catch(() => undefined);
+      // Only abort for real cancellations — not part failures — so manual
+      // restart can re-run failed parts via _restartCallbacks.
+      const isRealCancel = (error as any)?.name === "AbortError";
+      if (isRealCancel) {
+        controller.abort();
+        if (writable) await writable.abort().catch(() => undefined);
+      }
       console.warn("[workerConnection] parallel transfer failed:", error);
 
       // Worker doesn't support ranges — re-download as a single stream
       if (error instanceof RangeNotSupportedError) {
+        controller.abort();
+        if (writable) await writable.abort().catch(() => undefined);
         console.warn("[workerConnection] worker does not support range queries — falling back to single stream");
         await writeResponseStream(workerId, filePath, handle, file, totalBytes, onProgress);
         return;
@@ -826,17 +886,21 @@ if (controller.signal.aborted) throw error; // real cancel
     restartPart: (index: number) => {
       const flag = restartFlags.get(index);
       const partController = partControllers.get(index);
-      if (!flag || !partController) return;
-      flag.requested = true;
-      flag.manual = true;
-      // Manual refresh extends the auto-reconnect budget instead of resetting
-      // it: newLimit = MAX_SLOW_RESTARTS + currentAutoCount, so the count
-      // keeps running (e.g. 3/8 → 3/11) and each click grants +8 more
-      // headroom from the current count. The reconnect backoff restarts from
-      // a low level so a manual refresh reconnects quickly.
-      flag.autoRestartLimit = flag.autoRestarts + MAX_SLOW_RESTARTS;
-      flag.backoffLevel = 0;
-      partController.abort();
+      if (flag && partController) {
+        flag.requested = true;
+        flag.manual = true;
+        // Manual refresh extends the auto-reconnect budget instead of resetting
+        // it: newLimit = MAX_SLOW_RESTARTS + currentAutoCount, so the count
+        // keeps running (e.g. 3/8 → 3/11) and each click grants +8 more
+        // headroom from the current count. The reconnect backoff restarts from
+        // a low level so a manual refresh reconnects quickly.
+        flag.autoRestartLimit = flag.autoRestarts + MAX_SLOW_RESTARTS;
+        flag.backoffLevel = 0;
+        partController.abort();
+      } else {
+        // Part has failed and cleaned up — re-run it via the restart callback
+        _restartCallbacks.get(transferId)?.(index);
+      }
     },
   };
   _activeControls.set(transferId, control);
@@ -845,12 +909,17 @@ if (controller.signal.aborted) throw error; // real cancel
   // picker cancels) into an "Uncaught (in promise) ..." console error.
   promise.then(
     () => maybeDropControl(),
-    () => maybeDropControl(),
+    () => {
+      // On failure, keep the control alive so manual restart can re-run
+      // failed parts via _restartCallbacks. Clean up the callback map.
+      _restartCallbacks.delete(transferId);
+    },
   );
   function maybeDropControl() {
     // Only drop our own registration (a later download of the same file
     // must not lose its control when this older one settles).
     if (_activeControls.get(transferId) === control) _activeControls.delete(transferId);
+    _restartCallbacks.delete(transferId);
   }
 
   return {
