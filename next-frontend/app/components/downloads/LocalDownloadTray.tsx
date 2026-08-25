@@ -85,7 +85,7 @@ function PartSegments({
                   {speed(part.speedBytesPerSecond ?? null)}
                 </span>
               )}
-              {(part.status === "downloading" || part.status === "pending") && onRestartPart && (
+              {(part.status === "downloading" || part.status === "pending" || part.status === "failed") && onRestartPart && (
                 <Button
                   type="button"
                   variant="ghost"
