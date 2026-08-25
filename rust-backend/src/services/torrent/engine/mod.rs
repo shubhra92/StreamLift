@@ -10,7 +10,7 @@ pub mod session;
 pub mod wire;
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration};
@@ -215,6 +215,7 @@ impl TorrentEngine {
 
                 // Send interested once at the start
                 let _ = peer.conn.send_message(&Message::Interested).await;
+                let _ = peer.conn.flush_pending().await;
 
                 // Wait for unchoke before starting
                 for _ in 0..10 {
@@ -230,22 +231,119 @@ impl TorrentEngine {
                     return peer;
                 }
 
-                loop {
-                    let item = { queue.lock().await.pop_front() };
-                    let (piece_idx, piece_len) = match item {
-                        Some(i) => i,
-                        None => break,
-                    };
+                // ── Cross-piece pipelined download ──────────────────────────
+                // Instead of downloading one piece at a time (send all blocks,
+                // wait for all, next piece), we maintain a pipeline of block
+                // requests across multiple pieces — matching WebTorrent's approach.
+                const PIPELINE_MAX: usize = 64;
 
-                    match download_piece_from_peer(&mut peer, piece_idx, piece_len).await {
-                        Ok(data) => {
-                            pieces_done += 1;
-                            progress_cb(pieces_done);
-                            if tx.send((piece_idx, data)).await.is_err() { break; }
+                struct InflightPiece {
+                    piece_idx: u32,
+                    piece_len: u32,
+                    data: Vec<u8>,
+                    blocks_received: u32,
+                    total_blocks: u32,
+                }
+
+                let mut inflight: VecDeque<InflightPiece> = VecDeque::new();
+                let mut consecutive_errors = 0u32;
+
+                /// Send block requests for a piece and add it to inflight.
+                async fn enqueue_piece(
+                    peer: &mut ConnectedPeer,
+                    piece_idx: u32,
+                    piece_len: u32,
+                    inflight: &mut VecDeque<InflightPiece>,
+                ) -> Result<()> {
+                    let num_blocks = (piece_len + BLOCK_SIZE - 1) / BLOCK_SIZE;
+                    let mut offset = 0u32;
+                    while offset < piece_len {
+                        let bl = BLOCK_SIZE.min(piece_len - offset);
+                        peer.conn.send_message(&Message::Request {
+                            index: piece_idx,
+                            begin: offset,
+                            length: bl,
+                        }).await?;
+                        offset += bl;
+                    }
+                    peer.conn.flush_pending().await?;
+                    inflight.push_back(InflightPiece {
+                        piece_idx,
+                        piece_len,
+                        data: vec![0u8; piece_len as usize],
+                        blocks_received: 0,
+                        total_blocks: num_blocks,
+                    });
+                    Ok(())
+                }
+
+                // Fill initial pipeline
+                while inflight.len() < PIPELINE_MAX {
+                    let item = { queue.lock().await.pop_front() };
+                    match item {
+                        Some((piece_idx, piece_len)) => {
+                            if let Err(_) = enqueue_piece(&mut peer, piece_idx, piece_len, &mut inflight).await {
+                                queue.lock().await.push_back((piece_idx, piece_len));
+                                break;
+                            }
                         }
-                        Err(_) => {
-                            queue.lock().await.push_back((piece_idx, piece_len));
+                        None => break,
+                    }
+                }
+
+                loop {
+                    if inflight.is_empty() { break; }
+
+                    match timeout(Duration::from_secs(30), peer.conn.read_message(Duration::from_secs(30))).await {
+                        Ok(Ok(Some(Message::Piece { index, begin, data }))) => {
+                            if let Some(piece) = inflight.iter_mut().find(|p| p.piece_idx == index) {
+                                let end = (begin as usize + data.len()).min(piece.data.len());
+                                piece.data[begin as usize..end].copy_from_slice(&data[..end - begin as usize]);
+                                piece.blocks_received += 1;
+
+                                if piece.blocks_received >= piece.total_blocks {
+                                    // Piece complete — remove, report, send
+                                    let pos = inflight.iter().position(|p| p.piece_idx == index).unwrap();
+                                    let piece = inflight.remove(pos).unwrap();
+                                    pieces_done += 1;
+                                    progress_cb(pieces_done);
+                                    if tx.send((piece.piece_idx, piece.data)).await.is_err() { break; }
+                                    consecutive_errors = 0;
+
+                                    // Refill: pop next piece from queue
+                                    let item = { queue.lock().await.pop_front() };
+                                    if let Some((piece_idx, piece_len)) = item {
+                                        if let Err(_) = enqueue_piece(&mut peer, piece_idx, piece_len, &mut inflight).await {
+                                            queue.lock().await.push_back((piece_idx, piece_len));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ok(Ok(Some(Message::Unchoke))) => { peer.am_choked = false; }
+                        Ok(Ok(Some(Message::Choke))) => {
+                            peer.am_choked = true;
+                            for p in inflight.drain(..) {
+                                queue.lock().await.push_back((p.piece_idx, p.piece_len));
+                            }
                             break;
+                        }
+                        Ok(Ok(Some(_))) => continue,
+                        Ok(Ok(None)) => {
+                            // Disconnected — push back all inflight pieces
+                            for p in inflight.drain(..) {
+                                queue.lock().await.push_back((p.piece_idx, p.piece_len));
+                            }
+                            break;
+                        }
+                        Ok(Err(_)) | Err(_) => {
+                            consecutive_errors += 1;
+                            if consecutive_errors >= 3 {
+                                for p in inflight.drain(..) {
+                                    queue.lock().await.push_back((p.piece_idx, p.piece_len));
+                                }
+                                break;
+                            }
                         }
                     }
                 }
@@ -308,6 +406,7 @@ impl TorrentEngine {
                 let mut c = conn;
                 let _ = c.send_ext_handshake(1).await;
                 let _ = c.send_message(&wire::Message::Interested).await;
+                let _ = c.flush_pending().await;
                 session.peers.push(ConnectedPeer {
                     conn: c, has_metadata: false, ut_metadata_id: None,
                     metadata_size: 0, am_choked: true, has_pieces: std::collections::HashSet::new(),
@@ -436,7 +535,7 @@ impl TorrentEngine {
 
             // Send interested + ext handshake
             let _ = conn.send_message(&Message::Interested).await;
-            let _ = conn.send_ext_handshake(1).await;
+            let _ = conn.send_ext_handshake(1).await;  // ext_handshake already flushes
         }
 
         // Give peers a moment to respond
@@ -484,6 +583,7 @@ impl TorrentEngine {
                     payload: Bytes::from(dict.into_bytes()),
                 }).await;
             }
+            let _ = conn.flush_pending().await;
 
             // Wait a moment for the peer to process (some clients need this)
             tokio::time::sleep(Duration::from_millis(500)).await;

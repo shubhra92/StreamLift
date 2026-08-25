@@ -165,11 +165,22 @@ impl WireConn {
         Ok(Some(decode_msg(&payload)?))
     }
 
-    /// Send a message.
+    /// Send a message (with write timeout, no automatic flush).
     pub async fn send_message(&mut self, msg: &Message) -> Result<()> {
         let data = encode_msg(msg);
-        self.writer.write_all(&data).await.context("write message")?;
-        self.writer.flush().await.context("flush")?;
+        timeout(Duration::from_secs(15), self.writer.write_all(&data))
+            .await
+            .context("write timeout")?
+            .context("write message")?;
+        Ok(())
+    }
+
+    /// Flush the write buffer. Call after batching multiple sends.
+    pub async fn flush_pending(&mut self) -> Result<()> {
+        timeout(Duration::from_secs(10), self.writer.flush())
+            .await
+            .context("flush timeout")?
+            .context("flush")?;
         Ok(())
     }
 
@@ -183,7 +194,8 @@ impl WireConn {
         self.send_message(&Message::Extended {
             id: 0,
             payload: Bytes::from(payload.into_bytes()),
-        }).await
+        }).await?;
+        self.flush_pending().await
     }
 }
 

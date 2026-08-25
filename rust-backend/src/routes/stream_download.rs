@@ -68,16 +68,7 @@ pub async fn server_download(
     State(state): State<AppState>,
     Json(body): Json<StreamDownloadRequest>,
 ) -> impl IntoResponse {
-    if let Some(id) = body.file_id {
-        if state.progress.contains_key(&id) {
-            return (StatusCode::OK, Json(json!({
-                "status": true,
-                "message": "file download already started",
-                "data": { "fileStatusId": id }
-            }))).into_response();
-        }
-    }
-
+    // Upsert DB record first so frontend always gets a valid fileStatusId
     let record = upsert_file_download(
         &state.pool, body.file_id, &body.source_url, "server", body.file_name.as_deref(),
     ).await;
@@ -89,6 +80,36 @@ pub async fn server_download(
     };
 
     let id = record.id;
+
+    if !state.server_download_enabled {
+        let _ = sqlx::query(
+            "UPDATE file_downloads SET status = 'failed', error_message = 'server download not available', updated_at = NOW() WHERE id = $1"
+        )
+        .bind(id)
+        .execute(&state.pool)
+        .await;
+        state.progress.insert(id, Progress {
+            downloaded_bytes: None,
+            total_bytes: None,
+            percent_fixed2: None,
+            percent: None,
+            done: true,
+        });
+        return (StatusCode::OK, Json(json!({
+            "status": true,
+            "message": "server download not available",
+            "data": { "fileStatusId": id }
+        }))).into_response();
+    }
+
+    if state.progress.contains_key(&id) {
+        return (StatusCode::OK, Json(json!({
+            "status": true,
+            "message": "file download already started",
+            "data": { "fileStatusId": id }
+        }))).into_response();
+    }
+
     state.progress.insert(id, Progress::initial());
 
     let (pool, progress, http) = (state.pool.clone(), state.progress.clone(), state.http.clone());
@@ -112,6 +133,12 @@ pub async fn mega_upload(
     State(state): State<AppState>,
     Json(body): Json<StreamDownloadRequest>,
 ) -> impl IntoResponse {
+    if state.storage_provider != "mega" {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
+            "details": format!("Unsupported storage provider: {}", state.storage_provider)
+        }))).into_response();
+    }
+
     if let Some(id) = body.file_id {
         if state.progress.contains_key(&id) {
             return (StatusCode::OK, Json(json!({
@@ -130,7 +157,7 @@ pub async fn mega_upload(
     };
 
     let record = upsert_file_download(
-        &state.pool, body.file_id, &body.source_url, "mega", body.file_name.as_deref(),
+        &state.pool, body.file_id, &body.source_url, "cloud", body.file_name.as_deref(),
     ).await;
 
     let record = match record {

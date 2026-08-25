@@ -140,13 +140,13 @@ pub async fn download_url_to_server(
     id: Uuid,
     url: String,
     file_name_hint: Option<String>,
-    _guest_id: Option<Uuid>,
+    guest_id: Option<Uuid>,
     pool: PgPool,
     progress: ProgressStore,
     http: reqwest::Client,
 ) {
     if let Err(e) =
-        _download_url_to_server(id, &url, file_name_hint.as_deref(), &pool, &progress, &http).await
+        _download_url_to_server(id, &url, file_name_hint.as_deref(), guest_id, &pool, &progress, &http).await
     {
         error!("download_url_to_server failed for {id}: {e:#}");
         let _ = mark_failed(&pool, id, &e.to_string()).await;
@@ -158,6 +158,7 @@ async fn _download_url_to_server(
     id: Uuid,
     url: &str,
     file_name_hint: Option<&str>,
+    guest_id: Option<Uuid>,
     pool: &PgPool,
     progress: &ProgressStore,
     http: &reqwest::Client,
@@ -165,7 +166,10 @@ async fn _download_url_to_server(
     let resp = fetch_with_retry(http, url).await.context("fetch url")?;
     let meta = parse_meta(&resp, file_name_hint);
 
-    let download_dir = PathBuf::from("downloads");
+    let download_dir = match guest_id {
+        Some(gid) => PathBuf::from("downloads").join(gid.to_string()),
+        None => PathBuf::from("downloads"),
+    };
     tokio::fs::create_dir_all(&download_dir).await?;
     let dest = download_dir.join(&meta.filename);
 

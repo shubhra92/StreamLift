@@ -34,6 +34,8 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub is_ready: Arc<AtomicBool>,
     pub torrent_engine: Arc<TorrentEngine>,
+    pub storage_provider: String,
+    pub server_download_enabled: bool,
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -81,6 +83,8 @@ async fn main() -> Result<()> {
         http: http.clone(),
         is_ready: is_ready.clone(),
         torrent_engine,
+        storage_provider: cfg.storage_provider.clone(),
+        server_download_enabled: cfg.server_download_enabled,
     };
 
     // CORS — same as express cors() with default options (all origins)
@@ -105,8 +109,8 @@ async fn main() -> Result<()> {
 
     // Start MEGA init in background
     let mega_manager = MegaManager::new(
-        pool,
-        http,
+        pool.clone(),
+        http.clone(),
         cfg.mega_email.clone(),
         cfg.mega_password.clone(),
     );
@@ -114,6 +118,13 @@ async fn main() -> Result<()> {
     let ready_flag = is_ready.clone();
 
     tokio::spawn(async move {
+        // Recover stale downloads from previous crash/restart
+        match recover_stale_downloads(&pool).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("[startup] Marked {n} stale download(s) as failed"),
+            Err(e) => tracing::error!("[startup] Failed to recover stale downloads: {e:#}"),
+        }
+
         match mega_manager.init().await {
             Ok(ms) => {
                 *mega_clone.write().await = Some(ms);
@@ -156,4 +167,20 @@ async fn readiness_gate(
     }
 
     next.run(req).await
+}
+
+// ── Stale download recovery ──────────────────────────────────────────────────
+
+async fn recover_stale_downloads(pool: &PgPool) -> anyhow::Result<u64> {
+    let result = sqlx::query(
+        "UPDATE file_downloads \
+         SET status = 'failed', \
+             error_message = 'Server restarted while download was in progress', \
+             updated_at = NOW() \
+         WHERE status = 'downloading'",
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
 }

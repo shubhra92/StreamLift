@@ -3,7 +3,7 @@
 
 use anyhow::{bail, Context, Result};
 use sqlx::PgPool;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -48,11 +48,11 @@ async fn mark_failed(pool: &PgPool, id: Uuid, msg: &str) -> Result<()> {
 
 pub async fn download_torrent_to_server(
     id: Uuid, magnet_str: String, file_name_hint: Option<String>,
-    file_indices: Option<Vec<usize>>, _guest_id: Option<Uuid>,
+    file_indices: Option<Vec<usize>>, guest_id: Option<Uuid>,
     pool: PgPool, progress: ProgressStore, _http: reqwest::Client,
     engine: std::sync::Arc<crate::services::torrent::engine::TorrentEngine>,
 ) {
-    if let Err(e) = _download_to_server(id, &magnet_str, file_name_hint.as_deref(), file_indices, &pool, &progress, &engine).await {
+    if let Err(e) = _download_to_server(id, &magnet_str, file_name_hint.as_deref(), file_indices, guest_id, &pool, &progress, &engine).await {
         error!("torrent→server failed {id}: {e:#}");
         let _ = mark_failed(&pool, id, &e.to_string()).await;
         progress.insert(id, Progress::failed());
@@ -76,7 +76,7 @@ pub async fn stream_torrent_to_mega(
 
 async fn _download_to_server(
     id: Uuid, magnet_str: &str, file_name_hint: Option<&str>,
-    file_indices: Option<Vec<usize>>, pool: &PgPool, progress: &ProgressStore,
+    file_indices: Option<Vec<usize>>, guest_id: Option<Uuid>, pool: &PgPool, progress: &ProgressStore,
     engine: &crate::services::torrent::engine::TorrentEngine,
 ) -> Result<()> {
     let magnet = MagnetLink::parse(magnet_str)?;
@@ -86,7 +86,10 @@ async fn _download_to_server(
 
     let selected = select_files(&meta, file_indices.as_deref());
     let total_bytes: u64 = selected.iter().map(|f| f.size).sum();
-    let download_dir = std::path::PathBuf::from("downloads");
+    let download_dir = match guest_id {
+        Some(gid) => std::path::PathBuf::from("downloads").join(gid.to_string()),
+        None => std::path::PathBuf::from("downloads"),
+    };
     tokio::fs::create_dir_all(&download_dir).await?;
 
     let mut total_downloaded: u64 = 0;
@@ -94,11 +97,12 @@ async fn _download_to_server(
         let out_name = if selected.len() == 1 { file_name_hint.unwrap_or(&file.name).to_string() } else { file.name.clone() };
         mark_downloading(pool, id, file, total_bytes).await?;
 
-        let file_offset = calculate_file_offset(&meta, file);
-        let file_bytes = download_file_via_engine(engine, &magnet, &meta, file_offset, file.size, progress, id, total_downloaded, total_bytes).await?;
-
         let dest = download_dir.join(&out_name);
-        tokio::fs::File::create(&dest).await?.write_all(&file_bytes).await?;
+        let mut f = tokio::fs::File::create(&dest).await?;
+        let file_offset = calculate_file_offset(&meta, file);
+
+        download_file_to_disk_via_engine(engine, &magnet, &meta, file_offset, file.size, &mut f, progress, id, total_downloaded, total_bytes).await?;
+
         total_downloaded += file.size;
     }
 
@@ -176,6 +180,7 @@ async fn _stream_to_mega(
                     let mut session = session_arc.write().await;
                     for peer in session.peers.iter_mut() {
                         let _ = peer.conn.send_message(&super::engine::wire::Message::Interested).await;
+                        let _ = peer.conn.flush_pending().await;
                     }
                     // Brief wait for unchoke
                     for peer in session.peers.iter_mut() {
@@ -397,27 +402,29 @@ async fn download_one_piece(conn: &mut PeerConnection, idx: u32, len: u32, meta:
     Ok(data)
 }
 
-// ── Download via engine (reuses connected peers) ──────────────────────────────
+// ── Download via engine → disk (streaming, no full-file buffer) ───────────────
 
-async fn download_file_via_engine(
+async fn download_file_to_disk_via_engine(
     engine: &crate::services::torrent::engine::TorrentEngine,
     magnet: &MagnetLink,
     meta: &TorrentMetadata,
     file_offset: u64,
     file_length: u64,
+    file: &mut tokio::fs::File,
     progress: &ProgressStore,
     id: Uuid,
     base_downloaded: u64,
     total_bytes: u64,
-) -> Result<Vec<u8>> {
+) -> Result<()> {
     use sha1::{Digest, Sha1};
 
     let piece_length = meta.piece_length as u64;
     let first_piece = (file_offset / piece_length) as u32;
     let last_piece = ((file_offset + file_length - 1) / piece_length) as u32;
     let total_pieces = (last_piece - first_piece + 1) as usize;
+    let start_in_first = (file_offset % piece_length) as usize;
 
-    info!("Downloading pieces {first_piece}..{last_piece} ({total_pieces} pieces)");
+    info!("Downloading pieces {first_piece}..{last_piece} ({total_pieces} pieces) → disk");
 
     // Build piece request list
     let piece_requests: Vec<(u32, u32)> = (first_piece..=last_piece)
@@ -441,7 +448,6 @@ async fn download_file_via_engine(
         magnet,
         piece_requests,
         move |_per_peer_count| {
-            // Use global atomic counter instead of per-peer count
             let done = pieces_done_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             let downloaded = base + (done as f64 / tp as f64 * file_len as f64) as u64;
             let mut p = progress_clone.entry(id).or_insert(Progress::initial());
@@ -449,9 +455,13 @@ async fn download_file_via_engine(
         },
     ).await?;
 
-    // Verify SHA-1 for each piece
-    let mut verified: Vec<(u32, Vec<u8>)> = Vec::with_capacity(results.len());
-    for (idx, data) in results {
+    // Sort by piece index so we write sequentially
+    let mut sorted_results = results;
+    sorted_results.sort_by_key(|(idx, _)| *idx);
+
+    // Verify SHA-1 + write each piece to disk immediately (no full-file buffer)
+    let mut written: u64 = 0;
+    for (idx, data) in sorted_results {
         let hash_offset = idx as usize * 20;
         if hash_offset + 20 <= meta.piece_hashes.len() {
             let expected = &meta.piece_hashes[hash_offset..hash_offset + 20];
@@ -460,23 +470,35 @@ async fn download_file_via_engine(
                 bail!("SHA-1 mismatch piece {idx}");
             }
         }
-        verified.push((idx, data));
+
+        // Calculate what portion of this piece belongs to this file
+        let piece_start = idx as u64 * piece_length;
+        let piece_end = (piece_start + piece_length).min(meta.total_size);
+
+        // Skip bytes before this file starts
+        let data_start = if piece_start < file_offset {
+            (file_offset - piece_start) as usize
+        } else {
+            0
+        };
+        // Trim bytes after this file ends
+        let data_end = if piece_end > file_offset + file_length {
+            ((file_offset + file_length) - piece_start) as usize
+        } else {
+            data.len()
+        };
+
+        if data_start < data_end {
+            let chunk = &data[data_start..data_end];
+            file.seek(std::io::SeekFrom::Start(written)).await?;
+            file.write_all(chunk).await?;
+            written += chunk.len() as u64;
+        }
     }
 
-    // Sort by piece index and assemble file
-    verified.sort_by_key(|(idx, _)| *idx);
-
-    let start_in_first = (file_offset % piece_length) as usize;
-    let mut file_data = Vec::with_capacity(file_length as usize);
-    for (i, (_, data)) in verified.iter().enumerate() {
-        let start = if i == 0 { start_in_first } else { 0 };
-        let remaining = file_length as usize - file_data.len();
-        let end = start + remaining.min(data.len() - start);
-        file_data.extend_from_slice(&data[start..end]);
-    }
-
-    info!("File assembled: {} bytes ✅", file_data.len());
-    Ok(file_data)
+    file.flush().await?;
+    info!("File written to disk: {written} bytes ✅");
+    Ok(())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

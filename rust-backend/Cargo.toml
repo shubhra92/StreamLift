@@ -75,6 +75,8 @@ thiserror = "1"
 # Misc
 rand = "0.8"
 num-bigint = "0.4"
+url = "2"
+urlencoding = "2"
 
 [profile.release]
 opt-level = 3
