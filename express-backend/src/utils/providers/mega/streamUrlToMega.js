@@ -103,9 +103,11 @@ export async function streamUrlToMega(id, url, options = { fileName: null, guest
     return await new Promise((resolve, reject) => {
         fileStream.on("complete", (file) => {
             console.log("MEGA upload completed ✅");
+            console.log("MEGA node ID:", file?.nodeId);
 
             db.update(fileDownloads).set({
                 status: "completed",
+                cloudFileHandle: file?.nodeId ?? null,
                 updatedAt: new Date(),
             }).where(eq(fileDownloads.id, id))
                 .then(() => {

@@ -305,8 +305,14 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
                     }
 
                     if (status === "completed") {
+                        // Extract MEGA node handle from uploaded results
+                        const handle = Array.isArray(uploadedFiles)
+                            ? uploadedFiles[0]?.nodeId ?? null
+                            : uploadedFiles?.nodeId ?? null;
+
                         await db.update(fileDownloads).set({
                             status: "completed",
+                            cloudFileHandle: handle,
                             updatedAt: new Date(),
                         }).where(eq(fileDownloads.id, id));
                         
@@ -452,6 +458,7 @@ export async function streamTorrentToMega(id, magnetLink, options = { fileName: 
 
                         currentFileStream.on("complete", (uploadedFile) => {
                             console.log(`✅ Finished uploading target file: ${currentFile.name}`);
+                            console.log("MEGA node ID:", uploadedFile?.nodeId);
                             uploadedResults.push(uploadedFile);
                             
                             // Close down local stream hooks immediately to clean the execution track
