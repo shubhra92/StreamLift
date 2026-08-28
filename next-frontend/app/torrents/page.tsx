@@ -23,6 +23,8 @@ import {
   openWorkerLocalFileInBrowser,
   isMultiPartPossible,
   restartWorkerPart,
+  buildParts,
+  downloadCloudFileToDisk,
   type WorkerLocalFile,
 } from "../lib/workerConnection";
 import type { WorkerFileTransfer, WorkerFileTransferPart } from "../lib/sync-worker/workerProtocol";
@@ -60,6 +62,8 @@ export default function TorrentsPage() {
   const [workerFilesByDownload, setWorkerFilesByDownload] = useState<Record<string, WorkerLocalFile[]>>({});
   const [workerFileTransfers, setWorkerFileTransfers] = useState<Record<string, WorkerFileTransfer>>({});
   const [pendingPartDownload, setPendingPartDownload] = useState<{ download: FileDownload; file: WorkerLocalFile } | null>(null);
+  const [pendingCloudDownload, setPendingCloudDownload] = useState<{ download: FileDownload; shareUrl: string; fileName: string; fileSize: number } | null>(null);
+  const [creatingLinkIds, setCreatingLinkIds] = useState<Set<string>>(new Set());
 
   const { downloads: idbDownloads, networkStatus, syncNow } = useTorrents();
   const downloads = idbDownloads.map(toFileDownload);
@@ -80,6 +84,7 @@ export default function TorrentsPage() {
   const listRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [panelHeight, setPanelHeight] = useState(0);
+  const cloudControlsRef = useRef<Map<string, { retryPart: (partIndex: number) => void }>>(new Map());
 
   // Dynamically track panel height so the spacer always matches
   useEffect(() => {
@@ -383,6 +388,156 @@ export default function TorrentsPage() {
     }
   };
 
+  const handleCreateShareLink = async (download: FileDownload) => {
+    setCreatingLinkIds((prev) => new Set(prev).add(download.id));
+    try {
+      const res = await fetch(`/api/cloud/share/${download.id}`, { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error ?? "Failed to create share link");
+        return;
+      }
+      syncNow();
+    } catch (err: any) {
+      alert(err?.message ?? "Failed to create share link");
+    } finally {
+      setCreatingLinkIds((prev) => {
+        const next = new Set(prev);
+        next.delete(download.id);
+        return next;
+      });
+    }
+  };
+
+  const handleCloudExternalLink = async (download: FileDownload) => {
+    try {
+      const res = await fetch(`/api/cloud/download-info/${download.id}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error ?? "Could not get download info");
+        return;
+      }
+      const { shareUrl } = await res.json();
+      if (shareUrl) window.open(shareUrl, "_blank");
+    } catch (err: any) {
+      alert(err?.message ?? "Download failed");
+    }
+  };
+
+  const runCloudDownload = async (download: FileDownload, shareUrl: string, fileName: string, fileSize: number, parts: number) => {
+    const transferId = `cloud:${download.id}`;
+    const startedAt = Date.now();
+    let previousBytes = 0;
+    let previousAt = startedAt;
+    let lastReportedAt = 0;
+    let latestParts: WorkerFileTransferPart[] | undefined;
+
+    const report = (receivedBytes: number, totalBytes: number, status: WorkerFileTransfer["status"], error?: string, cancelled?: boolean) => {
+      const now = Date.now();
+      const speed = now > previousAt ? ((receivedBytes - previousBytes) * 1000) / (now - previousAt) : null;
+      previousBytes = receivedBytes;
+      previousAt = now;
+      if (status === "downloading" && now - lastReportedAt < 250) return;
+      lastReportedAt = now;
+      client.current.reportWorkerFileTransfer({
+        id: transferId,
+        workerId: "cloud",
+        downloadId: download.id,
+        fileIndex: 0,
+        fileName,
+        status,
+        receivedBytes,
+        totalBytes,
+        speedBytesPerSecond: speed,
+        startedAt,
+        updatedAt: now,
+        error,
+        cancelled,
+        parts: latestParts,
+      });
+    };
+
+    // Seed the per-part list immediately so the tray shows the chosen parts (not a
+    // single bar) the moment the save picker is confirmed, before data starts flowing.
+    latestParts = buildParts(fileSize, parts);
+
+    report(0, fileSize, "preparing");
+
+    const control = downloadCloudFileToDisk(
+      shareUrl,
+      fileName,
+      fileSize,
+      parts,
+      (received, total, cloudParts) => {
+        latestParts = cloudParts.map((p) => ({
+          index: p.index,
+          start: p.start,
+          end: p.end,
+          receivedBytes: p.receivedBytes,
+          status: p.status === "pending" ? "pending" as const : p.status === "downloading" ? "downloading" as const : p.status === "completed" ? "completed" as const : "failed" as const,
+          error: p.error,
+          speedBytesPerSecond: p.speedBytesPerSecond,
+          restartCount: p.restartCount,
+          manualRestartCount: p.manualRestartCount,
+          reconnecting: p.reconnecting,
+        }));
+        report(received, total, "downloading");
+      },
+      (checking) => {
+        report(0, fileSize, checking ? "preparing" : "downloading");
+      },
+    );
+
+    cloudControlsRef.current.set(transferId, control);
+
+    try {
+      await control.promise;
+      lastReportedAt = 0;
+      report(fileSize, fileSize, "downloading");
+      await new Promise((r) => setTimeout(r, 600));
+      report(fileSize, fileSize, "completed");
+    } catch (error: any) {
+      lastReportedAt = 0;
+      if (error?.name === "AbortError") {
+        report(0, fileSize, "preparing", undefined, true);
+      } else {
+        report(previousBytes, fileSize, "failed", error?.message ?? "Download failed");
+      }
+    } finally {
+      cloudControlsRef.current.delete(transferId);
+    }
+  };
+
+  const retryCloudPart = (transferId: string, partIndex: number) => {
+    cloudControlsRef.current.get(transferId)?.retryPart(partIndex);
+  };
+
+  const handleCloudTabDownload = async (download: FileDownload) => {
+    try {
+      const res = await fetch(`/api/cloud/download-info/${download.id}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error ?? "Could not get download info");
+        return;
+      }
+      const { shareUrl, fileName } = await res.json();
+      if (!shareUrl) {
+        alert("No share link — click the link icon first");
+        return;
+      }
+      const name = fileName ?? download.fileName ?? "download";
+      const fileSize = download.fileSize ?? 0;
+
+      if (isMultiPartPossible(fileSize)) {
+        setPendingCloudDownload({ download, shareUrl, fileName: name, fileSize });
+        return;
+      }
+      await runCloudDownload(download, shareUrl, name, fileSize, 1);
+    } catch (err: any) {
+      alert(err?.message ?? "Download failed");
+    }
+  };
+
   return (
     <main className="bg-background p-4 md:p-6">
       <div className="max-w-5xl mx-auto">
@@ -421,6 +576,10 @@ export default function TorrentsPage() {
             onDownloadWorkerFile={handleDownloadWorkerFile}
             onDownloadWorkerFileExternalLink={handleDownloadWorkerFileExternalLink}
             workerFileTransfers={workerFileTransfers}
+            onCreateShareLink={handleCreateShareLink}
+            onCloudExternalLink={handleCloudExternalLink}
+            onCloudTabDownload={handleCloudTabDownload}
+            creatingLinkIds={creatingLinkIds}
           />
         </div>
 
@@ -436,6 +595,7 @@ export default function TorrentsPage() {
           transfers={workerFileTransfers}
           workerNames={Object.fromEntries(workers.map((worker) => [worker.id, worker.name]))}
           onRestartPart={restartWorkerPart}
+          onRetryCloudPart={retryCloudPart}
         />
 
         {/* Spacer: exact height of the panel so covered rows can be scrolled into view */}
@@ -466,6 +626,18 @@ export default function TorrentsPage() {
             void runWorkerFileDownload(pendingPartDownload.download, pendingPartDownload.file, parts);
           }
           setPendingPartDownload(null);
+        }}
+      />
+
+      <PartCountDialog
+        isOpen={pendingCloudDownload !== null}
+        fileSize={pendingCloudDownload?.fileSize ?? 0}
+        onClose={() => setPendingCloudDownload(null)}
+        onConfirm={(parts) => {
+          if (pendingCloudDownload) {
+            void runCloudDownload(pendingCloudDownload.download, pendingCloudDownload.shareUrl, pendingCloudDownload.fileName, pendingCloudDownload.fileSize, parts);
+          }
+          setPendingCloudDownload(null);
         }}
       />
     </main>

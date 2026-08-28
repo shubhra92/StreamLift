@@ -26,6 +26,66 @@ function envInt(name: keyof typeof ENV, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+/**
+ * Detect a MEGA bandwidth-limit (HTTP 509) error. We cannot rely on `err.timeLimit`
+ * alone: MEGA often returns a null/empty `x-mega-time-left` header, so megajs sets
+ * `error.timeLimit = null` even though the connection genuinely hit the 509 limit
+ * ("Bandwidth limit reached: null seconds until it resets"). Match on the message
+ * and/or status text instead.
+ */
+function isBandwidthLimitError(err: any): boolean {
+  if (err?.timeLimit != null && err.timeLimit !== "" && err.timeLimit !== "null") return true;
+  const msg = String(err?.message ?? "").toLowerCase();
+  return msg.includes("bandwidth") || msg.includes("509");
+}
+
+/**
+ * Raw MEGA pre-flight: test whether this share can be downloaded without relying
+ * on megajs's internal chunk splitting. Request the WHOLE file range
+ * (0..fileSize-1) in the URL path (the format MEGA's storage servers expect, as
+ * megajs builds it), and abort as soon as the first byte of the real download
+ * arrives. MEGA evaluates the requested range against the bandwidth/quota window,
+ * so a 509 means the download is currently blocked. Resolves to the number of
+ * seconds left if 509 (bandwidth limit reached), or null if authorized. Non-509
+ * statuses and transport errors also resolve to null so a transient probe error
+ * (or MEGA rejecting an oversized single range) never falsely blocks the save
+ * picker.
+ */
+async function checkMegaQuota(shareUrl: string, fileSize: number): Promise<number | null> {
+  try {
+    const handle = shareUrl.match(/\/file\/([^#?]+)/)?.[1];
+    if (!handle) return null;
+    const apiRes = await fetch("https://g.api.mega.co.nz/cs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify([{ a: "g", v: 2, g: 1, ssl: 1, p: handle }]),
+    });
+    if (!apiRes.ok) return null;
+    const data = (await apiRes.json()) as { g?: string }[];
+    const gUrl = data?.[0]?.g;
+    if (!gUrl) return null;
+    // Whole-file range appended to the URL path (0-<last byte>), mirroring how
+    // megajs encodes byte ranges in the request URL. We abort as soon as any body
+    // data arrives, so checking never pulls more than a few bytes.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const rangeEnd = Math.max(0, fileSize - 1);
+      const res = await fetch(`${gUrl}/0-${rangeEnd}`, { signal: controller.signal });
+      if (res.status === 509) {
+        const timeLeft = res.headers.get("x-mega-time-left");
+        const n = Number.parseInt(timeLeft ?? "", 10);
+        return Number.isFinite(n) ? n : 0;
+      }
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    return null;
+  }
+}
+
 // Parallel download tuning. Free tunnel services usually throttle bandwidth
 // per connection, so several concurrent Range streams can outperform one.
 // Configurable via .env.local (NEXT_PUBLIC_ prefix — these are client-visible):
@@ -67,8 +127,39 @@ export function isMultiPartPossible(totalBytes: number): boolean {
   return getMaxPartsForSize(totalBytes) > 1;
 }
 
-/** Split a file into equal, contiguous byte ranges. */
-function buildParts(totalBytes: number, requestedParts: number): WorkerFileTransferPart[] {
+/** Max parallel parts for cloud download. */
+type CloudPartState = {
+  index: number;
+  start: number;
+  end: number;
+  receivedBytes: number;
+  status: "pending" | "downloading" | "completed" | "failed";
+  error?: string;
+  speedBytesPerSecond?: number;
+  restartCount?: number;       // total reconnects (manual refresh)
+  manualRestartCount?: number; // reconnects triggered by the UI refresh button
+  reconnecting?: boolean;      // a refresh is in flight (button disabled + spinning)
+};
+
+function buildCloudParts(totalBytes: number, numParts: number): CloudPartState[] {
+  if (totalBytes <= 0 || numParts <= 1) {
+    return [{ index: 0, start: 0, end: Math.max(0, totalBytes - 1), receivedBytes: 0, status: "pending" }];
+  }
+  const partSize = Math.ceil(totalBytes / numParts);
+  const parts: CloudPartState[] = [];
+  for (let i = 0; i < numParts; i++) {
+    const start = i * partSize;
+    const end = Math.min(start + partSize - 1, totalBytes - 1);
+    if (start > end) break;
+    parts.push({ index: i, start, end, receivedBytes: 0, status: "pending" });
+  }
+  return parts;
+}
+
+/**
+ * Split a file into equal, contiguous byte ranges.
+ */
+export function buildParts(totalBytes: number, requestedParts: number): WorkerFileTransferPart[] {
   if (totalBytes <= 0) return [];
   const partCount = Math.min(Math.max(1, requestedParts), getMaxPartsForSize(totalBytes));
   if (partCount <= 1) {
@@ -775,73 +866,9 @@ if (controller.signal.aborted) throw error; // real cancel
       downloadPart(part, lastAutoRestarts).catch(() => {});
     });
 
-    // Start all parts and poll until every part reaches a terminal state
-    // (completed or failed). Restarted parts (via the restart callback) run as
-    // independent promises — the polling loop detects status changes and keeps
-    // waiting until they finish, so the transfer only completes or fails once
-    // ALL parts (including restarted ones) are done.
-    //
-    // When all active parts finish but some are failed (hit their auto-reconnect
-    // limit), Phase 2 kicks in: failed parts are automatically restarted with an
-    // extended limit (+MAX_SLOW_RESTARTS), same as a manual refresh click. If
-    // Phase 2 parts also fail, the transfer ends in failure.
-    const runAllParts = async (): Promise<void> => {
-      let specialError: Error | null = null;
-      let phase2Triggered = false;
-
-      for (const part of parts) {
-        if (part.status !== "completed") {
-          downloadPart(part).catch((err) => {
-            if (err instanceof RangeNotSupportedError || (err as any)?.name === "AbortError") {
-              specialError = err;
-            }
-          });
-        }
-      }
-
-      while (true) {
-        await new Promise<void>((r) => setTimeout(r, 100));
-
-        if (specialError) throw specialError;
-
-        if (parts.every((p) => p.status === "completed")) return;
-
-        const hasActive = parts.some((p) => p.status === "downloading" || p.status === "pending");
-        const failedParts = parts.filter((p) => p.status === "failed");
-
-        if (!hasActive && failedParts.length > 0) {
-          if (!phase2Triggered) {
-            // Phase 2: auto-retry failed parts with extended limit
-            phase2Triggered = true;
-            for (const part of failedParts) {
-              const lastAutoRestarts = (part as any)._lastAutoRestarts ?? 0;
-              part.phase2 = true;
-              part.restartCount = (part.restartCount ?? 0) + 1;
-              part.status = "pending";
-              part.reconnecting = false;
-              reportProgress();
-              downloadPart(part, lastAutoRestarts).catch((err) => {
-                if (err instanceof RangeNotSupportedError || (err as any)?.name === "AbortError") {
-                  specialError = err;
-                }
-              });
-            }
-            continue;
-          }
-          // Phase 2 already ran and parts failed again — final failure
-          throw new Error("Download failed — some parts could not be fetched");
-        }
-      }
-    };
-
-    try {
-      if (handle) {
-        // keepExistingData: positional writes must not truncate the file
-        writable = await handle.createWritable({ keepExistingData: true });
-      }
-
-      await runAllParts();
-
+    // Close the writable (or assemble and save the blob) exactly once, when all
+    // parts have completed — including parts completed via a manual refresh.
+    const finalize = async (): Promise<void> => {
       if (writable) {
         await writable.close();
       } else {
@@ -858,6 +885,85 @@ if (controller.signal.aborted) throw error; // real cancel
         anchor.remove();
         URL.revokeObjectURL(url);
       }
+    };
+
+    // Start all parts and poll until every part reaches "completed". Restarted
+    // parts (via the restart callback) run as independent promises — the polling
+    // loop detects status changes and keeps waiting until they finish, so the
+    // transfer only completes once ALL parts (including restarted ones) are done.
+    //
+    // When all active parts finish but some are failed (hit their auto-reconnect
+    // limit), Phase 2 kicks in: failed parts are automatically restarted with an
+    // extended limit (+MAX_SLOW_RESTARTS), same as a manual refresh click. If
+    // Phase 2 parts also fail, the loop does NOT tear the transfer down; it idles,
+    // keeping the transfer alive so the user can manually refresh a failed part
+    // (via _restartCallbacks). Once every part eventually completes, finalize()
+    // closes the file and the transfer resolves.
+    const runAllParts = async (): Promise<void> => {
+      let specialError: Error | null = null;
+      let phase2Triggered = false;
+      let idleReported = false;
+
+      for (const part of parts) {
+        if (part.status !== "completed") {
+          downloadPart(part).catch((err) => {
+            if (err instanceof RangeNotSupportedError || (err as any)?.name === "AbortError") {
+              specialError = err;
+            }
+          });
+        }
+      }
+
+      while (true) {
+        await new Promise<void>((r) => setTimeout(r, 100));
+
+        if (specialError) throw specialError;
+
+        if (parts.every((p) => p.status === "completed")) {
+          await finalize();
+          return;
+        }
+
+        const hasActive = parts.some((p) => p.status === "downloading" || p.status === "pending");
+        const failedParts = parts.filter((p) => p.status === "failed");
+
+        if (!hasActive && failedParts.length > 0) {
+          if (!phase2Triggered) {
+            // Phase 2: auto-retry failed parts with extended limit
+            phase2Triggered = true;
+            idleReported = false;
+            for (const part of failedParts) {
+              const lastAutoRestarts = (part as any)._lastAutoRestarts ?? 0;
+              part.phase2 = true;
+              part.restartCount = (part.restartCount ?? 0) + 1;
+              part.status = "pending";
+              part.reconnecting = false;
+              reportProgress();
+              downloadPart(part, lastAutoRestarts).catch((err) => {
+                if (err instanceof RangeNotSupportedError || (err as any)?.name === "AbortError") {
+                  specialError = err;
+                }
+              });
+            }
+            continue;
+          }
+          // Phase 2 already ran and parts failed again — idle and wait for a
+          // manual refresh of a failed part instead of failing the transfer.
+          if (!idleReported) {
+            idleReported = true;
+            reportProgress();
+          }
+        }
+      }
+    };
+
+    try {
+      if (handle) {
+        // keepExistingData: positional writes must not truncate the file
+        writable = await handle.createWritable({ keepExistingData: true });
+      }
+
+      await runAllParts();
     } catch (error) {
       // Only abort for real cancellations — not part failures — so manual
       // restart can re-run failed parts via _restartCallbacks.
@@ -910,9 +1016,10 @@ if (controller.signal.aborted) throw error; // real cancel
   promise.then(
     () => maybeDropControl(),
     () => {
-      // On failure, keep the control alive so manual restart can re-run
-      // failed parts via _restartCallbacks. Clean up the callback map.
-      _restartCallbacks.delete(transferId);
+      // On failure, keep the control AND the restart callback alive so a manual
+      // refresh can re-run failed parts via _restartCallbacks (the orchestration
+      // loop stays alive waiting for them). Cleanup happens on success or when
+      // the transfer is discarded via maybeDropControl.
     },
   );
   function maybeDropControl() {
@@ -1077,7 +1184,6 @@ export async function openWorkerLocalFileInBrowser(
 
     // Read after callWorker in case it refreshed the cached worker session.
     const conn = await getConnection(workerId);
-    console.log(`${"http"+conn.pinggyUrl.slice(5)}${data.startPath}`)
     // browserTab.location.replace(`${"http"+conn.pinggyUrl.slice(5)}${data.startPath}`);
     browserTab.location.href = `${"http"+conn.pinggyUrl.slice(5)}${data.startPath}`
     // window.location.href = `${"http"+conn.pinggyUrl.slice(5)}${data.startPath}`
@@ -1085,4 +1191,339 @@ export async function openWorkerLocalFileInBrowser(
     browserTab.close();
     throw error;
   }
+}
+
+/**
+ * Download a cloud file (MEGA share URL) directly to disk using megajs.
+ * Splits into parallel parts, streams each to the File System Access API writable.
+ * Falls back to blob download if showSaveFilePicker is unavailable.
+ *
+ * Returns { promise, cancel } — same pattern as downloadWorkerLocalFile.
+ */
+export function downloadCloudFileToDisk(
+  shareUrl: string,
+  fileName: string,
+  totalBytes: number,
+  requestedParts?: number,
+  onProgress?: (receivedBytes: number, totalBytes: number, parts: CloudPartState[]) => void,
+  onCheckingChange?: (checking: boolean) => void,
+): { promise: Promise<void>; cancel: () => void; retryPart: (partIndex: number) => void } {
+  const numParts = requestedParts ?? (isMultiPartPossible(totalBytes) ? getMaxPartsForSize(totalBytes) : 1);
+  const parts = buildCloudParts(totalBytes, numParts);
+  let totalReceived = 0;
+  let isCancelled = false;
+  // Serializes ALL part writes through one chain so no in-flight writeChunk can
+  // race writable.close() in finalize() ("Cannot write to a closing writable stream").
+  let writeChain = Promise.resolve();
+
+  const reportProgress = () => onProgress?.(totalReceived, totalBytes, parts);
+
+  let writable: any = null;
+  let closed = false;
+  let blobParts = new Map<number, ArrayBuffer[]>();
+  let resolvedFileName = fileName;
+  // Per-part control: lets retryPart cancel the in-flight megajs stream and
+  // invalidate the running runPart (via generation) before starting a fresh,
+  // byte-offset-resumed download for that part.
+  const partCtl = new Map<number, { gen: number; stream?: any }>();
+
+  // Destroy a megajs single-connection stream WITHOUT leaking the unhandled
+  // "BodyStreamBuffer was aborted" rejection (megajs's detached reader pump has
+  // no .catch). We temporarily swallow that specific unhandled rejection while
+  // the destroy-induced abort settles.
+  const destroyMegajsStream = (stream: any): void => {
+    if (!stream) return;
+    const handler = (e: PromiseRejectionEvent) => {
+      const reason: any = e?.reason;
+      const msg = typeof reason?.message === "string" ? reason.message : String(reason ?? "");
+      if (/aborted/i.test(msg)) e.preventDefault();
+    };
+    window.addEventListener("unhandledrejection", handler);
+    try { stream.destroy?.(); } catch {}
+    setTimeout(() => window.removeEventListener("unhandledrejection", handler), 500);
+  };
+
+    const MAX_ABORT_RETRIES = 3;
+
+    const runPart = async (part: CloudPartState): Promise<void> => {
+      part.status = "downloading";
+      reportProgress();
+
+      if (isCancelled) return;
+
+      let ctl = partCtl.get(part.index) ?? { gen: 0 };
+      const myGen = ctl.gen;
+      // Register this part's control entry immediately so the initial download
+      // is NOT misread as superseded (the old "?? -1" fallback made runPart
+      // return early on first run: an unregistered part compared -1 against gen 0).
+      partCtl.set(part.index, ctl);
+      // A runPart superseded by a manual refresh stops quietly instead of writing.
+      const superseded = () => {
+        if (isCancelled) return true;
+        const cur = partCtl.get(part.index);
+        return cur === undefined || cur.gen !== myGen;
+      };
+
+      let activeStream: any = null;
+      let settled = false;
+      let abortRetryCount = 0;
+      let lastChunkAt = 0;
+
+      while (true) {
+        try {
+          if (superseded()) return;
+          activeStream = null;
+          settled = false;
+          const { File } = await import("megajs");
+          const freshFile = File.fromURL(shareUrl);
+          freshFile.api.userAgent = "StreamLift (+https://streamlift.app)";
+          await freshFile.loadAttributes();
+
+          // A manual refresh may have superseded this attempt while we were
+          // fetching file attributes — don't create/register its stream then.
+          if (superseded()) return;
+
+          // Resume from the exact byte already written for this part (blanket
+          // byte-offset resume, mirroring the server-worker path). We keep
+          // maxConnections: 1 here — the megajs multi-connection path does not
+          // reliably stream to the browser in this setup (download would hang
+          // after the file picker). A manual refresh destroys the single-
+          // connection stream via a scoped rejection suppressor (see retryPart).
+          const startOffset = part.start + part.receivedBytes;
+          if (startOffset > part.end) return;
+          const stream = freshFile.download({ start: startOffset, end: part.end, maxConnections: 1 });
+          activeStream = stream;
+          ctl.stream = stream;
+          partCtl.set(part.index, ctl);
+
+          await new Promise<void>((resolve, reject) => {
+            stream.on("data", (chunk: Uint8Array) => {
+              if (isCancelled || settled || superseded()) return;
+              const buf = new Uint8Array(chunk);
+              // Data is flowing again — a refresh/reconnect has finished.
+              if (part.reconnecting) part.reconnecting = false;
+              const now = Date.now();
+              // Smoothed per-part throughput (EMA). The first chunk of an attempt
+              // measures from a fresh base so the display recovers quickly instead
+              // of showing the reconnect gap.
+              const dt = lastChunkAt ? (now - lastChunkAt) / 1000 : 0;
+              lastChunkAt = now;
+              if (dt > 0) {
+                const instant = buf.length / dt;
+                part.speedBytesPerSecond =
+                  part.speedBytesPerSecond ? part.speedBytesPerSecond * 0.7 + instant * 0.3 : instant;
+              }
+              writeChain = writeChain.then(() => writeChunk(part, buf)).then((ok) => {
+                if (ok) {
+                  part.receivedBytes += buf.length;
+                  totalReceived += buf.length;
+                }
+                reportProgress();
+              });
+            });
+            stream.on("end", () => { if (!settled) { settled = true; writeChain.then(resolve).catch(reject); } });
+            stream.on("error", (err: Error) => {
+              if (settled) return;
+              settled = true;
+              reject(err);
+            });
+          });
+
+          // Completion is only valid once the full part length has been written;
+          // a short / interrupted resume must not be treated as done.
+          const partLength = part.end - part.start + 1;
+          if (part.receivedBytes < partLength) {
+            part.status = "failed";
+            part.error = "part interrupted — refresh this part";
+            part.reconnecting = false;
+            reportProgress();
+            return;
+          }
+          part.status = "completed";
+          reportProgress();
+          return;
+        } catch (err: any) {
+          settled = true;
+          destroyMegajsStream(activeStream);
+
+          if (isCancelled || superseded()) return;
+
+          if (isBandwidthLimitError(err)) {
+            part.status = "failed";
+            const anyErr = err as any;
+            const timeLeft = anyErr?.timeLimit;
+            const seconds = Number.parseInt(String(timeLeft ?? ""), 10);
+            part.error = Number.isFinite(seconds) && seconds > 0
+              ? `Transfer quota exceeded — try again in ${seconds}s`
+              : "Transfer quota exceeded";
+            part.reconnecting = false;
+            reportProgress();
+            throw err;
+          }
+
+          if (err?.name === "AbortError" && abortRetryCount < MAX_ABORT_RETRIES) {
+            abortRetryCount++;
+            await new Promise((r) => setTimeout(r, 2000));
+            continue;
+          }
+
+          part.status = "failed";
+          part.error = err?.message ?? "Download failed";
+          part.reconnecting = false;
+          reportProgress();
+          return;
+        }
+      }
+    };
+
+  const writeChunk = (part: CloudPartState, chunk: Uint8Array): Promise<boolean> => {
+    // All writes for every part are serialized through the shared writeChain, and
+    // receivedBytes only advances (in the data handler) after a successful write,
+    // so position below is always exactly the next unwritten byte. We guard only
+    // against writing past the part's end (a malformed range would corrupt).
+    const position = part.start + part.receivedBytes;
+    if (position > part.end) return Promise.resolve(false);
+    if (writable) {
+      if (closed) return Promise.resolve(false);
+      return writable.write({ type: "write", position, data: chunk }).then(() => true).catch((err: any) => {
+        // A write landing on a stream that was closed/destroyed by a manual
+        // refresh or by finalize is safe to drop — the byte is re-fetched by the
+        // resumed stream or the file is already being finalized. Genuine disk
+        // errors still propagate so the part is marked failed.
+        const msg = String(err?.message ?? "");
+        if (closed || /destroyed|closing|invalid state/i.test(msg)) return false;
+        throw err;
+      });
+    }
+    const buffers = blobParts.get(part.index) ?? [];
+    buffers.push(chunk.slice().buffer);
+    blobParts.set(part.index, buffers);
+    return Promise.resolve(true);
+  };
+
+  // Only mark the transfer finalizable when every part is completed AND its full
+  // byte range has been written (a short resume must never produce a bad file).
+  const allPartsDone = () => parts.every((p) => p.status === "completed" && p.receivedBytes >= (p.end - p.start + 1));
+
+  let finalized = false;
+  const finalize = async (): Promise<void> => {
+    if (finalized) return;
+    finalized = true;
+    // Drain every queued writeChunk before closing so no write races close().
+    await writeChain;
+    if (writable) {
+      closed = true;
+      await writable.close();
+    } else {
+      const allParts = [...blobParts.entries()].sort(([a], [b]) => a - b);
+      const blob = new Blob(allParts.flatMap(([, buffers]) => buffers), { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = resolvedFileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    }
+  };
+
+  let resolveCompletion: (() => void) | undefined;
+  let rejectCompletion: ((err: any) => void) | undefined;
+
+  const completionPromise = new Promise<void>((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+
+  (async () => {
+    try {
+      const { File } = await import("megajs");
+      const initFile = File.fromURL(shareUrl);
+      initFile.api.userAgent = "StreamLift (+https://streamlift.app)";
+      await initFile.loadAttributes();
+      resolvedFileName = initFile.name ?? fileName;
+
+      // Pre-flight: test if MEGA allows this download before asking for save
+      // location. Uses a raw MEGA API check (not megajs, whose .download() fans a
+      // range out into many chunk URLs) so we get a direct, explicit 509/bandwidth
+      // signal. If the quota window is spent, the save picker is never shown.
+      onCheckingChange?.(true);
+      const quotaSecondsLeft = await checkMegaQuota(shareUrl, initFile.size ?? 0);
+      onCheckingChange?.(false);
+      if (quotaSecondsLeft !== null) {
+        const msg = quotaSecondsLeft > 0
+          ? `Transfer quota exceeded — try again in ${quotaSecondsLeft}s`
+          : "Transfer quota exceeded";
+        throw new Error(msg);
+      }
+
+      const picker = (window as any).showSaveFilePicker;
+      const handle = typeof picker === "function"
+        ? await picker({ suggestedName: resolvedFileName })
+        : null;
+
+      if (handle) {
+        writable = await handle.createWritable();
+      }
+
+      onCheckingChange?.(false);
+
+      await Promise.all(parts.map((p) => runPart(p)));
+      if (isCancelled) { resolveCompletion?.(); return; }
+
+      if (allPartsDone()) {
+        await finalize();
+        resolveCompletion?.();
+      }
+    } catch (err: any) {
+      const isBandwidth = isBandwidthLimitError(err);
+      const isPickerCancel = err?.name === "AbortError";
+      const message = isBandwidth ? "Transfer quota exceeded" : (err?.message ?? "Download failed");
+      for (const part of parts) {
+        if (part.status !== "completed") {
+          part.status = "failed";
+          part.error = message;
+        }
+      }
+      reportProgress();
+      if (isPickerCancel) {
+        rejectCompletion?.(err);
+      } else {
+        rejectCompletion?.(new Error(message));
+      }
+    }
+  })();
+
+  return {
+    promise: completionPromise,
+    cancel: () => { isCancelled = true; },
+    retryPart: (partIndex: number) => {
+      const part = parts[partIndex];
+      if (!part || part.status === "completed" || part.reconnecting) return;
+      // Cancel the in-flight megajs stream first so no second connection keeps
+      // downloading/writing the same part. Bump the generation so the superseded
+      // runPart stops quietly instead of writing or marking the part failed.
+      const ctl = partCtl.get(part.index);
+      if (ctl) {
+        ctl.gen += 1;
+        const old = ctl.stream;
+        if (old) destroyMegajsStream(old);
+        partCtl.set(part.index, ctl);
+      }
+      part.error = undefined;
+      part.reconnecting = true;
+      part.manualRestartCount = (part.manualRestartCount ?? 0) + 1;
+      part.restartCount = (part.restartCount ?? 0) + 1;
+      // Resume from the exact byte already written (byte-offset resume): keep
+      // receivedBytes so the fresh stream continues where the old one left off.
+      part.status = "downloading";
+      reportProgress();
+      runPart(part).then(() => {
+        if (!isCancelled && allPartsDone()) {
+          finalize().then(() => resolveCompletion?.()).catch(() => {});
+        }
+      }).catch(() => {});
+    },
+  };
 }

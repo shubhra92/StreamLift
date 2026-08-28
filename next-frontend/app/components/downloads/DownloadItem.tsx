@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "motion/react";
-import { Download, Trash2, Pencil, Loader2 } from "lucide-react";
+import { Download, Trash2, Pencil, Loader2, Link } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -23,10 +23,16 @@ export function DownloadItem({
   onDownloadWorkerFile,
   onDownloadWorkerFileExternalLink,
   workerFileTransfer,
+  onCreateShareLink,
+  onCloudExternalLink,
+  onCloudTabDownload,
+  isCreatingLink,
 }: DownloadItemProps) {
   const canEdit = download.status === "pending";
   const canDelete = download.status !== "downloading" && !isDownloading;
   const canDownload = download.status === "completed" && workerFiles.length > 0 && !!onDownloadWorkerFile;
+  const isCloudUpload = download.status === "completed" && !!(download as any).cloudFileHandle && workerFiles.length === 0;
+  const hasShareUrl = !!(download as any).cloudShareUrl;
   const transferPercent = workerFileTransfer?.totalBytes
     ? Math.min(100, Math.round((workerFileTransfer.receivedBytes / workerFileTransfer.totalBytes) * 100))
     : null;
@@ -147,6 +153,64 @@ export function DownloadItem({
                   {workerTabDownloadButton}
                 </>
               )}
+              {isCloudUpload && (
+                <>
+                  {!hasShareUrl ? (
+                    <>
+                      <span className="text-center text-gray-400 shrink-0 ml-2">•</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        title={isCreatingLink ? "Creating share link…" : "Create share link"}
+                        disabled={isCreatingLink}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCreateShareLink?.(download);
+                        }}
+                      >
+                        {isCreatingLink
+                          ? <Loader2 className="h-4 w-4 animate-spin" />
+                          : <Link className="h-4 w-4 text-muted-foreground" />
+                        }
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-center text-gray-400 shrink-0 ml-2">•</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        title="Open share link in new tab"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCloudExternalLink?.(download);
+                        }}
+                      >
+                        <GlobeDownload className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                      <span className="text-center text-gray-400 shrink-0">•</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        title={workerFileTransfer ? "Downloading from cloud" : "Download from cloud"}
+                        disabled={!!workerFileTransfer}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCloudTabDownload?.(download);
+                        }}
+                      >
+                        {workerFileTransfer
+                          ? <DownloadingIcon color="#2563EB" />
+                          : <Download className="h-4 w-4 text-muted-foreground" />
+                        }
+                      </Button>
+                    </>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>
@@ -185,7 +249,7 @@ export function DownloadItem({
         {formatDate(download.createdAt)}
       </TableCell>
       <TableCell className="hidden md:table-cell px-4 py-3">
-        {(canDelete || canDownload) && (
+        {(canDelete || canDownload || isCloudUpload) && (
           <div className="flex items-center gap-1">
             {canEdit && (
               <Button
@@ -201,6 +265,59 @@ export function DownloadItem({
               </Button>
             )}
             {workerDownloadButton}
+            {isCloudUpload && (
+              <>
+                {!hasShareUrl ? (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    title={isCreatingLink ? "Creating share link…" : "Create share link"}
+                    disabled={isCreatingLink}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onCreateShareLink?.(download);
+                    }}
+                  >
+                    {isCreatingLink
+                      ? <Loader2 className="h-4 w-4 animate-spin" />
+                      : <Link className="h-4 w-4 text-muted-foreground" />
+                    }
+                  </Button>
+                ) : (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      title="Open share link in new tab"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onCloudExternalLink?.(download);
+                      }}
+                    >
+                      <GlobeDownload className="h-4 w-4 text-muted-foreground" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      title={workerFileTransfer ? "Downloading from cloud" : "Download from cloud"}
+                      disabled={!!workerFileTransfer}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onCloudTabDownload?.(download);
+                      }}
+                    >
+                      {workerFileTransfer
+                        ? <DownloadingIcon color="#2563EB" />
+                        : <Download className="h-4 w-4 text-muted-foreground" />
+                      }
+                    </Button>
+                  </>
+                )}
+              </>
+            )}
             <Button
               variant="ghost"
               size="icon"

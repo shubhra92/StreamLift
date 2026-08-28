@@ -68,6 +68,8 @@ export const fileDownloads = pgTable('file_downloads', {
   errorMessage: text('error_message'),
   downloadType: text('download_type').default('http'), // 'http' or 'torrent'
   selectedFileIndices: text('selected_file_indices'), // JSON array of selected file indices for torrents
+  cloudFileHandle: text('cloud_file_handle'), // Provider node handle for the uploaded file (used for share links)
+  cloudShareUrl: text('cloud_share_url'),    // Provider share link URL (created on demand)
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

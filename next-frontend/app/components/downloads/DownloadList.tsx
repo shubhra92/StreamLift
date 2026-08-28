@@ -24,9 +24,16 @@ export function DownloadList({
   onDownloadWorkerFile,
   onDownloadWorkerFileExternalLink,
   workerFileTransfers,
+  onCreateShareLink,
+  onCloudExternalLink,
+  onCloudTabDownload,
+  creatingLinkIds,
 }: DownloadListProps) {
   const hasAnyDownloadable = downloads.some(
-    (d) => d.status === "completed" && (workerFilesByDownload[d.id]?.length ?? 0) > 0
+    (d) => d.status === "completed" && (
+      (workerFilesByDownload[d.id]?.length ?? 0) > 0 ||
+      !!(d as any).cloudFileHandle
+    )
   );
 
   return (
@@ -69,6 +76,10 @@ export function DownloadList({
                   onDownloadWorkerFile={onDownloadWorkerFile}
                   onDownloadWorkerFileExternalLink={onDownloadWorkerFileExternalLink}
                   workerFileTransfer={Object.values(workerFileTransfers).find((transfer) => transfer.downloadId === download.id && (transfer.status === "preparing" || transfer.status === "downloading"))}
+                  onCreateShareLink={onCreateShareLink}
+                  onCloudExternalLink={onCloudExternalLink}
+                  onCloudTabDownload={onCloudTabDownload}
+                  isCreatingLink={creatingLinkIds?.has(download.id)}
                 />
               ))
             )}

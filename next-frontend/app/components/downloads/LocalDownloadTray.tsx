@@ -14,6 +14,7 @@ interface LocalDownloadTrayProps {
   transfers: Record<string, WorkerFileTransfer>;
   workerNames: Record<string, string>;
   onRestartPart?: (transferId: string, partIndex: number) => void;
+  onRetryCloudPart?: (transferId: string, partIndex: number) => void;
 }
 
 type TrayCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -44,12 +45,35 @@ function PartSegments({
   expanded,
   transferId,
   onRestartPart,
+  onRetryCloudPart,
 }: {
   parts: WorkerFileTransferPart[];
   expanded: boolean;
   transferId: string;
   onRestartPart?: (transferId: string, partIndex: number) => void;
+  onRetryCloudPart?: (transferId: string, partIndex: number) => void;
 }) {
+  const isCloud = transferId.startsWith("cloud:");
+  const restartHandler = isCloud ? onRetryCloudPart : onRestartPart;
+
+  // Optimistic spinner: flips the refresh button to a loading state immediately
+  // on click, before the async reconnect round-trip sets part.reconnecting. Not
+  // subject to the page's progress throttle. Cleared once the native reconnecting
+  // flag takes over, the part completes, or a safety timeout elapses.
+  const [clickedAt, setClickedAt] = useState<Partial<Record<number, number>>>({});
+  useEffect(() => {
+    if (Object.keys(clickedAt).length === 0) return;
+    let changed = false;
+    const next = { ...clickedAt };
+    for (const part of parts) {
+      if (next[part.index] !== undefined && (part.reconnecting === true || part.status === "completed" || Date.now() - next[part.index]! > 10_000)) {
+        delete next[part.index];
+        changed = true;
+      }
+    }
+    if (changed) setClickedAt(next);
+  }, [parts, clickedAt]);
+
   return (
     <div className="space-y-1">
       <div className="flex gap-1">
@@ -77,7 +101,8 @@ function PartSegments({
       </div>
       {expanded && (
         <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-          {parts.map((part) => (
+          {parts.map((part) => {
+            return (
             <span key={part.index} className="flex items-center gap-0.5 text-[10px] text-muted-foreground">
               P{part.index + 1} {partPercent(part).toFixed(0)}%
               {part.status === "downloading" && (
@@ -85,27 +110,33 @@ function PartSegments({
                   {speed(part.speedBytesPerSecond ?? null)}
                 </span>
               )}
-              {(part.status === "downloading" || part.status === "pending" || part.status === "failed") && onRestartPart && (
+              {(part.status === "downloading" || part.status === "pending" || part.status === "failed") && restartHandler && (
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-4 w-4"
-                  disabled={!!part.reconnecting}
-                  onClick={() => onRestartPart(transferId, part.index)}
+                  className={`h-4 w-4 ${!part.reconnecting && "cursor-pointer"}`}
+                  disabled={!!part.reconnecting || !!clickedAt[part.index]}
+                  onClick={() => {
+                    setClickedAt((prev) => ({ ...prev, [part.index]: Date.now() }));
+                    restartHandler(transferId, part.index);
+                  }}
                   title={part.reconnecting
                     ? "Connecting — wait until the connection finishes"
                     : "Refresh this part's connection (resumes from current offset)"}
                   aria-label={`Refresh part ${part.index + 1}`}
                 >
-                  {part.reconnecting ? (
-                    // Reconnect in flight (auto or manual) — spin until the
-                    // connection finishes (success or failed).
+                  {part.reconnecting || !!clickedAt[part.index] ? (
                     <RefreshCw className="h-3 w-3 animate-spin text-blue-600" />
                   ) : (
                     <RefreshCw className="h-3 w-3" />
                   )}
                 </Button>
+              )}
+              {part.status === "failed" && (
+                <span className="rounded bg-red-500/10 px-1 text-[9px] font-semibold text-red-600" title={part.error ?? "This part failed — refresh to retry"}>
+                  failed
+                </span>
               )}
               {(part.restartCount ?? 0) - (part.manualRestartCount ?? 0) > 0 && (
                 <span className="rounded bg-blue-500/10 px-1 text-[9px] font-semibold text-blue-600" title="Auto reconnects (slow/stall, breaks, failures) toward the part's auto limit; manual refresh extends the limit">
@@ -123,44 +154,64 @@ function PartSegments({
                 </span>
               )}
             </span>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-function TransferRow({ transfer, workerNames, expanded = false, onRestartPart }: { transfer: WorkerFileTransfer; workerNames: Record<string, string>; expanded?: boolean; onRestartPart?: (transferId: string, partIndex: number) => void }) {
+function TransferRow({ transfer, workerNames, expanded = false, onRestartPart, onRetryCloudPart }: { transfer: WorkerFileTransfer; workerNames: Record<string, string>; expanded?: boolean; onRestartPart?: (transferId: string, partIndex: number) => void; onRetryCloudPart?: (transferId: string, partIndex: number) => void }) {
   const progress = percent(transfer);
   const parallel = transfer.parts && transfer.parts.length > 1 ? transfer.parts : null;
   const activePartCount = parallel ? parallel.filter((p) => p.status === "downloading").length : 0;
+  const checking = transfer.status === "preparing";
+  const quotaExceeded = transfer.error === "Transfer quota exceeded"
+    || (transfer.parts?.some((p) => p.status === "failed" && p.error === "Transfer quota exceeded") ?? false);
   return (
     <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
-      <div className="flex items-start justify-between gap-3">
-        <p className={`min-w-0 flex-1 text-sm font-medium ${expanded ? "break-all leading-5" : "truncate"}`} title={transfer.fileName}>{transfer.fileName}</p>
-        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{progress === null ? "Preparing" : `${progress.toFixed(1)}%`}</span>
-      </div>
-      {parallel ? (
-        <PartSegments parts={parallel} expanded={expanded} transferId={transfer.id} onRestartPart={onRestartPart} />
-      ) : (
-        <div className="h-2 overflow-hidden rounded-full bg-muted">
-          <motion.div className="h-full rounded-full bg-primary" animate={{ width: `${progress ?? 0}%` }} transition={{ duration: 0.25 }} />
+      {quotaExceeded && (
+        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm font-medium text-red-600">
+          Transfer quota exceeded
         </div>
       )}
-      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-        <span>{formatFileSize(transfer.receivedBytes)} / {transfer.totalBytes ? formatFileSize(transfer.totalBytes) : "unknown"}</span>
-        <span>{speed(transfer.speedBytesPerSecond)}</span>
-        {parallel && (
-          <span className="text-blue-600">{parallel.length} parts · {activePartCount} downloading in parallel</span>
+      <div className={quotaExceeded ? "space-y-2 opacity-60 pointer-events-none select-none" : "space-y-2"}>
+        <div className="flex items-start justify-between gap-3">
+          <p className={`min-w-0 flex-1 text-sm font-medium ${expanded ? "break-all leading-5" : "truncate"}`} title={transfer.fileName}>{transfer.fileName}</p>
+          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{checking ? "Checking…" : progress === null ? "Preparing" : `${progress.toFixed(1)}%`}</span>
+        </div>
+        {checking ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <DownloadingIcon className="h-3.5 w-3.5 animate-pulse text-muted-foreground" />
+            Checking file availability…
+          </div>
+        ) : parallel ? (
+          <PartSegments parts={parallel} expanded={expanded} transferId={transfer.id} onRestartPart={onRestartPart} onRetryCloudPart={onRetryCloudPart} />
+        ) : (
+          <div className="h-2 overflow-hidden rounded-full bg-muted">
+            <motion.div
+              className={`h-full rounded-full ${progress !== null && progress >= 99.9 ? "bg-green-500" : "bg-blue-500"}`}
+              animate={{ width: `${progress ?? 0}%` }}
+              transition={{ duration: 0.25 }}
+            />
+          </div>
         )}
-        {expanded && <span>From worker: {workerNames[transfer.workerId] ?? "Colab"}</span>}
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span>{formatFileSize(transfer.receivedBytes)} / {transfer.totalBytes ? formatFileSize(transfer.totalBytes) : "unknown"}</span>
+          <span>{speed(transfer.speedBytesPerSecond)}</span>
+          {parallel && (
+            <span className="text-blue-600">{parallel.length} parts · {activePartCount} downloading in parallel</span>
+          )}
+          {expanded && <span>From: {transfer.workerId === "cloud" ? "Cloud" : `Worker: ${workerNames[transfer.workerId] ?? "Colab"}`}</span>}
+        </div>
+        {expanded && <p className="text-xs text-muted-foreground">Saving to the location you selected on this device.</p>}
       </div>
-      {expanded && <p className="text-xs text-muted-foreground">Saving to the location you selected on this device.</p>}
     </div>
   );
 }
 
-export function LocalDownloadTray({ transfers, workerNames, onRestartPart }: LocalDownloadTrayProps) {
+export function LocalDownloadTray({ transfers, workerNames, onRestartPart, onRetryCloudPart }: LocalDownloadTrayProps) {
   const [miniOpen, setMiniOpen] = useState(false);
   const [fullOpen, setFullOpen] = useState(false);
   const [corner, setCorner] = useState<TrayCorner>("bottom-right");
@@ -173,7 +224,26 @@ export function LocalDownloadTray({ transfers, workerNames, onRestartPart }: Loc
     }
   }, []);
 
-  const active = Object.values(transfers).filter((item) => item.status === "preparing" || item.status === "downloading");
+  // Failed cloud items auto-dismiss 30s after failing (so a stranded quota/error
+  // item doesn't stay forever and the tray closes once empty). Re-evaluate each second.
+  const hasAgeableFailure = Object.values(transfers).some(
+    (t) => t.workerId === "cloud" && t.status === "failed" && !t.cancelled,
+  );
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!hasAgeableFailure) return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [hasAgeableFailure]);
+
+  const active = Object.values(transfers).filter((item) => {
+    if (item.cancelled) return false;
+    if (item.status === "preparing" || item.status === "downloading") return true;
+    if (item.status === "failed" && item.workerId === "cloud") {
+      return Date.now() - (item.updatedAt ?? 0) < 30000;
+    }
+    return false;
+  });
   if (active.length === 0) return null;
 
   const opensUpward = corner.startsWith("bottom");
@@ -199,7 +269,7 @@ export function LocalDownloadTray({ transfers, workerNames, onRestartPart }: Loc
               <span className="text-sm font-semibold">Downloading to your device</span>
               <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setMiniOpen(false)}><X className="h-4 w-4" /></Button>
             </div>
-            <div className="space-y-2">{active.slice(0, 2).map((item) => <TransferRow key={item.id} transfer={item} workerNames={workerNames} />)}</div>
+            <div className="space-y-2">{active.slice(0, 2).map((item) => <TransferRow key={item.id} transfer={item} workerNames={workerNames} onRetryCloudPart={onRetryCloudPart} />)}</div>
             <Button variant="outline" className="mt-3 w-full" onClick={() => { setMiniOpen(false); setFullOpen(true); }}>
               <Expand className="mr-2 h-4 w-4" /> View all downloads
             </Button>
@@ -220,7 +290,7 @@ export function LocalDownloadTray({ transfers, workerNames, onRestartPart }: Loc
             <DialogTitle>Local downloads</DialogTitle>
             <DialogDescription> </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">{active.map((item) => <TransferRow key={item.id} transfer={item} workerNames={workerNames} expanded onRestartPart={onRestartPart} />)}</div>
+          <div className="space-y-3">{active.map((item) => <TransferRow key={item.id} transfer={item} workerNames={workerNames} expanded onRestartPart={onRestartPart} onRetryCloudPart={onRetryCloudPart} />)}</div>
         </DialogContent>
       </Dialog>
     </motion.div>

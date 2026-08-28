@@ -71,6 +71,7 @@ export interface WorkerFileTransferPart {
   end: number;             // byte offset end (inclusive)
   receivedBytes: number;   // bytes received for this part
   status: "pending" | "downloading" | "completed" | "failed";
+  error?: string;
   speedBytesPerSecond?: number; // instantaneous throughput (smoothed EMA)
   restartCount?: number;   // total reconnects (auto slow/stall + manual)
   manualRestartCount?: number; // reconnects triggered by the UI refresh button
@@ -92,6 +93,7 @@ export interface WorkerFileTransfer {
   startedAt: number;
   updatedAt: number;
   error?: string;
+  cancelled?: boolean;         // true when the user dismissed the save picker (no download started)
   /** Per-part progress for parallel (multi-connection) transfers. Absent = single-stream. */
   parts?: WorkerFileTransferPart[];
 }

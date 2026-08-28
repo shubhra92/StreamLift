@@ -26,6 +26,14 @@ export interface DownloadItemProps {
   onDownloadWorkerFile?: (download: FileDownload, files: WorkerLocalFile[]) => void;
   onDownloadWorkerFileExternalLink?: (download: FileDownload, files: WorkerLocalFile[]) => void;
   workerFileTransfer?: WorkerFileTransfer;
+  /** Cloud upload actions — shown when status=completed, cloudFileHandle exists, no worker files */
+  onCreateShareLink?: (download: FileDownload) => void;
+  /** Opens the MEGA share URL in a new tab */
+  onCloudExternalLink?: (download: FileDownload) => void;
+  /** Downloads via browser-side megajs (new tab) */
+  onCloudTabDownload?: (download: FileDownload) => void;
+  /** True while creating a share link for this row */
+  isCreatingLink?: boolean;
 }
 
 export interface DownloadListProps {
@@ -43,6 +51,11 @@ export interface DownloadListProps {
   onDownloadWorkerFile: (download: FileDownload, files: WorkerLocalFile[]) => void;
   onDownloadWorkerFileExternalLink: (download: FileDownload, files: WorkerLocalFile[]) => void;
   workerFileTransfers: Record<string, WorkerFileTransfer>;
+  /** Cloud upload actions */
+  onCreateShareLink?: (download: FileDownload) => void;
+  onCloudExternalLink?: (download: FileDownload) => void;
+  onCloudTabDownload?: (download: FileDownload) => void;
+  creatingLinkIds?: Set<string>;
 }
 
 export interface DownloadDetailsProps {
