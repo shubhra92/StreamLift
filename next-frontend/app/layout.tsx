@@ -25,13 +25,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" className="h-full">
       <body
+        className="flex h-dvh flex-col overflow-hidden"
         // className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <ScrollActivity />
         <Navigation />
-        {children}
+        <div className="flex-1 min-h-0 overflow-hidden">{children}</div>
       </body>
     </html>
   );

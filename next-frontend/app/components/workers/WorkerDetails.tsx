@@ -133,12 +133,7 @@ interface LiveData {
   uptimeSeconds?: number;
 }
 
-// ── Props ─────────────────────────────────────────────────────────────────────
-interface WorkerDetailsPanelProps extends WorkerDetailsProps {
-  panelRef?: React.RefObject<HTMLDivElement | null>;
-}
-
-export function WorkerDetails({ worker, status, onClose, panelRef }: WorkerDetailsPanelProps) {
+export function WorkerDetails({ worker, status, onClose }: WorkerDetailsProps) {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const streamRef  = useRef<{ close: () => void } | null>(null);
   const [liveData, setLiveData] = useState<LiveData>({});
@@ -204,26 +199,17 @@ export function WorkerDetails({ worker, status, onClose, panelRef }: WorkerDetai
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs.length]);
 
-  return (
-    <AnimatePresence>
-      {worker && (
-        <motion.div
-          key="worker-panel"
-          ref={panelRef}
-          initial={{ y: "100%" }}
-          animate={{ y: 0 }}
-          exit={{ y: "100%" }}
-          transition={{ type: "spring", damping: 32, stiffness: 320 }}
-          className="fixed bottom-0 left-0 right-0 z-50 bg-card border-t shadow-2xl rounded-t-xl
-                     max-h-[65vh] flex flex-col"
-        >
-          {/* Drag handle */}
-          <div className="flex justify-center pt-2 pb-1 shrink-0">
-            <div className="w-8 h-1 rounded-full bg-muted-foreground/25" />
-          </div>
+  if (!worker) return null;
 
-          {/* Header */}
-          <div className="flex items-center justify-between px-4 pb-2 pt-1 border-b shrink-0">
+  return (
+    <div className="max-h-[60vh] flex flex-col bg-card border-t shadow-2xl rounded-t-xl">
+      {/* Drag handle */}
+      <div className="flex justify-center pt-2 pb-1 shrink-0">
+        <div className="w-8 h-1 rounded-full bg-muted-foreground/25" />
+      </div>
+
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 pb-2 pt-1 border-b shrink-0">
             <div className="flex items-center gap-2">
               {online
                 ? <Wifi className="h-4 w-4 text-green-500" />
@@ -332,8 +318,6 @@ export function WorkerDetails({ worker, status, onClose, panelRef }: WorkerDetai
               </div>
             </div>
           </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+        </div>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { motion } from "motion/react";
+import { motion, AnimatePresence } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { useProgress } from "../hooks/useProgress";
 import { useWorkerProgress } from "../hooks/useWorkerProgress";
@@ -81,21 +81,9 @@ export default function TorrentsPage() {
   const client = useRef(WorkerClient.getInstance());
 
   // Refs for outside-click detection on the details panel
-  const listRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const [panelHeight, setPanelHeight] = useState(0);
   const cloudControlsRef = useRef<Map<string, { retryPart: (partIndex: number) => void }>>(new Map());
-
-  // Dynamically track panel height so the spacer always matches
-  useEffect(() => {
-    const el = panelRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(([entry]) => {
-      setPanelHeight(entry.contentRect.height);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [selectedId]);
 
   const torrentService = useTorrentService();
   const isFnEnd = useRef(true);
@@ -276,7 +264,7 @@ export default function TorrentsPage() {
     if (!selectedId) return;
     const handleMouseDown = (e: MouseEvent) => {
       const target = e.target as Node;
-      const inList  = listRef.current?.contains(target);
+      const inList  = contentRef.current?.contains(target);
       const inPanel = panelRef.current?.contains(target);
       if (!inList && !inPanel) setSelectedId(null);
     };
@@ -539,30 +527,33 @@ export default function TorrentsPage() {
   };
 
   return (
-    <main className="bg-background p-4 md:p-6">
-      <div className="max-w-5xl mx-auto">
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6"
-        >
-          <div>
-            <h2 className="text-xl md:text-2xl font-bold">Torrent Downloads</h2>
-            <p className="text-sm text-muted-foreground mt-1">
-              Download torrents via magnet links
-            </p>
-          </div>
-          <Button
-            onClick={() => setIsModalOpen(true)}
-            className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 py-2 cursor-pointer"
+    <main className="flex h-full flex-col bg-background">
+      {/* Row 2 (mid, scrollable): page header + banner + download list — scroll together */}
+      <div className="flex-1 min-h-0 overflow-y-auto w-full">
+        <div ref={contentRef} className="max-w-5xl mx-auto px-4 md:px-6 pt-4 md:pt-6">
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4"
           >
-            + Add Torrent
-          </Button>
-        </motion.div>
+            <div>
+              <h2 className="text-xl md:text-2xl font-bold">Torrent Downloads</h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                Download torrents via magnet links
+              </p>
+            </div>
+            <Button
+              onClick={() => setIsModalOpen(true)}
+              className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 py-2 cursor-pointer"
+            >
+              + Add Torrent
+            </Button>
+          </motion.div>
 
-        <OfflineBanner networkStatus={networkStatus} />
+          <OfflineBanner networkStatus={networkStatus} />
 
-        <div ref={listRef}>
+          <div className="h-4 md:h-6" />
+
           <DownloadList
             downloads={downloads}
             downloadingFileId={downloadingFileId}
@@ -581,26 +572,40 @@ export default function TorrentsPage() {
             onCloudTabDownload={handleCloudTabDownload}
             creatingLinkIds={creatingLinkIds}
           />
+          <div className="h-4 md:h-6" />
         </div>
-
-        <DownloadDetails
-          download={selectedDownload ?? null}
-          isDownloading={downloadingFileId === selectedId}
-          progress={downloadingFileId === selectedId ? progress : null}
-          onClose={() => setSelectedId(null)}
-          panelRef={panelRef}
-        />
-
-        <LocalDownloadTray
-          transfers={workerFileTransfers}
-          workerNames={Object.fromEntries(workers.map((worker) => [worker.id, worker.name]))}
-          onRestartPart={restartWorkerPart}
-          onRetryCloudPart={retryCloudPart}
-        />
-
-        {/* Spacer: exact height of the panel so covered rows can be scrolled into view */}
-        {selectedId && <div style={{ height: panelHeight }} className="shrink-0" aria-hidden="true" />}
       </div>
+
+      {/* Row 3 (bottom, dynamic): item detail — only when a row is selected */}
+      <div className="shrink-0">
+        <AnimatePresence>
+          {selectedDownload && (
+            <motion.div
+              key="details-row"
+              ref={panelRef}
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ type: "spring", damping: 32, stiffness: 320 }}
+              className="overflow-hidden"
+            >
+              <DownloadDetails
+                download={selectedDownload}
+                isDownloading={downloadingFileId === selectedId}
+                progress={downloadingFileId === selectedId ? progress : null}
+                onClose={() => setSelectedId(null)}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      <LocalDownloadTray
+        transfers={workerFileTransfers}
+        workerNames={Object.fromEntries(workers.map((worker) => [worker.id, worker.name]))}
+        onRestartPart={restartWorkerPart}
+        onRetryCloudPart={retryCloudPart}
+      />
 
       <AddTorrentModal
         isOpen={isModalOpen}

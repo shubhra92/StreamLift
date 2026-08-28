@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { motion } from "motion/react";
+import { motion, AnimatePresence } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { WorkerList } from "../components/workers/WorkerList";
 import { WorkerDetails } from "../components/workers/WorkerDetails";
@@ -34,9 +34,8 @@ export default function WorkersPage() {
   const [loading, setLoading] = useState(false);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
 
-  const listRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const [panelHeight, setPanelHeight] = useState(0);
 
   // ── IDB-backed data + sync ────────────────────────────────────────────────
   const { workers: idbWorkers, networkStatus, syncNow } = useWorkers();
@@ -124,21 +123,12 @@ export default function WorkersPage() {
 
   const selectedWorker = workers.find((w) => w.id === selectedId) ?? null;
 
-  // Dynamic spacer height
-  useEffect(() => {
-    const el = panelRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(([entry]) => setPanelHeight(entry.contentRect.height));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [selectedId]);
-
   // Close panel on outside click
   useEffect(() => {
     if (!selectedId) return;
     const handler = (e: MouseEvent) => {
       const target = e.target as Node;
-      if (!listRef.current?.contains(target) && !panelRef.current?.contains(target)) {
+      if (!contentRef.current?.contains(target) && !panelRef.current?.contains(target)) {
         setSelectedId(null);
       }
     };
@@ -147,30 +137,33 @@ export default function WorkersPage() {
   }, [selectedId]);
 
   return (
-    <main className="bg-background p-4 md:p-6">
-      <div className="max-w-5xl mx-auto">
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6"
-        >
-          <div>
-            <h2 className="text-xl md:text-2xl font-bold">Workers</h2>
-            <p className="text-sm text-muted-foreground mt-1">
-              Manage remote Google Colab workers for distributed downloads
-            </p>
-          </div>
-          <Button
-            onClick={() => setIsModalOpen(true)}
-            className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 py-2 cursor-pointer"
+    <main className="flex h-full flex-col bg-background">
+      {/* Row 2 (mid, scrollable): page header + banner + worker list — scroll together */}
+      <div className="flex-1 min-h-0 overflow-y-auto w-full">
+        <div ref={contentRef} className="max-w-5xl mx-auto px-4 md:px-6 pt-4 md:pt-6">
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4"
           >
-            + Create Worker
-          </Button>
-        </motion.div>
+            <div>
+              <h2 className="text-xl md:text-2xl font-bold">Workers</h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                Manage remote Google Colab workers for distributed downloads
+              </p>
+            </div>
+            <Button
+              onClick={() => setIsModalOpen(true)}
+              className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 py-2 cursor-pointer"
+            >
+              + Create Worker
+            </Button>
+          </motion.div>
 
-        <OfflineBanner networkStatus={networkStatus} />
+          <OfflineBanner networkStatus={networkStatus} />
 
-        <div ref={listRef}>
+          <div className="h-4 md:h-6" />
+
           <WorkerList
             workers={workers}
             selectedId={selectedId}
@@ -179,16 +172,31 @@ export default function WorkersPage() {
             onDelete={handleDeleteWorker}
             onCopyScript={handleCopyScript}
           />
+          <div className="h-4 md:h-6" />
         </div>
+      </div>
 
-        <WorkerDetails
-          worker={selectedWorker}
-          status={workerStatus}
-          onClose={() => setSelectedId(null)}
-          panelRef={panelRef}
-        />
-
-        {selectedId && <div style={{ height: panelHeight }} className="shrink-0" aria-hidden="true" />}
+      {/* Row 3 (bottom, dynamic): worker detail — only when a worker is selected */}
+      <div className="shrink-0">
+        <AnimatePresence>
+          {selectedWorker && (
+            <motion.div
+              key="worker-details-row"
+              ref={panelRef}
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ type: "spring", damping: 32, stiffness: 320 }}
+              className="overflow-hidden"
+            >
+              <WorkerDetails
+                worker={selectedWorker}
+                status={workerStatus}
+                onClose={() => setSelectedId(null)}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       <AddWorkerModal

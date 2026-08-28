@@ -53,7 +53,7 @@ export function AddDownloadModal({
   const [fetchState, setFetchState] = useState<FetchState>({ status: "idle" });
   const [fileName, setFileName] = useState("");
   const [location, setLocation] = useState(DEFAULT_LOCATION);
-  const urlInputRef = useRef<HTMLInputElement>(null);
+  const urlInputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // Focus URL input when modal opens
@@ -138,7 +138,10 @@ export function AddDownloadModal({
   };
 
   const handleUrlKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") handleNext();
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleNext();
+    }
   };
 
   const isFetching = fetchState.status === "loading";
@@ -148,7 +151,7 @@ export function AddDownloadModal({
 
   return (
     <Dialog open={isOpen} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Add New Download</DialogTitle>
           <DialogDescription>
@@ -169,15 +172,16 @@ export function AddDownloadModal({
               className="space-y-4"
             >
               <div className="space-y-1.5">
-                <input
+                <label className="text-sm text-muted-foreground">File URL</label>
+                <textarea
                   ref={urlInputRef}
-                  type="url"
                   placeholder="Paste downloadable file URL"
                   value={url}
                   onChange={(e) => { setUrl(e.target.value); setUrlError(null); setFetchState({ status: "idle" }); }}
                   onKeyDown={handleUrlKeyDown}
                   disabled={isFetching}
-                  className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+                  rows={4}
+                  className="w-full p-3 border rounded-md mt-[10px] bg-background text-foreground resize-none font-mono text-sm disabled:opacity-50"
                 />
                 {urlError && (
                   <p className="text-sm text-destructive">{urlError}</p>

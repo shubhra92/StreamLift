@@ -32,7 +32,6 @@ export interface WorkerDetailsProps {
   worker: WorkerWithStatus | null;
   status: WorkerStatus | null;
   onClose: () => void;
-  panelRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 export interface AddWorkerModalProps {

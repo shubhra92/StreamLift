@@ -124,36 +124,17 @@
   }
 
   *::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    /* width: 6px;
+    height: 6px; */
     background: transparent;
-  }
-
-  *::-webkit-scrollbar-track,
-  *::-webkit-scrollbar-corner {
-    background: transparent;
-  }
-
-  *::-webkit-scrollbar-thumb {
-    background-color: transparent;
-    border-radius: 9999px;
-    transition: background-color 220ms ease-out;
   }
 
   .scrollbar-scrolling {
     scrollbar-color: rgb(100 116 139 / 55%) transparent;
   }
 
-  .scrollbar-scrolling::-webkit-scrollbar-thumb {
-    background-color: rgb(100 116 139 / 55%);
-  }
-
   .dark .scrollbar-scrolling {
     scrollbar-color: rgb(203 213 225 / 50%) transparent;
-  }
-
-  .dark .scrollbar-scrolling::-webkit-scrollbar-thumb {
-    background-color: rgb(203 213 225 / 50%);
   }
 
   * {
@@ -162,22 +143,6 @@
   body {
     @apply bg-background text-foreground;
     overflow-x: hidden;
-  }
-
-  /* Keep the page width stable when cached content briefly creates vertical
-     overflow during hydration. The scrollbar thumb remains transparent while
-     idle, so this reserves only the small native gutter rather than showing it. */
-  html {
-    scrollbar-gutter: stable;
-  }
-
-  /* The download lists scroll with the document rather than in their own
-     container. Keep that page scrollbar especially unobtrusive without making
-     narrower modal, popover, and other local scrollbars harder to use. */
-  html::-webkit-scrollbar,
-  body::-webkit-scrollbar {
-    width: 3px;
-    height: 3px;
   }
 
   /* Next.js route announcer sits at position:absolute and adds to scroll height.

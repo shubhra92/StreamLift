@@ -63,8 +63,6 @@ export interface DownloadDetailsProps {
   isDownloading: boolean;
   progress: Progress | null;
   onClose: () => void;
-  /** Ref forwarded to the panel element so the parent can detect outside clicks */
-  panelRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 export interface FileInfo {
