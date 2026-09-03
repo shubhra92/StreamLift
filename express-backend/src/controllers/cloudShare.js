@@ -47,28 +47,3 @@ export async function createShareLink(req, res) {
     return res.status(500).json({ error: err.message });
   }
 }
-
-/**
- * GET /api/cloud/download-url/:id
- * Return file metadata (name, size) and share URL for frontend-initiated downloads.
- */
-export async function getDownloadInfo(req, res) {
-  try {
-    const { id } = req.params;
-
-    const [row] = await db.select().from(fileDownloads).where(eq(fileDownloads.id, id)).limit(1);
-    if (!row) return res.status(404).json({ error: "Download not found" });
-    if (row.status !== "completed") return res.status(400).json({ error: "Download not completed" });
-
-    if (!row.cloudShareUrl) return res.status(400).json({ error: "No share link — click Create Link first" });
-
-    return res.status(200).json({
-      shareUrl: row.cloudShareUrl,
-      fileName: row.fileName,
-      fileSize: row.fileSize,
-    });
-  } catch (err) {
-    console.error("getDownloadInfo error:", err);
-    return res.status(500).json({ error: err.message });
-  }
-}
