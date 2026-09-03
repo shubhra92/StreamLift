@@ -41,7 +41,9 @@ export type TabToWorkerMessage =
   /** Release interest in a worker's status stream */
   | { type: "unwatchWorker"; workerId: string }
   /** A tab reports its direct worker-file transfer for every tab to render. */
-  | { type: "workerFileTransfer"; transfer: WorkerFileTransfer };
+  | { type: "workerFileTransfer"; transfer: WorkerFileTransfer }
+  /** A tab removes a stale worker-file transfer (e.g. save-picker cancelled). */
+  | { type: "removeWorkerFileTransfer"; id: string };
 
 // ─── Worker → Tab ─────────────────────────────────────────────────────────────
 
@@ -116,6 +118,7 @@ export type WorkerToTabMessage =
   | { type: "workerStatus";  workerId: string; status: WorkerStatusPayload }
   | { type: "workerFileTransfer"; transfer: WorkerFileTransfer }
   | { type: "workerFileTransfers"; transfers: WorkerFileTransfer[] }
+  | { type: "removeWorkerFileTransfer"; id: string }
   | { type: "networkStatus"; status: "online" | "offline" }
   /** Worker tells tabs to persist the new cursor to IDB */
   | { type: "saveCursor";    entity: SyncEntity; cursor: string }

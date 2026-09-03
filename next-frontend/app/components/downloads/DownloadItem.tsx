@@ -31,8 +31,8 @@ export function DownloadItem({
   const canEdit = download.status === "pending";
   const canDelete = download.status !== "downloading" && !isDownloading;
   const canDownload = download.status === "completed" && workerFiles.length > 0 && !!onDownloadWorkerFile;
-  const isCloudUpload = download.status === "completed" && !!(download as any).cloudFileHandle && workerFiles.length === 0;
-  const hasShareUrl = !!(download as any).cloudShareUrl;
+  const isCloudUpload = download.status === "completed" && !!download.cloudFileHandle && workerFiles.length === 0;
+  const hasShareUrl = !!download.cloudShareUrl;
   const transferPercent = workerFileTransfer?.totalBytes
     ? Math.min(100, Math.round((workerFileTransfer.receivedBytes / workerFileTransfer.totalBytes) * 100))
     : null;

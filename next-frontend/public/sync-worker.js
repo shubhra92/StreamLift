@@ -162,6 +162,12 @@ function handleMessage(port, msg) {
         broadcast({ type: "workerFileTransfer", transfer: msg.transfer });
       }
       break;
+    case "removeWorkerFileTransfer":
+      if (msg.id) {
+        workerFileTransfers.delete(msg.id);
+        broadcast({ type: "removeWorkerFileTransfer", id: msg.id });
+      }
+      break;
   }
 }
 

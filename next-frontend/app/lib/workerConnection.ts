@@ -75,8 +75,17 @@ async function checkMegaQuota(shareUrl: string, fileSize: number): Promise<numbe
       if (res.status === 509) {
         const timeLeft = res.headers.get("x-mega-time-left");
         const n = Number.parseInt(timeLeft ?? "", 10);
+        // Stop the background download started by this pre-flight request so it
+        // never pulls the whole file body. 509 responses have no usable body.
+        await res.body?.cancel();
+        controller.abort();
         return Number.isFinite(n) ? n : 0;
       }
+      // The check only needs the response headers (status). An unconsumed body
+      // would keep the connection streaming the entire MEGA file in the
+      // background, so cancel it the moment headers arrive.
+      await res.body?.cancel();
+      controller.abort();
       return null;
     } finally {
       clearTimeout(timeout);

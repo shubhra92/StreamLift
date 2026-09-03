@@ -217,6 +217,11 @@ class WorkerClient {
         this.emitWorkerFileTransfers();
         break;
 
+      case "removeWorkerFileTransfer":
+        delete this.workerFileTransfers[msg.id];
+        this.emitWorkerFileTransfers();
+        break;
+
       case "saveCursor": {
         const CURSOR_MAP: Record<string, string> = {
           downloads: "downloads_cursor",
@@ -419,6 +424,12 @@ class WorkerClient {
     this.workerFileTransfers = { ...this.workerFileTransfers, [transfer.id]: transfer };
     this.emitWorkerFileTransfers();
     if (!this.isFallback) this.send({ type: "workerFileTransfer", transfer });
+  }
+
+  removeWorkerFileTransfer(id: string): void {
+    delete this.workerFileTransfers[id];
+    this.emitWorkerFileTransfers();
+    if (!this.isFallback) this.send({ type: "removeWorkerFileTransfer", id });
   }
 
   private emitWorkerFileTransfers(): void {

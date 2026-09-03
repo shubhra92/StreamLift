@@ -413,19 +413,8 @@ export default function Home() {
     }
   };
 
-  const handleCloudExternalLink = async (download: FileDownload) => {
-    try {
-      const res = await fetch(`/api/cloud/download-info/${download.id}`);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        alert(err.error ?? "Could not get download info");
-        return;
-      }
-      const { shareUrl } = await res.json();
-      if (shareUrl) window.open(shareUrl, "_blank");
-    } catch (err: any) {
-      alert(err?.message ?? "Download failed");
-    }
+  const handleCloudExternalLink = (download: FileDownload) => {
+    if (download.cloudShareUrl) window.open(download.cloudShareUrl, "_blank");
   };
 
   const runCloudDownload = async (download: FileDownload, shareUrl: string, fileName: string, fileSize: number, parts: number) => {
@@ -503,7 +492,8 @@ export default function Home() {
     } catch (error: any) {
       lastReportedAt = 0;
       if (error?.name === "AbortError") {
-        report(0, fileSize, "preparing", undefined, true);
+        report(0, fileSize, "preparing", undefined, true); //--i am added
+        client.current.removeWorkerFileTransfer(transferId);
       } else {
         report(previousBytes, fileSize, "failed", error?.message ?? "Download failed");
       }
@@ -517,29 +507,16 @@ export default function Home() {
   };
 
   const handleCloudTabDownload = async (download: FileDownload) => {
-    try {
-      const res = await fetch(`/api/cloud/download-info/${download.id}`);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        alert(err.error ?? "Could not get download info");
-        return;
-      }
-      const { shareUrl, fileName } = await res.json();
-      if (!shareUrl) {
-        alert("No share link — click the link icon first");
-        return;
-      }
-      const name = fileName ?? download.fileName ?? "download";
-      const fileSize = download.fileSize ?? 0;
+    if (!download.cloudShareUrl || !download.fileName) return;
+    const shareUrl = download.cloudShareUrl;
+    const name = download.fileName;
+    const fileSize = download.fileSize ?? 0;
 
-      if (isMultiPartPossible(fileSize)) {
-        setPendingCloudDownload({ download, shareUrl, fileName: name, fileSize });
-        return;
-      }
-      await runCloudDownload(download, shareUrl, name, fileSize, 1);
-    } catch (err: any) {
-      alert(err?.message ?? "Download failed");
+    if (isMultiPartPossible(fileSize)) {
+      setPendingCloudDownload({ download, shareUrl, fileName: name, fileSize });
+      return;
     }
+    await runCloudDownload(download, shareUrl, name, fileSize, 1);
   };
 
   const selectedDownload = downloads.find((d) => d.id === selectedId);
