@@ -51,7 +51,7 @@ function isBandwidthLimitError(err: any): boolean {
  * (or MEGA rejecting an oversized single range) never falsely blocks the save
  * picker.
  */
-async function checkMegaQuota(shareUrl: string, fileSize: number): Promise<number | null> {
+async function checkMegaQuota(shareUrl: string, fileSize: number): Promise<number | null | "missing"> {
   try {
     const handle = shareUrl.match(/\/file\/([^#?]+)/)?.[1];
     if (!handle) return null;
@@ -61,7 +61,16 @@ async function checkMegaQuota(shareUrl: string, fileSize: number): Promise<numbe
       body: JSON.stringify([{ a: "g", v: 2, g: 1, ssl: 1, p: handle }]),
     });
     if (!apiRes.ok) return null;
-    const data = (await apiRes.json()) as { g?: string }[];
+    // A file deleted after its share link was created is reported by MEGA's
+    // `a:g` request in one of two ways: an EMPTY body (Content-Length: 0), or an
+    // ENOENT error payload [ { "e": -9 } ]. Either means the node no longer
+    // exists, so we flag it "missing" so the caller can move the download to the
+    // "file not found" path instead of proceeding. Other transient error codes
+    // (e.g. -3 EAGAIN, -4 rate limit) are not treated as missing.
+    const body = await apiRes.text();
+    if (!body || !body.trim()) return "missing";
+    const data = JSON.parse(body) as { g?: string; e?: number }[];
+    if (data?.[0]?.e === -9) return "missing";
     const gUrl = data?.[0]?.g;
     if (!gUrl) return null;
     // Whole-file range appended to the URL path (0-<last byte>), mirroring how
@@ -1450,19 +1459,34 @@ export function downloadCloudFileToDisk(
       const { File } = await import("megajs");
       const initFile = File.fromURL(shareUrl);
       initFile.api.userAgent = "StreamLift (+https://streamlift.app)";
-      await initFile.loadAttributes();
-      resolvedFileName = initFile.name ?? fileName;
+      try {
+        await initFile.loadAttributes();
+        resolvedFileName = initFile.name ?? fileName;
+      } catch (e) {
+        // loadAttributes rejects when the shared node no longer exists in MEGA
+        // (deleted directly after the share link was created). Surface this
+        // distinctly so the caller can have the server mark the link stale.
+        const err = new Error("File not found in cloud storage");
+        err.name = "CloudFileMissingError";
+        err.cause = e;
+        throw err;
+      }
 
       // Pre-flight: test if MEGA allows this download before asking for save
       // location. Uses a raw MEGA API check (not megajs, whose .download() fans a
       // range out into many chunk URLs) so we get a direct, explicit 509/bandwidth
       // signal. If the quota window is spent, the save picker is never shown.
       onCheckingChange?.(true);
-      const quotaSecondsLeft = await checkMegaQuota(shareUrl, initFile.size ?? 0);
+      const quotaResult = await checkMegaQuota(shareUrl, initFile.size ?? 0);
       onCheckingChange?.(false);
-      if (quotaSecondsLeft !== null) {
-        const msg = quotaSecondsLeft > 0
-          ? `Transfer quota exceeded — try again in ${quotaSecondsLeft}s`
+      if (quotaResult === "missing") {
+        const err = new Error("File not found in cloud storage");
+        err.name = "CloudFileMissingError";
+        throw err;
+      }
+      if (quotaResult !== null) {
+        const msg = quotaResult > 0
+          ? `Transfer quota exceeded — try again in ${quotaResult}s`
           : "Transfer quota exceeded";
         throw new Error(msg);
       }
@@ -1488,6 +1512,7 @@ export function downloadCloudFileToDisk(
     } catch (err: any) {
       const isBandwidth = isBandwidthLimitError(err);
       const isPickerCancel = err?.name === "AbortError";
+      const isCloudMissing = err?.name === "CloudFileMissingError";
       const message = isBandwidth ? "Transfer quota exceeded" : (err?.message ?? "Download failed");
       for (const part of parts) {
         if (part.status !== "completed") {
@@ -1497,6 +1522,10 @@ export function downloadCloudFileToDisk(
       }
       reportProgress();
       if (isPickerCancel) {
+        rejectCompletion?.(err);
+      } else if (isCloudMissing) {
+        // Preserve the distinguishable marker so the caller can route to the
+        // "file not found" flow instead of treating it as a generic failure.
         rejectCompletion?.(err);
       } else {
         rejectCompletion?.(new Error(message));

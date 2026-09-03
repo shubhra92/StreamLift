@@ -383,6 +383,7 @@ export default function TorrentsPage() {
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         alert(err.error ?? "Failed to create share link");
+        syncNow();
         return;
       }
       syncNow();
@@ -475,7 +476,19 @@ export default function TorrentsPage() {
       report(fileSize, fileSize, "completed");
     } catch (error: any) {
       lastReportedAt = 0;
-      if (error?.name === "AbortError") {
+      if (error?.name === "CloudFileMissingError") {
+        // The MEGA node was deleted after its share link was created. Ask the
+        // server to confirm and null out cloudShareUrl so the row shows only the
+        // delete icon again, and tell the user the file is gone.
+        client.current.removeWorkerFileTransfer(transferId);
+        try {
+          await fetch(`/api/cloud/exists/${download.id}`);
+        } catch {
+          /* ignore network errors; the row will resync on its own */
+        }
+        alert("File not found in cloud");
+        syncNow();
+      } else if (error?.name === "AbortError") {
         report(0, fileSize, "preparing", undefined, true);
         client.current.removeWorkerFileTransfer(transferId);
       } else {
