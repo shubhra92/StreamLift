@@ -31,7 +31,9 @@ export const workers = pgTable('workers', {
   downloadLocation: text('download_location').notNull(), // 'local' | 'mega'
   computeType: text('compute_type').notNull(),           // 'low' | 'medium' | 'high'
   megaEmail: text('mega_email'),
-  megaPassword: text('mega_password'),                   // AES-256-GCM encrypted
+  megaSession: text('mega_session'),                     // AES-256-GCM encrypted session JSON (session-only)
+  megaNeedsRelink: boolean('mega_needs_relink').default(false), // set by worker when session dies
+  megaRelinkReason: text('mega_relink_reason'),
   pinggyToken: text('pinggy_token'),                     // AES-256-GCM encrypted
   authToken: text('auth_token').notNull(),
   version: text('version').default('1.0.0'),
