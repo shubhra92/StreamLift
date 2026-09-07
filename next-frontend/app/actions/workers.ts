@@ -15,7 +15,7 @@ export async function createWorker(data: {
   computeType: "low" | "medium" | "high";
   pinggyToken: string;
   megaEmail?: string;
-  megaPassword?: string;
+  megaSession?: string; // session JSON minted by the browser (session-only mode)
 }): Promise<{ success: boolean; message?: string; data?: Worker }> {
   const guestId = await getGuestId();
 
@@ -28,8 +28,10 @@ export async function createWorker(data: {
     return { success: false, message: "Invalid compute type" };
   if (!data.pinggyToken?.trim())
     return { success: false, message: "Pinggy token is required" };
-  if (data.downloadLocation === "mega" && (!data.megaEmail || !data.megaPassword))
-    return { success: false, message: "Mega email and password are required for Mega location" };
+  if (data.downloadLocation === "mega") {
+    if (!data.megaSession)
+      return { success: false, message: "Mega login is required for Mega location" };
+  }
 
   // Name uniqueness — scoped to guest
   const [existing] = await db
@@ -40,8 +42,8 @@ export async function createWorker(data: {
 
   if (existing) return { success: false, message: "A worker with this name already exists" };
 
-  const encryptedPassword    = data.megaPassword  ? encryptCredentials(data.megaPassword)  : null;
   const encryptedPinggyToken = data.pinggyToken   ? encryptCredentials(data.pinggyToken)   : null;
+  const encryptedSession     = data.megaSession   ? encryptCredentials(data.megaSession)   : null;
   const authToken = generateAuthToken();
 
   const [worker] = await db
@@ -52,7 +54,7 @@ export async function createWorker(data: {
       downloadLocation: data.downloadLocation,
       computeType: data.computeType,
       megaEmail: data.megaEmail ?? null,
-      megaPassword: encryptedPassword,
+      megaSession: encryptedSession,
       pinggyToken: encryptedPinggyToken,
       authToken,
     })

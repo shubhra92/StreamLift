@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { X, Copy, Check, AlertTriangle, Wifi, WifiOff } from "lucide-react";
+import { X, Copy, Check, AlertTriangle, Wifi, WifiOff, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -16,6 +16,7 @@ import {
   countryFlag,
 } from "./utils";
 import type { WorkerDetailsProps } from "./types";
+import { ReLinkMegaDialog } from "./ReLinkMegaDialog";
 import type { WorkerLog } from "@/app/lib/workerStore";
 import { openWorkerStream, invalidateWorkerConnection } from "@/app/lib/workerConnection";
 
@@ -133,11 +134,12 @@ interface LiveData {
   uptimeSeconds?: number;
 }
 
-export function WorkerDetails({ worker, status, onClose }: WorkerDetailsProps) {
+export function WorkerDetails({ worker, status, onClose, onRelinked }: WorkerDetailsProps) {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const streamRef  = useRef<{ close: () => void } | null>(null);
   const [liveData, setLiveData] = useState<LiveData>({});
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [relinkOpen, setRelinkOpen] = useState(false);
 
   const online   = worker ? (status?.online ?? worker.online) : false;
   const version  = worker ? (status?.version ?? "1.0.0") : "1.0.0";
@@ -202,6 +204,7 @@ export function WorkerDetails({ worker, status, onClose }: WorkerDetailsProps) {
   if (!worker) return null;
 
   return (
+    <>
     <div className="max-h-[60vh] flex flex-col bg-card border-t shadow-2xl rounded-t-xl">
       {/* Drag handle */}
       <div className="flex justify-center pt-2 pb-1 shrink-0">
@@ -237,6 +240,27 @@ export function WorkerDetails({ worker, status, onClose }: WorkerDetailsProps) {
             {streamError && (
               <div className="text-xs text-yellow-600 bg-yellow-50 dark:bg-yellow-900/20 rounded px-3 py-2">
                 ⚠ {streamError}
+              </div>
+            )}
+
+            {/* Mega session expired — re-link prompt */}
+            {worker.megaNeedsRelink && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-300/50">
+                <div className="flex items-center gap-2 min-w-0">
+                  <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
+                  <p className="text-xs text-amber-800 dark:text-amber-200">
+                    <span className="font-semibold">Mega session expired.</span>{" "}
+                    {worker.megaRelinkReason ? `${worker.megaRelinkReason} ` : ""}
+                    Re-link the account to resume downloads.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={() => setRelinkOpen(true)}
+                  className="h-7 text-xs bg-amber-500 hover:bg-amber-600 text-white cursor-pointer"
+                >
+                  <RefreshCw className="h-3 w-3 mr-1" /> Re-link
+                </Button>
               </div>
             )}
 
@@ -319,5 +343,16 @@ export function WorkerDetails({ worker, status, onClose }: WorkerDetailsProps) {
             </div>
           </div>
         </div>
+
+        <ReLinkMegaDialog
+          worker={worker}
+          isOpen={relinkOpen}
+          onClose={() => setRelinkOpen(false)}
+          onRelinked={() => {
+            setRelinkOpen(false);
+            onRelinked();
+          }}
+        />
+    </>
   );
 }

@@ -6,7 +6,7 @@ export interface CreateWorkerData {
   computeType: "low" | "medium" | "high";
   pinggyToken: string;
   megaEmail?: string;
-  megaPassword?: string;
+  megaSession?: string; // session JSON minted by the browser — password never sent
 }
 
 export default function useWorkerService() {

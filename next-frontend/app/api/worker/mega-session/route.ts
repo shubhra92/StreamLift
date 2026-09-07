@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateWorkerAuth } from "@/app/lib/workerAuth";
 import { db } from "@/app/db";
-import { megaSessions } from "@/app/db/schema";
+import { megaSessions, workers } from "@/app/db/schema";
 import { and, eq } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
@@ -60,11 +60,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: "Invalid credentials" }, { status: 401 });
   }
 
-  if (!email || !sessionData) {
-    return NextResponse.json({ success: false, message: "Missing email or sessionData" }, { status: 400 });
+  // sessionData === null means "clear" — purge the worker's stored session.
+  if (sessionData == null) {
+    await db.update(workers).set({ megaSession: null, updatedAt: new Date() }).where(eq(workers.id, workerId));
+    await db
+      .update(megaSessions)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(megaSessions.workerId, workerId));
+    return NextResponse.json({ success: true, message: "Session cleared" });
   }
 
-  // Upsert: update existing or insert new
+  if (!sessionData) {
+    return NextResponse.json({ success: false, message: "Missing sessionData" }, { status: 400 });
+  }
+
+  // Upsert into mega_sessions (legacy worker-saved sessions). Email is now
+  // optional to support session-only workers.
   const [existing] = await db
     .select()
     .from(megaSessions)
@@ -74,11 +85,14 @@ export async function POST(req: NextRequest) {
   if (existing) {
     await db
       .update(megaSessions)
-      .set({ sessionData, email, isActive: true, updatedAt: new Date() })
+      .set({
+        ...(typeof email === "string" ? { email } : { email: existing.email }),
+        sessionData, isActive: true, updatedAt: new Date(),
+      })
       .where(eq(megaSessions.id, existing.id));
   } else {
     await db.insert(megaSessions).values({
-      email,
+      email: typeof email === "string" && email ? email : "unknown",
       sessionData,
       workerId,
       isActive: true,

@@ -32,6 +32,14 @@ export interface WorkerDetailsProps {
   worker: WorkerWithStatus | null;
   status: WorkerStatus | null;
   onClose: () => void;
+  onRelinked: () => void;
+}
+
+export interface ReLinkMegaDialogProps {
+  worker: WorkerWithStatus | null;
+  isOpen: boolean;
+  onClose: () => void;
+  onRelinked: () => void;
 }
 
 export interface AddWorkerModalProps {

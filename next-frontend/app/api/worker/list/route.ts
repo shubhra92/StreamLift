@@ -89,7 +89,7 @@ export async function GET(req: NextRequest) {
   }
 
   // Strip sensitive fields before sending to client
-  const safeRows = deltaRows.map(({ megaPassword: _pw, authToken: _tok, pinggyToken: _pt, sessionToken: _st, ...rest }) => rest);
+  const safeRows = deltaRows.map(({ megaSession: _ms, authToken: _tok, pinggyToken: _pt, sessionToken: _st, ...rest }) => rest);
 
   return NextResponse.json({
     success: true,

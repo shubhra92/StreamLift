@@ -127,7 +127,10 @@ export default function WorkersPage() {
   useEffect(() => {
     if (!selectedId) return;
     const handler = (e: MouseEvent) => {
-      const target = e.target as Node;
+      const target = e.target as Element | null;
+      // Don't dismiss the detail panel while a dialog (e.g. Re-link Mega) is open.
+      if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+      if (target?.closest('[role="dialog"]')) return;
       if (!contentRef.current?.contains(target) && !panelRef.current?.contains(target)) {
         setSelectedId(null);
       }
@@ -193,6 +196,7 @@ export default function WorkersPage() {
                 worker={selectedWorker}
                 status={workerStatus}
                 onClose={() => setSelectedId(null)}
+                onRelinked={() => syncNow()}
               />
             </motion.div>
           )}

@@ -6,6 +6,7 @@ import { Copy, Trash2, Loader2, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TableCell, TableRow } from "@/components/ui/table";
+import { AlertTriangle } from "lucide-react";
 import { countryFlag, formatDate } from "./utils";
 import type { WorkerItemProps } from "./types";
 
@@ -66,6 +67,14 @@ export function WorkerItem({ worker, isSelected, isDeleting, onSelect, onDelete,
                 }`}
               />
               <p className="font-medium text-sm truncate">{worker.name}</p>
+              {worker.megaNeedsRelink && (
+                <span
+                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-100 rounded px-1.5 py-0.5 shrink-0"
+                  title="Mega session expired — re-link the account"
+                >
+                  <AlertTriangle className="h-3 w-3" /> Mega expired
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-1 shrink-0">
               <Button
@@ -150,6 +159,14 @@ export function WorkerItem({ worker, isSelected, isDeleting, onSelect, onDelete,
           <span className="block truncate font-medium" title={worker.name}>
             {worker.name}
           </span>
+          {worker.megaNeedsRelink && (
+            <Badge
+              className="text-[10px] font-semibold text-amber-700 bg-amber-100 flex-shrink-0 gap-1"
+              title={worker.megaRelinkReason ?? "Mega session expired"}
+            >
+              <AlertTriangle className="h-3 w-3" /> Mega expired
+            </Badge>
+          )}
         </div>
       </TableCell>
 

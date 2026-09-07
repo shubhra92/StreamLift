@@ -14,8 +14,8 @@ export async function GET(
     return NextResponse.json({ success: false, message: "Worker not found" }, { status: 404 });
   }
 
-  // Never expose megaPassword or auth/session tokens
-  const { megaPassword: _pw, authToken: _tok, pinggyToken: _pt, sessionToken: _st, ...safe } = data as any;
+  // Never expose megaSession or auth/session tokens
+  const { megaSession: _ms, authToken: _tok, pinggyToken: _pt, sessionToken: _st, ...safe } = data as any;
   return NextResponse.json({ success: true, data: safe });
 }
 
