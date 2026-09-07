@@ -1,10 +1,11 @@
 """
-Worker configuration — populated entirely from CLI args.
-No .env file needed; the user just runs the one-liner from the UI.
+Worker configuration — resolved from CLI flags plus the backend bootstrap
+config (/api/worker/config) at startup. No .env file needed; the user just
+runs the one-liner from the UI.
 """
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 # Process start time — used for uptime calculation in heartbeat and SSE stream

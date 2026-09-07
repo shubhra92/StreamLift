@@ -85,7 +85,7 @@ def run(config: WorkerConfig) -> None:
 
     # ── Step 3: Start Pinggy tunnel ───────────────────────────────────────────
     if not config.pinggy_token:
-        logger.log("error", "--pinggy-token is required to expose the worker API.")
+        logger.log("error", "No Pinggy token found — pass --pinggy-token or make sure it's set in the worker config.")
         sys.exit(1)
 
     tunnel = PinggyTunnel(token=config.pinggy_token, port=config.server_port)

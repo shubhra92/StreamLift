@@ -16,8 +16,9 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn>=0.34.0",
     "h11>=0.14.0",     # HTTP/1.1 implementation — required for SSE through proxies
-    # mega.py fork with upload_stream support:
-    # pip install git+https://github.com/shubhra92/megapy.git
+    "pycryptodome>=3.20.0",
+    "aiohttp>=3.9.0",
+    "streamlift-megapy @ file:../streamlift-megapy",
 ]
 
 [project.optional-dependencies]

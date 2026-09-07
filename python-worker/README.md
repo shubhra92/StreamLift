@@ -17,7 +17,7 @@ The StreamLift UI generates this for you with all credentials pre-filled:
 
 ```python
 !pip install -q requests psutil
-!pip install -q git+https://github.com/shubhra92/megapy.git
+!pip install -q streamlift-megapy
 !pip install -q git+https://github.com/shubhra92/streamlift-worker.git
 
 !streamlift-worker \
@@ -51,7 +51,7 @@ streamlift_worker/
 ├── config.py         # WorkerConfig dataclass
 ├── worker.py         # main loop, registration, heartbeat thread
 ├── downloader.py     # HTTP + torrent download handlers
-├── mega.py           # Mega upload helpers (stream & file)
+├── mega.py           # Mega upload helpers (uses streamlift-megapy)
 ├── api.py            # all HTTP calls to the backend
 ├── metrics.py        # CPU / RAM / network metrics
 └── logger.py         # in-process log queue

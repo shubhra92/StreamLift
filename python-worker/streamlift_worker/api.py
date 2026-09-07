@@ -44,8 +44,8 @@ def _post(config: WorkerConfig, endpoint: str, data: dict[str, Any]) -> Optional
     return None
 
 
-def _get(config: WorkerConfig, endpoint: str, params: dict[str, Any] | None = None) -> Optional[dict]:
-    url = f"{config.api_base_url}{endpoint}"
+def _get(api_base_url: str, endpoint: str, params: dict[str, Any] | None = None) -> Optional[dict]:
+    url = f"{api_base_url}{endpoint}"
     try:
         r = requests.get(url, params=params, timeout=15)
         if r.status_code == 200:
@@ -111,26 +111,98 @@ def status_update(
     _post(config, "/api/worker/status-update", payload)
 
 
+# ── Bootstrap config ──────────────────────────────────────────────────────────
+
+def fetch_worker_config(worker_id: str, auth_token: str, api_base_url: str) -> Optional[dict]:
+    """Fetch bootstrap config (location, compute, pinggy token, mega session)."""
+    data = _get(api_base_url, "/api/worker/config", {
+        "workerId":  worker_id,
+        "authToken": auth_token,
+    })
+    if data and data.get("success") and isinstance(data.get("data"), dict):
+        return data["data"]
+    logger.log("warning", "Could not fetch worker config from backend")
+    return None
+
+
 # ── Mega session persistence ──────────────────────────────────────────────────
 
-def save_mega_session(config: WorkerConfig, session_id: str) -> None:
+def save_mega_session(config: WorkerConfig, session_data: Any) -> None:
+    """Persist a Mega session dict to the backend for later restore."""
+    import json
+
     try:
+        # Send as JSON string — the backend stores this in a JSON column.
+        payload = session_data if isinstance(session_data, dict) else {"sid": str(session_data)}
         _post(config, "/api/worker/mega-session", {
             "workerId":    config.worker_id,
             "authToken":   config.auth_token,
             "email":       config.mega_email,
-            "sessionData": session_id,
+            "sessionData": json.dumps(payload),
         })
         logger.log("info", "Mega session saved to backend")
     except Exception as e:
         logger.log("warning", f"Could not save Mega session: {e}")
 
 
-def load_mega_session(config: WorkerConfig) -> Optional[str]:
-    data = _get(config, "/api/worker/mega-session", {
+def load_mega_session(config: WorkerConfig) -> Any:
+    """Load a saved Mega session, returning a dict or None.
+
+    Prefers the browser-minted session stored on the worker row (session-only
+    workers); falls back to the legacy mega_sessions table.
+    """
+    import json
+
+    cfg = fetch_worker_config(config.worker_id, config.auth_token, config.api_base_url)
+    if cfg:
+        session = cfg.get("megaSession")
+        if isinstance(session, dict):
+            return session
+        if isinstance(session, str):
+            try:
+                return json.loads(session)
+            except (json.JSONDecodeError, TypeError):
+                return None
+
+    data = _get(config.api_base_url, "/api/worker/mega-session", {
         "workerId":  config.worker_id,
         "authToken": config.auth_token,
     })
     if data and data.get("success") and data.get("sessionData"):
-        return data["sessionData"]
+        raw = data["sessionData"]
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return None
     return None
+
+
+def delete_mega_session(config: WorkerConfig) -> None:
+    """Purge the Mega session saved on the backend (e.g. it went stale/expired)."""
+    try:
+        _post(config, "/api/worker/mega-session", {
+            "workerId":    config.worker_id,
+            "authToken":   config.auth_token,
+            "email":       config.mega_email,
+            "sessionData": None,
+        })
+        logger.log("info", "Stale Mega session cleared from backend")
+    except Exception as e:
+        logger.log("warning", f"Could not clear stale Mega session: {e}")
+
+
+def report_mega_needs_relink(config: WorkerConfig, reason: str = "") -> None:
+    """Tell the backend the worker's Mega session is broken and needs re-linking."""
+    try:
+        _post(config, "/api/worker/mega-status", {
+            "workerId":     config.worker_id,
+            "authToken":    config.auth_token,
+            "needsRelink":  True,
+            "reason":       reason,
+        })
+        logger.log("warning", f"Signalled Mega re-link request: {reason}")
+    except Exception as e:
+        logger.log("warning", f"Could not signal Mega re-link: {e}")
