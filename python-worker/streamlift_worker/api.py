@@ -96,6 +96,7 @@ def status_update(
     status: str,
     error_msg: str = "",
     location_path: str | None = None,
+    cloud_file_handle: str | None = None,
 ) -> None:
     """Notify the backend when a download completes or fails."""
     payload: dict[str, Any] = {
@@ -108,7 +109,58 @@ def status_update(
         payload["errorMessage"] = error_msg
     if location_path:
         payload["locationPath"] = location_path
+    if cloud_file_handle:
+        payload["cloudFileHandle"] = cloud_file_handle
     _post(config, "/api/worker/status-update", payload)
+
+
+def progress_update(
+    config: WorkerConfig,
+    download_id: str,
+    progress_pct: float,
+    total_bytes: Optional[int] = None,
+) -> None:
+    """Push live progress for an active download (the streaming/torrent path).
+
+    Uses the /api/worker/download-progress endpoint, which persists
+    status + totalBytes on the download row without touching worker
+    completion stats. Setting ``status: uploading`` keeps the UI truthful
+    during the whole stream instead of sitting on ``downloading`` until the
+    final ``status_update("completed")``. Terminal transitions keep using
+    ``status_update``.
+    """
+    payload: dict[str, Any] = {
+        "workerId":   config.worker_id,
+        "authToken":  config.auth_token,
+        "downloadId": download_id,
+        "progress":   {
+            "status":     "uploading",
+            "totalBytes": total_bytes,
+            "progress":   round(progress_pct, 2),
+        },
+    }
+    _post(config, "/api/worker/download-progress", payload)
+
+
+def report_share_link(
+    config: WorkerConfig,
+    download_id: str,
+    share_url: str,
+) -> None:
+    """Persist a worker-created MEGA share URL on the download row.
+
+    The worker mints the public link (it owns the uploaded node), then the
+    backend stores it so the download/external icons survive the worker going
+    offline. Best-effort: failures are swallowed (the frontend can retry the
+    share endpoint, which re-posts).
+    """
+    payload: dict[str, Any] = {
+        "workerId":     config.worker_id,
+        "authToken":    config.auth_token,
+        "downloadId":   download_id,
+        "cloudShareUrl": share_url,
+    }
+    _post(config, "/api/worker/share-link", payload)
 
 
 # ── Bootstrap config ──────────────────────────────────────────────────────────

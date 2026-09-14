@@ -241,6 +241,10 @@ class DownloadRequest(BaseModel):
     fileIndices:  list[int] | None = None
 
 
+class ShareLinkRequest(BaseModel):
+    fileName: str = ""
+
+
 class FileAvailabilityRequest(BaseModel):
     downloadIds: list[str]
 
@@ -379,8 +383,17 @@ async def trigger_download(
     if not _config:
         raise HTTPException(status_code=503, detail="Worker not initialised yet")
 
-    # Only block if there's an active task for a DIFFERENT download
-    # (same downloadId = idempotent retry, allow it through)
+    # Only one task may run at a time. A request for a DIFFERENT download is a
+    # hard 409 — the worker is single-slot. A repeat request for the SAME
+    # download is treated as an idempotent retry: accept it but never spawn a
+    # second thread (the downloader also dedupes in-flight ids). This is what
+    # stops a raced double-dispatch from producing two concurrent streams.
+    if _current_task and _current_task.get("downloadId") == body.downloadId:
+        return {
+            "success":       True,
+            "downloadId":    body.downloadId,
+            "alreadyRunning": True,
+        }
     if _current_task and _current_task.get("downloadId") != body.downloadId:
         raise HTTPException(
             status_code=409,
@@ -409,7 +422,13 @@ async def trigger_download(
                 process_http_download(_config, task, _current_task)
         except Exception as e:
             logger.log("error", f"Download thread error: {e}")
-            _current_task.clear()
+        finally:
+            # Release the single task slot on EVERY outcome (success included).
+            # Not clearing it on success left the worker permanently latched to
+            # the finished download id, so any later trigger got a 409
+            # "Worker is busy" and the item never left `pending`.
+            if _current_task.get("downloadId") == body.downloadId:
+                _current_task.clear()
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
@@ -436,6 +455,36 @@ async def cancel_download(
     _cancel_flags[download_id] = True
     logger.log("info", f"Cancel requested for download {download_id}")
     return {"success": True, "downloadId": download_id}
+
+
+# ── POST /downloads/{download_id}/share ───────────────────────────────────────
+
+@app.post("/downloads/{download_id}/share")
+async def create_download_share_link(
+    download_id: str,
+    body: ShareLinkRequest,
+    x_session_token: Optional[str] = Header(default=None),
+):
+    """Create a public MEGA share link for an uploaded node.
+
+    Called by the frontend when the user clicks the share (link) icon on a
+    download this worker uploaded. Uses this process's in-memory node registry
+    (with a by-name fallback), persists the URL via the backend, and returns it.
+    """
+    _require_session_token(x_session_token)
+    if not _config:
+        raise HTTPException(status_code=503, detail="Worker not initialised yet")
+    from streamlift_worker import api, mega
+
+    share_url = mega.create_node_share_link(_config, download_id, body.fileName)
+    if not share_url:
+        raise HTTPException(
+            status_code=404,
+            detail="Could not locate the uploaded node for this download",
+        )
+    api.report_share_link(_config, download_id, share_url)
+    logger.log("info", f"Share link created for download {download_id}")
+    return {"success": True, "shareUrl": share_url}
 
 
 # ── POST /internal/rotate-token ───────────────────────────────────────────────

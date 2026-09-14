@@ -10,9 +10,10 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import psutil
 import requests
@@ -20,6 +21,27 @@ import requests
 from streamlift_worker import api, logger, mega
 from streamlift_worker.config import WorkerConfig
 from streamlift_worker.local_files import downloads_dir, record_completed_files
+
+# Guards against the same download being started twice (e.g. a double dispatch
+# from the frontend racing the pending → downloading status transition). The
+# public process_* entry points refuse to run an id that is already in flight.
+_active_download_ids: set[str] = set()
+_active_download_lock = threading.Lock()
+
+
+def _claim_download_run(download_id: str) -> bool:
+    """Atomically mark a download_id as being processed. False if already so."""
+    with _active_download_lock:
+        if download_id in _active_download_ids:
+            return False
+        _active_download_ids.add(download_id)
+        return True
+
+
+def _release_download_run(download_id: str) -> None:
+    """Drop a download_id from the in-flight set when its task finishes."""
+    with _active_download_lock:
+        _active_download_ids.discard(download_id)
 
 
 def _now_iso() -> str:
@@ -103,9 +125,54 @@ def _is_cancelled(download_id: str) -> bool:
     return False
 
 
+def _make_upload_progress_callback(download_id: str, current_task: dict):
+    """Build progress + stall callbacks for a Mega upload.
+
+    The progress callback updates the live ``current_task`` (fed to the app via
+    /status SSE) with the upload percentage and logs throttled 📤 lines, so a
+    slow upload is never mistaken for a hang. It also aborts on cancel.
+    """
+    last = {"time": time.time(), "bytes": 0}
+
+    def _progress(done: int, total: int) -> None:
+        if _is_cancelled(download_id):
+            raise mega.UploadCancelled("Cancelled by user")
+        pct = round((done / total * 100), 2) if total else 0
+        current_task["status"]   = "uploading"
+        current_task["progress"] = pct
+        now = time.time()
+        if now - last["time"] >= 10 or done - last["bytes"] >= 5 * 1024 * 1024:
+            mem_mb = psutil.virtual_memory().used / 1024 / 1024
+            logger.log("info",
+                f"📤 Upload {pct:.1f}% | "
+                f"{done/1024/1024:.1f} / {total/1024/1024:.1f} MB | "
+                f"RAM: {mem_mb:.0f} MB")
+            last["time"] = now
+            last["bytes"] = done
+
+    def _stall(seconds: float) -> None:
+        logger.log("warning", f"⚠️  Upload stalled {seconds}s waiting for Mega — still connected")
+
+    return _progress, _stall
+
+
 # ── HTTP download ─────────────────────────────────────────────────────────────
 
 def process_http_download(config: WorkerConfig, task: dict, current_task: dict) -> None:
+    download_id = task["downloadId"]
+    if not _claim_download_run(download_id):
+        logger.log(
+            "warning",
+            f"HTTP download already in progress, ignoring duplicate start: {download_id}",
+        )
+        return
+    try:
+        _process_http_download(config, task, current_task)
+    finally:
+        _release_download_run(download_id)
+
+
+def _process_http_download(config: WorkerConfig, task: dict, current_task: dict) -> None:
     download_id = task["downloadId"]
     source_url  = task["sourceUrl"]
     file_name   = _safe_file_name(task.get("fileName") or "download")
@@ -179,12 +246,13 @@ def _http_stream_to_mega(
             return chunk
 
     current_task["status"] = "uploading"
-    ok = mega.stream_to_mega(config, _ProgressStream(), total, file_name)
+    handle = mega.stream_to_mega(config, _ProgressStream(), total, file_name)
 
-    if ok:
+    if handle:
         current_task["progress"] = 100
         current_task["status"]   = "completed"
-        api.status_update(config, download_id, "completed")
+        mega.register_uploaded_node(download_id, handle)
+        api.status_update(config, download_id, "completed", cloud_file_handle=handle)
         logger.log("info", f"HTTP→Mega stream completed: {file_name}")
     else:
         current_task["status"] = "failed"
@@ -258,25 +326,42 @@ def _cleanup_local_file(directory: str, file_name: str) -> None:
 # ── Torrent download ──────────────────────────────────────────────────────────
 
 def process_torrent_download(config: WorkerConfig, task: dict, current_task: dict) -> None:
+    download_id = task["downloadId"]
+    if not _claim_download_run(download_id):
+        logger.log(
+            "warning",
+            f"Torrent download already in progress, ignoring duplicate start: {download_id}",
+        )
+        return
+    try:
+        _process_torrent_download(config, task, current_task)
+    finally:
+        _release_download_run(download_id)
+
+
+def _process_torrent_download(config: WorkerConfig, task: dict, current_task: dict) -> None:
     download_id      = task["downloadId"]
     magnet_link      = task["sourceUrl"]
     file_name        = task.get("fileName") or ""
     file_indices_raw = task.get("fileIndices")
 
     # DB stores 0-based indices; aria2c --select-file is 1-based
-    file_indices: Optional[list[int]] = None
+    file_indices_0: Optional[list[int]] = None
     if file_indices_raw:
         try:
             parsed = (json.loads(file_indices_raw)
                       if isinstance(file_indices_raw, str)
                       else file_indices_raw)
             if isinstance(parsed, list) and parsed:
-                file_indices = [i + 1 for i in parsed]
+                file_indices_0 = [i for i in parsed if isinstance(i, int)]
         except Exception as e:
             logger.log("warning", f"Could not parse fileIndices: {e}")
+    file_indices: Optional[list[int]] = (
+        [i + 1 for i in file_indices_0] if file_indices_0 else None
+    )
 
     display_name = _safe_file_name(file_name or "torrent", "torrent")
-    logger.log("info", f"Torrent download via aria2c: {display_name} → {config.download_location}")
+    logger.log("info", f"Torrent download: {display_name} → {config.download_location}")
 
     current_task.update({
         "downloadId": download_id,
@@ -287,6 +372,34 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
     })
     # Notify backend — DB status: pending → downloading
     api.status_update(config, download_id, "downloading")
+
+    # Streaming path (download + upload in parallel) when the target is MEGA.
+    # Colab-safe: implemented purely over aria2c (no libtorrent), so it never
+    # relies on Colab-banned packages.
+    if config.download_location == "mega":
+        try:
+            from streamlift_worker import aria2c_stream
+
+            res = aria2c_stream.stream_torrent_to_mega(
+                config, download_id, magnet_link, file_indices_0,
+                display_name, current_task,
+            )
+        except mega.UploadCancelled:
+            logger.log("info", "Mega streaming cancelled by user")
+            current_task["status"] = "failed"
+            api.status_update(config, download_id, "failed", "Cancelled by user")
+            return
+
+        if res:
+            # Single-file torrents return the MEGA node id → report it as
+            # cloudFileHandle so the share-link/download icons light up.
+            cloud_handle = res if isinstance(res, str) else None
+            current_task["progress"] = 100
+            current_task["status"]   = "completed"
+            api.status_update(config, download_id, "completed", cloud_file_handle=cloud_handle)
+            logger.log("info", f"Torrent task completed (streamed): {display_name}")
+            return
+        # Else: falling back to the classic aria2c download → upload path below.
 
     if not _ensure_aria2c():
         msg = "aria2c is not available. Run: !apt-get install -y aria2"
@@ -382,24 +495,40 @@ def process_torrent_download(config: WorkerConfig, task: dict, current_task: dic
 
         if config.download_location == "mega":
             current_task["status"] = "uploading"
+            api.status_update(config, download_id, "uploading")
             files = _collect_downloaded_files(save_path, downloaded_path, display_name)
-            success = _upload_torrent_files_to_mega(config, files, display_name,
-                                                     download_id, total_bytes)
-            if not success:
+            progress_cb, stall_cb = _make_upload_progress_callback(download_id, current_task)
+            try:
+                upload_total = sum(os.path.getsize(f) for f in files if os.path.isfile(f))
+            except OSError:
+                upload_total = 0
+            try:
+                uploaded = _upload_torrent_files_to_mega(config, files, display_name,
+                                                         download_id, upload_total,
+                                                         progress_cb, stall_cb)
+            except mega.UploadCancelled:
+                logger.log("info", "Mega upload cancelled by user")
+                current_task["status"] = "failed"
+                api.status_update(config, download_id, "failed", "Cancelled by user")
                 return
+            if not uploaded:
+                return
+            cloud_handle = uploaded if isinstance(uploaded, str) else None
         else:
             published = _publish_staged_tree(save_path)
             if not published:
                 raise RuntimeError("aria2c completed without producing a local file")
             record_completed_files(download_id, published)
             logger.log("info", f"Published {len(published)} torrent file(s) to {_downloads_dir()}")
+            cloud_handle = None
 
         current_task["progress"] = 100
         current_task["status"]   = "completed"
         location_path = None
         if config.download_location == "local":
             location_path = published[0] if len(published) == 1 else _downloads_dir()
-        api.status_update(config, download_id, "completed", location_path=location_path)
+        api.status_update(config, download_id, "completed", location_path=location_path,
+                          cloud_file_handle=cloud_handle)
         logger.log("info", f"Torrent task completed: {display_name}")
 
     except Exception as e:
@@ -416,20 +545,29 @@ def _upload_torrent_files_to_mega(
     files: list[str],
     display_name: str,
     download_id: str,
-    total_bytes: int,
-) -> bool:
+    upload_total: int,
+    progress_cb,
+    stall_cb,
+) -> Any:
     if not files:
         logger.log("warning", "Could not locate any downloaded files for Mega upload")
         return True  # not a fatal error — file may be local
 
     if len(files) == 1:
-        ok = mega.upload_file_to_mega(config, files[0], os.path.basename(files[0]))
-        if not ok:
-            current_task_ref = None  # upload_torrent doesn't have direct ref, status set by caller
+        handle = mega.upload_file_to_mega(
+            config, files[0], os.path.basename(files[0]),
+            progress_cb=progress_cb, progress_total=upload_total, stall_cb=stall_cb,
+        )
+        if not handle:
             api.status_update(config, download_id, "failed", "Mega upload failed — check logs")
-        return ok
+            return False
+        mega.register_uploaded_node(download_id, handle)
+        return handle
 
-    ok = mega.upload_files_to_mega_folder(config, files, display_name)
+    ok = mega.upload_files_to_mega_folder(
+        config, files, display_name,
+        progress_cb=progress_cb, progress_total=upload_total, stall_cb=stall_cb,
+    )
     if not ok:
         api.status_update(config, download_id, "failed", "Mega folder upload failed — check logs")
     return ok
@@ -444,10 +582,12 @@ def _collect_downloaded_files(
         if not path or not os.path.exists(path):
             return []
         if os.path.isfile(path):
-            return [path]
+            return [] if path.endswith(".aria2") else [path]
         result: list[str] = []
         for root, _, names in os.walk(path):
             for name in names:
+                if name.endswith(".aria2"):
+                    continue
                 result.append(os.path.join(root, name))
         return sorted(result)
 
@@ -501,8 +641,12 @@ def _ensure_aria2c() -> bool:
     if shutil.which("aria2c"):
         return True
     logger.log("info", "aria2c not found — attempting install via apt-get...")
+    env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
     try:
-        subprocess.run(["apt-get", "install", "-y", "aria2"], check=True, capture_output=True)
+        subprocess.run(
+            ["apt-get", "install", "-y", "--no-install-recommends", "aria2"],
+            check=True, capture_output=True, env=env,
+        )
         logger.log("info", "aria2c installed successfully")
         return shutil.which("aria2c") is not None
     except Exception as e:
