@@ -25,6 +25,7 @@ import {
   restartWorkerPart,
   buildParts,
   downloadCloudFileToDisk,
+  createWorkerShareLink,
   type WorkerLocalFile,
 } from "../lib/workerConnection";
 import type { WorkerFileTransfer, WorkerFileTransferPart } from "../lib/sync-worker/workerProtocol";
@@ -112,12 +113,14 @@ export default function TorrentsPage() {
     try {
       if (downloadingFileId) {
         const tracked = data.find((f) => f.id === downloadingFileId);
-        const isActive = tracked && (tracked.status === "downloading" || tracked.status === "pending");
+        const isActive = tracked && (tracked.status === "downloading" || tracked.status === "uploading" || tracked.status === "pending");
         if (isActive) return;
         setDownloadingFileId(null);
       }
 
-      const downloading = data.find((f) => f.status === "downloading");
+      const downloading = data.find(
+        (f) => f.status === "downloading" || f.status === "uploading"
+      );
       const dispatchedPending = data.find(
         (f) => f.status === "pending" && f.workerId !== null
       );
@@ -379,6 +382,17 @@ export default function TorrentsPage() {
   const handleCreateShareLink = async (download: FileDownload) => {
     setCreatingLinkIds((prev) => new Set(prev).add(download.id));
     try {
+      if (download.workerId) {
+        // Worker-owned MEGA rows: the worker mints the link. Fail silently and
+        // keep the icon (user can retry after the worker comes back online).
+        try {
+          await createWorkerShareLink(download.workerId, download.id, download.fileName ?? undefined);
+        } catch {
+          /* silent per product decision */
+        }
+        syncNow();
+        return;
+      }
       const res = await fetch(`/api/cloud/share/${download.id}`, { method: "POST" });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -561,6 +575,7 @@ export default function TorrentsPage() {
             onCloudExternalLink={handleCloudExternalLink}
             onCloudTabDownload={handleCloudTabDownload}
             creatingLinkIds={creatingLinkIds}
+            onlineWorkerIds={new Set(workers.filter((w) => w.online).map((w) => w.id))}
           />
           <div className="h-4 md:h-6" />
         </div>

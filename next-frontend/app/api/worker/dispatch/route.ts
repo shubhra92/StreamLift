@@ -173,6 +173,14 @@ export async function POST(req: NextRequest) {
       // deployed on Vercel. Older TCP workers are skipped until restarted.
       if (!worker.pinggyUrl.startsWith("https://")) continue;
 
+      // NOTE: we deliberately do NOT claim the row here (pending → downloading).
+      // The worker turns the status to "downloading"/"uploading" itself via its
+      // status_update as soon as it actually starts the job. If this trigger
+      // POST is lost or rejected, the row stays "pending" and the next sync
+      // cycle simply re-dispatches it — a claimed-but-never-received row would
+      // otherwise be stuck forever. Double-dispatch (two concurrent threads on
+      // the same download) is prevented on the worker side by its alreadyRunning
+      // guard and in-flight id dedupe.
       return NextResponse.json({
         action:      "trigger",
         download: {

@@ -20,6 +20,7 @@ import {
   restartWorkerPart,
   buildParts,
   downloadCloudFileToDisk,
+  createWorkerShareLink,
   type WorkerLocalFile,
 } from "./lib/workerConnection";
 import type { WorkerFileTransfer, WorkerFileTransferPart } from "./lib/sync-worker/workerProtocol";
@@ -113,17 +114,20 @@ export default function Home() {
       // Clear tracking if the current download is in a terminal state
       if (downloadingFileIdRef.current) {
         const tracked = data.find((f) => f.id === downloadingFileIdRef.current);
-        const isActive = tracked && (tracked.status === "downloading" || tracked.status === "pending");
+        const isActive = tracked && (tracked.status === "downloading" || tracked.status === "uploading" || tracked.status === "pending");
         if (isActive) return; // still active — nothing to do
         downloadingFileIdRef.current = null;
         setDownloadingFileId(null);
       }
 
       // Show progress bar for:
-      //   1. Any row currently downloading (highest priority)
+      //   1. Any row currently downloading or uploading (highest priority) —
+      //      uploading keeps the worker SSE live % animating until completion
       //   2. Pending rows that have been dispatched (workerId set = worker accepted it)
       // Do NOT show for pending rows with no workerId (not dispatched yet)
-      const downloading = data.find((f) => f.status === "downloading");
+      const downloading = data.find(
+        (f) => f.status === "downloading" || f.status === "uploading"
+      );
       const dispatchedPending = data.find(
         (f) => f.status === "pending" && f.workerId !== null
       );
@@ -395,6 +399,17 @@ export default function Home() {
   const handleCreateShareLink = async (download: FileDownload) => {
     setCreatingLinkIds((prev) => new Set(prev).add(download.id));
     try {
+      if (download.workerId) {
+        // Worker-owned MEGA rows: the worker mints the link. Fail silently and
+        // keep the icon (user can retry after the worker comes back online).
+        try {
+          await createWorkerShareLink(download.workerId, download.id, download.fileName ?? undefined);
+        } catch {
+          /* silent per product decision */
+        }
+        syncNow();
+        return;
+      }
       const res = await fetch(`/api/cloud/share/${download.id}`, { method: "POST" });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -577,6 +592,7 @@ export default function Home() {
             onCloudExternalLink={handleCloudExternalLink}
             onCloudTabDownload={handleCloudTabDownload}
             creatingLinkIds={creatingLinkIds}
+            onlineWorkerIds={new Set(workers.filter((w) => w.online).map((w) => w.id))}
           />
           <div className="h-4 md:h-6" />
         </div>

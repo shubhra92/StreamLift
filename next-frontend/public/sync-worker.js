@@ -784,20 +784,31 @@ function runDispatcher() {
             downloadType: download.downloadType || "http",
             fileIndices:  indices,
           }),
-        }).then(function(r) {
-          if (r.ok) {
-            // Force immediate syncs after trigger so the "downloading" status
-            // is picked up right away rather than waiting for the 30s cycle.
-            // Poll at 1s, 5s, 15s to catch fast and slow downloads.
-            setTimeout(function() { scheduleSync("downloads"); scheduleSync("torrents"); }, 1000);
-            setTimeout(function() { scheduleSync("downloads"); scheduleSync("torrents"); }, 5000);
-            setTimeout(function() { scheduleSync("downloads"); scheduleSync("torrents"); }, 15000);
-          } else if (r.status === 409) {
-            // Worker is busy — will retry on next sync cycle
-          }
-        }).catch(function() {
-          // Network error — will retry on next sync cycle
-        });
+}).then(function(r) {
+            if (r.ok) {
+              // Force immediate syncs after trigger so the "downloading" status
+              // is picked up right away rather than waiting for the 30s cycle.
+              // Poll at 1s, 5s, 15s to catch fast and slow downloads.
+              setTimeout(function() { scheduleSync("downloads"); scheduleSync("torrents"); }, 1000);
+              setTimeout(function() { scheduleSync("downloads"); scheduleSync("torrents"); }, 5000);
+              setTimeout(function() { scheduleSync("downloads"); scheduleSync("torrents"); }, 15000);
+            } else if (r.status === 409) {
+              // Worker is busy — will retry on next sync cycle
+              console.warn("[SyncWorker] worker trigger rejected (busy):", r.status, download.id);
+            } else {
+              // 401 = session-token mismatch, 5xx = worker error. The row was
+              // NOT claimed by dispatch, so it stays pending and the next cycle
+              // (kicked here) retries. This warn is the breadcrumb that reveals
+              // the real failure reason on repro.
+              console.warn("[SyncWorker] worker trigger rejected:", r.status, download.id);
+              scheduleSync("downloads");
+            }
+          }).catch(function(err) {
+            // Network error reaching the tunnel (CORS/preflight, dead tunnel,
+            // worker restart). Row stays pending — retry on the next cycle.
+            console.warn("[SyncWorker] worker trigger network failure:", err, download.id);
+            scheduleSync("downloads");
+          });
 
       } else if (res.destination === "server") {
         // For server/cloud downloads, broadcast to tabs — they handle it

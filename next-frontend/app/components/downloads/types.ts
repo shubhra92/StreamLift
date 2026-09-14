@@ -34,6 +34,8 @@ export interface DownloadItemProps {
   onCloudTabDownload?: (download: FileDownload) => void;
   /** True while creating a share link for this row */
   isCreatingLink?: boolean;
+  /** Worker ids that are currently online (for gating the share-link icon) */
+  onlineWorkerIds?: Set<string>;
 }
 
 export interface DownloadListProps {
@@ -56,6 +58,8 @@ export interface DownloadListProps {
   onCloudExternalLink?: (download: FileDownload) => void;
   onCloudTabDownload?: (download: FileDownload) => void;
   creatingLinkIds?: Set<string>;
+  /** Worker ids that are currently online (for gating the share-link icon) */
+  onlineWorkerIds?: Set<string>;
 }
 
 export interface DownloadDetailsProps {

@@ -448,6 +448,22 @@ export async function triggerWorkerDownload(
   return res.json();
 }
 
+/** Ask a worker to mint a MEGA share link for a download it uploaded (persists via the backend). */
+export async function createWorkerShareLink(
+  workerId: string,
+  downloadId: string,
+  fileName?: string,
+): Promise<{ success: boolean; shareUrl?: string }> {
+  const res = await callWorker(workerId, "POST", `/downloads/${downloadId}/share`, { fileName: fileName ?? "" });
+  if (!res.ok) {
+    // 404 usually means the worker restarted and lost its node registry — the
+    // by-name fallback should still find most single-file uploads though.
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? `Worker share-link request failed (${res.status})`);
+  }
+  return res.json();
+}
+
 /** Cancel an in-progress download on the worker. */
 export async function cancelWorkerDownload(
   workerId: string,

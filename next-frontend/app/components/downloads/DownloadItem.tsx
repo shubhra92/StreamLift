@@ -27,12 +27,18 @@ export function DownloadItem({
   onCloudExternalLink,
   onCloudTabDownload,
   isCreatingLink,
+  onlineWorkerIds,
 }: DownloadItemProps) {
   const canEdit = download.status === "pending";
   const canDelete = download.status !== "downloading" && !isDownloading;
   const canDownload = download.status === "completed" && workerFiles.length > 0 && !!onDownloadWorkerFile;
   const isCloudUpload = download.status === "completed" && !!download.cloudFileHandle && workerFiles.length === 0;
   const hasShareUrl = !!download.cloudShareUrl;
+  // Worker-owned rows can only mint a link while the owning worker is online
+  // (it holds the MEGA node session). Once created, the persisted share URL
+  // works forever — external/download icons are unconditional.
+  const workerShareAvailable = !download.workerId || (onlineWorkerIds?.has(download.workerId) ?? false);
+  const canCreateShareLink = isCloudUpload && !hasShareUrl && workerShareAvailable;
   const transferPercent = workerFileTransfer?.totalBytes
     ? Math.min(100, Math.round((workerFileTransfer.receivedBytes / workerFileTransfer.totalBytes) * 100))
     : null;
@@ -155,7 +161,7 @@ export function DownloadItem({
               )}
               {isCloudUpload && (
                 <>
-                  {!hasShareUrl ? (
+                  {!hasShareUrl && canCreateShareLink ? (
                     <>
                       <span className="text-center text-gray-400 shrink-0 ml-2">•</span>
                       <Button
@@ -175,7 +181,7 @@ export function DownloadItem({
                         }
                       </Button>
                     </>
-                  ) : (
+                  ) : hasShareUrl ? (
                     <>
                       <span className="text-center text-gray-400 shrink-0 ml-2">•</span>
                       <Button
@@ -208,7 +214,7 @@ export function DownloadItem({
                         }
                       </Button>
                     </>
-                  )}
+                  ) : null}
                 </>
               )}
             </div>
@@ -267,7 +273,7 @@ export function DownloadItem({
             {workerDownloadButton}
             {isCloudUpload && (
               <>
-                {!hasShareUrl ? (
+                {!hasShareUrl && canCreateShareLink ? (
                   <Button
                     variant="ghost"
                     size="icon"
@@ -284,7 +290,7 @@ export function DownloadItem({
                       : <Link className="h-4 w-4 text-muted-foreground" />
                     }
                   </Button>
-                ) : (
+                ) : hasShareUrl ? (
                   <>
                     <Button
                       variant="ghost"
@@ -315,7 +321,7 @@ export function DownloadItem({
                       }
                     </Button>
                   </>
-                )}
+                ) : null}
               </>
             )}
             <Button

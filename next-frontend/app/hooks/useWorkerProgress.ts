@@ -47,7 +47,6 @@ export function useWorkerProgress(
     }
 
     let cancelled = false;
-    let lastTaskSeen = false; // true once we've seen this task in the SSE stream
 
     openWorkerStream(
       workerId,
@@ -56,9 +55,14 @@ export function useWorkerProgress(
 
         const task = data?.currentTask;
 
+        // The terminal/visual state of a download comes from the synced DB row,
+        // not from the worker stream. The SSE only drives the live progress bar:
+        // - task present for our download → map currentTask.progress + status.
+        // - task completed/failed → trigger an immediate DB sync.
+        // - task missing mid-stream (worker restart while our job was active) →
+        //   keep the last known progress untouched; the DB row stays the source
+        //   of truth for whether it completed or failed.
         if (task && task.downloadId === downloadId) {
-          // Task is active for our download
-          lastTaskSeen = true;
           const pct = typeof task.progress === "number" ? task.progress : null;
           const isDoneStatus = task.status === "completed" || task.status === "failed";
 
@@ -75,14 +79,6 @@ export function useWorkerProgress(
             setIsDone(true);
             triggerImmediateSync();
           }
-        } else if (lastTaskSeen) {
-          // Task was active but is now null/different — it completed and was cleared
-          setProgress((prev) =>
-            prev ? { ...prev, done: true, percent: 100, percentFixed2: "100.00" } : null
-          );
-          setIsDone(true);
-          lastTaskSeen = false;
-          triggerImmediateSync();
         }
       },
       (_errMsg: string) => {

@@ -28,6 +28,7 @@ export function DownloadList({
   onCloudExternalLink,
   onCloudTabDownload,
   creatingLinkIds,
+  onlineWorkerIds,
 }: DownloadListProps) {
   const hasAnyDownloadable = downloads.some(
     (d) => d.status === "completed" && (
@@ -80,6 +81,7 @@ export function DownloadList({
                   onCloudExternalLink={onCloudExternalLink}
                   onCloudTabDownload={onCloudTabDownload}
                   isCreatingLink={creatingLinkIds?.has(download.id)}
+                  onlineWorkerIds={onlineWorkerIds}
                 />
               ))
             )}
