@@ -11,6 +11,9 @@ Endpoints:
   GET  /downloads/{id}/files/{index}  — session token, completed local file
   POST /downloads/{id}/files/{index}/browser-link — session token, create file-only browser ticket
   GET  /browser-download/{token}      — redirects HTTPS browser navigation to HTTP download
+  POST /downloads/{id}/share          — session token, mint MEGA share link
+  POST /file-info                     — session token, HTTP URL metadata probe
+  POST /torrent-metadata              — session token, magnet → aria2c metadata
   POST /internal/rotate-token         — auth token (internal use only)
 """
 
@@ -243,6 +246,14 @@ class DownloadRequest(BaseModel):
 
 class ShareLinkRequest(BaseModel):
     fileName: str = ""
+
+
+class FileInfoRequest(BaseModel):
+    url: str
+
+
+class TorrentMetadataRequest(BaseModel):
+    magnetLink: str
 
 
 class FileAvailabilityRequest(BaseModel):
@@ -485,6 +496,74 @@ async def create_download_share_link(
     api.report_share_link(_config, download_id, share_url)
     logger.log("info", f"Share link created for download {download_id}")
     return {"success": True, "shareUrl": share_url}
+
+
+# ── POST /file-info ───────────────────────────────────────────────────────────
+
+@app.post("/file-info")
+async def worker_file_info(
+    body: FileInfoRequest,
+    x_session_token: Optional[str] = Header(default=None),
+):
+    """Probe an HTTP(S) URL and return {fileName, fileSize, fileType, fileExtension}.
+
+    Mirrors the Express backend's file-info response so the frontend can swap
+    providers based on the chosen download location. HEAD first, then a 0-byte
+    range GET fallback — never downloads the actual file.
+    """
+    _require_session_token(x_session_token)
+    valid = body.url.startswith(("http://", "https://"))
+    if not valid:
+        raise HTTPException(status_code=400, detail="Only http/https URLs are supported")
+    from streamlift_worker import file_info
+
+    try:
+        info = file_info.fetch_http_file_info(body.url)
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="Request timed out fetching file info")
+    except Exception as e:
+        logger.log("error", f"file-info failed for {body.url}: {e}")
+        raise HTTPException(status_code=502, detail="Could not reach the URL")
+    if info is None:
+        raise HTTPException(status_code=502, detail="Could not fetch file info")
+    return info
+
+
+# ── POST /torrent-metadata ────────────────────────────────────────────────────
+
+@app.post("/torrent-metadata")
+async def worker_torrent_metadata(
+    body: TorrentMetadataRequest,
+    x_session_token: Optional[str] = Header(default=None),
+):
+    """Resolve a magnet link via aria2c and return the Express-shaped metadata.
+
+    The response ``data`` payload matches ``POST /api/torrent-download/metadata``
+    exactly: ``{name, infoHash, totalSize, totalSizeFormatted, fileCount, files}``.
+    The expensive aria2c metadata phase runs in a thread pool so the SSE/status
+    endpoints stay responsive.
+    """
+    _require_session_token(x_session_token)
+    if not body.magnetLink.startswith("magnet:?"):
+        raise HTTPException(status_code=400, detail="Invalid magnet link format")
+    from streamlift_worker import aria2c_stream
+
+    async def _resolve():
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            aria2c_stream.fetch_torrent_metadata,
+            body.magnetLink,
+            aria2c_stream._bt_tracker_map(),
+        )
+
+    metadata = await _resolve()
+    if metadata is None:
+        raise HTTPException(
+            status_code=408,
+            detail="Timeout: Could not fetch metadata. Torrent might be dead or have no seeders.",
+        )
+    return {"status": True, "message": "Metadata fetched successfully", "data": metadata}
 
 
 # ── POST /internal/rotate-token ───────────────────────────────────────────────

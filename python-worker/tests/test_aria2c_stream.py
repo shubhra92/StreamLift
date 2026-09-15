@@ -11,6 +11,10 @@ from streamlift_worker.aria2c_stream import (  # noqa: E402
     _bitfield_complete_bytes,
     _bt_head_flag,
     _contiguous_complete_bytes,
+    _file_type,
+    _format_bytes,
+    _info_hash_from_magnet,
+    _metadata_phase,
     _parse_aria2_control,
     _parse_torrent_meta,
     _select_files,
@@ -327,3 +331,64 @@ def test_stream_returns_false_when_aria2c_cannot_be_installed(monkeypatch, tmp_p
 
     assert ok is False
     assert calls == []  # metadata phase never ran without aria2c
+
+
+# ── pure helpers for the metadata-fetch endpoint ────────────────────────────
+
+
+def test_format_bytes():
+    assert _format_bytes(0) == "0 Bytes"
+    assert _format_bytes(1023) == "1023.00 Bytes"
+    assert _format_bytes(1536) == "1.50 KB"
+    assert _format_bytes(1_048_576) == "1.00 MB"
+    assert _format_bytes(1_073_741_824) == "1.00 GB"
+
+
+def test_file_type():
+    assert _file_type("movie.mkv") == "video"
+    assert _file_type("song.mp3") == "audio"
+    assert _file_type("photo.jpg") == "image"
+    assert _file_type("doc.pdf") == "document"
+    assert _file_type("archive.zip") == "archive"
+    assert _file_type("readme") == "other"
+
+
+def test_info_hash_from_magnet():
+    assert _info_hash_from_magnet("magnet:?xt=urn:btih:aaBBccDD112233445566778899AABBCCDD") == "aabbccdd112233445566778899aabbccdd"
+    assert _info_hash_from_magnet("magnet:?xt=urn:btih:AA") == ""
+    assert _info_hash_from_magnet("https://example.com/file.torrent") == ""
+
+
+def test_fetch_torrent_metadata(monkeypatch, tmp_path):
+    from streamlift_worker import aria2c_stream
+
+    info = {
+        "name": "Big.Bundle",
+        "piece length": 16_384,
+        "files": [
+            {"length": 1_000_000, "path": ["video.mkv"]},
+            {"length": 250_000, "path": ["subtitle.srt"]},
+        ],
+    }
+    blob = _torrent_bytes(info)
+    torrent_path = tmp_path / "Big.Bundle.torrent"
+    torrent_path.write_bytes(blob)
+
+    monkeypatch.setattr(aria2c_stream, "_metadata_phase", lambda *a, **kw: str(torrent_path))
+
+    result = aria2c_stream.fetch_torrent_metadata(
+        "magnet:?xt=urn:btih:aabbccdd112233445566778899aabbccdd",
+        tracker="",
+    )
+    assert result is not None
+    assert result["name"] == "Big.Bundle"
+    assert result["infoHash"] == "aabbccdd112233445566778899aabbccdd"
+    assert result["fileCount"] == 2
+    assert result["totalSize"] == 1_250_000
+    files = result["files"]
+    assert [f["index"] for f in files] == [0, 1]
+    assert files[0]["size"] >= files[1]["size"]  # sorted desc
+    assert files[0]["name"] == "video.mkv"
+    assert files[0]["type"] == "video"
+    assert files[1]["name"] == "subtitle.srt"
+    assert files[1]["type"] == "other"

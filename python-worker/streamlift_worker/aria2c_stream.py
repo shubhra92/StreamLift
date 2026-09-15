@@ -26,11 +26,14 @@ falls back to the classic download-then-upload aria2c path.
 from __future__ import annotations
 
 import glob
+import math
 import os
 import queue
+import re
 import shutil
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 from typing import Any, Optional
@@ -299,6 +302,85 @@ def _metadata_phase(
         logger.log("warning", "aria2c metadata phase produced no .torrent file")
         return None
     return torrents[0]
+
+
+def _info_hash_from_magnet(magnet_link: str) -> str:
+    """Extract the info-hash hex from a magnet link (xt=urn:btih:...)."""
+    m = re.search(r"[?&]xt=urn:btih:([a-fA-F0-9]{32,40})", magnet_link)
+    return m.group(1).lower() if m else ""
+
+
+def _format_bytes(num: int) -> str:
+    if num <= 0:
+        return "0 Bytes"
+    sizes = ["Bytes", "KB", "MB", "GB", "TB"]
+    i = min(int(math.log(num, 1024)), len(sizes) - 1)
+    return f"{num / (1024 ** i):.2f} {sizes[i]}"
+
+
+def _file_type(rel_path: str) -> str:
+    """Classify a file by extension — mirrors the Express backend shape."""
+    ext = rel_path.rsplit(".", 1)[-1].lower() if "." in rel_path else ""
+    if ext in {"mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v"}:
+        return "video"
+    if ext in {"mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"}:
+        return "audio"
+    if ext in {"jpg", "jpeg", "png", "gif", "bmp", "svg", "webp"}:
+        return "image"
+    if ext in {"pdf", "doc", "docx", "txt", "rtf", "odt", "epub"}:
+        return "document"
+    if ext in {"zip", "rar", "7z", "tar", "gz", "bz2"}:
+        return "archive"
+    return "other"
+
+
+def fetch_torrent_metadata(
+    magnet_link: str, tracker: str = ""
+) -> Optional[dict]:
+    """Resolve a magnet link via aria2c and return the Express-shaped metadata.
+
+    Returns a dict matching ``POST /api/torrent-download/metadata``'s
+    ``data`` payload so the frontend can swap the provider transparently:
+    ``{name, infoHash, totalSize, totalSizeFormatted, fileCount, files}``
+    where each file is ``{index, name, path, size, sizeFormatted, type}``
+    (files sorted by size desc). ``None`` when metadata can't be fetched.
+    """
+    scratch = tempfile.mkdtemp(prefix="sl-meta-")
+    try:
+        torrent_path = _metadata_phase(scratch, magnet_link, tracker=tracker)
+        if not torrent_path:
+            return None
+        _piece_len, meta_files = _parse_torrent_meta(torrent_path)
+        with open(torrent_path, "rb") as f:
+            raw = f.read()
+        _meta, _ = _bdecode(raw)
+        info = _meta[b"info"]
+        name = info.get(b"name", b"download").decode("utf-8", "replace")
+        files = [
+            {
+                "index": idx,
+                "name": rel.rsplit("/", 1)[-1],
+                "path": rel,
+                "size": size,
+                "sizeFormatted": _format_bytes(size),
+                "type": _file_type(rel),
+            }
+            for idx, rel, size, _off in meta_files
+            if not _is_pad(rel)
+        ]
+        files.sort(key=lambda f: f["size"], reverse=True)
+        total = sum(f["size"] for f in files)
+        logger.log("info", f"Torrent metadata resolved: {name} ({len(files)} files)")
+        return {
+            "name": name,
+            "infoHash": _info_hash_from_magnet(magnet_link),
+            "totalSize": total,
+            "totalSizeFormatted": _format_bytes(total),
+            "fileCount": len(files),
+            "files": files,
+        }
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 # ── pump: feed completed prefix bytes into the upload stream ─────────────────
