@@ -4,7 +4,8 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { LocationSelect } from "./LocationSelect";
+import { LocationSelect, locationName, locationDotClass } from "./LocationSelect";
+import { getWorkerFileInfo } from "@/app/lib/workerConnection";
 import type { AddDownloadModalProps, FileInfo } from "./types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -80,6 +81,12 @@ export function AddDownloadModal({
 
   // ── Step 1: fetch file info ───────────────────────────────────────────────
 
+  // Location drives the info provider: a specific online worker fetches its own
+  // file info (it is going to do the download anyway); everything else — including
+  // a worker that is currently offline — uses Express.
+  const workerId = location.startsWith("worker-") ? location.slice("worker-".length) : null;
+  const worker = workerId ? workers.find((w) => w.id === workerId) : undefined;
+
   const handleNext = async () => {
     const trimmed = url.trim();
     if (!trimmed) {
@@ -97,26 +104,32 @@ export function AddDownloadModal({
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
+    let info: FileInfo;
     try {
-      const res = await fetch(
-        `/api/file-info?url=${encodeURIComponent(trimmed)}`,
-        { signal: ctrl.signal }
-      );
+      if (workerId && worker?.online) {
+        // Worker probes the URL directly — no Express round-trip.
+        info = await getWorkerFileInfo(workerId, trimmed, ctrl.signal);
+      } else {
+        const res = await fetch(
+          `/api/file-info?url=${encodeURIComponent(trimmed)}`,
+          { signal: ctrl.signal }
+        );
 
-      if (res.status === 401) {
-        setFetchState({ status: "error", message: "Unauthorized. Please refresh and try again." });
-        return;
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setFetchState({
-          status: "error",
-          message: body.error ?? `Could not fetch file info (${res.status}).`,
-        });
-        return;
+        if (res.status === 401) {
+          setFetchState({ status: "error", message: "Unauthorized. Please refresh and try again." });
+          return;
+        }
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          setFetchState({
+            status: "error",
+            message: body.error ?? `Could not fetch file info (${res.status}).`,
+          });
+          return;
+        }
+        info = await res.json();
       }
 
-      const info: FileInfo = await res.json();
       setFileName(info.fileName);
       setFetchState({ status: "done", info });
       setStep("details");
@@ -191,6 +204,17 @@ export function AddDownloadModal({
                 )}
               </div>
 
+              {/* Location chosen first — it decides who fetches the file info */}
+              <div className="space-y-1.5">
+                <label className="text-sm text-muted-foreground">Download location</label>
+                <LocationSelect value={location} onChange={setLocation} workers={workers} />
+                {workerId && !worker?.online && (
+                  <p className="text-xs text-muted-foreground">
+                    Worker offline — fetching info via server instead.
+                  </p>
+                )}
+              </div>
+
               <div className="flex flex-col-reverse sm:flex-row gap-3">
                 <Button
                   variant="outline"
@@ -256,8 +280,16 @@ export function AddDownloadModal({
                 </div>
               </div>
 
-              {/* Location picker */}
-              <LocationSelect value={location} onChange={setLocation} workers={workers} />
+              {/* Location — fixed once chosen (it decided who fetched info) */}
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-foreground">Download location</label>
+                <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-4 py-2.5">
+                  {locationDotClass(location, workers) && (
+                    <span className={`h-2.5 w-2.5 rounded-full ${locationDotClass(location, workers)}`} />
+                  )}
+                  <span className="text-sm font-medium">{locationName(location, workers)}</span>
+                </div>
+              </div>
 
               <div className="flex flex-col-reverse sm:flex-row gap-3">
                 <Button

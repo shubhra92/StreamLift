@@ -12,6 +12,25 @@ export interface WorkerOption {
   online: boolean;
 }
 
+/** Human-readable label for a stored location value (shared by pickers + read-only badges). */
+export function locationName(loc: string, workers: WorkerOption[] = []): string {
+  if (loc.startsWith("worker-")) {
+    const w = workers.find((x) => x.id === loc.slice("worker-".length));
+    return w ? w.name : "Worker";
+  }
+  if (loc === "server") return cloudLabel;
+  if (loc === "cloud" || loc === "mega") return "Cloud";
+  if (loc === "all-workers") return "All Workers (auto-assign)";
+  return loc;
+}
+
+/** Tailwind dot color for a location badge — workers only, by online status; null means no dot. */
+export function locationDotClass(loc: string, workers: WorkerOption[] = []): string | null {
+  if (!loc.startsWith("worker-")) return null;
+  const online = workers.some((w) => w.id === loc.slice("worker-".length) && w.online);
+  return online ? "bg-green-500" : "bg-gray-400";
+}
+
 interface LocationSelectProps {
   value: string;
   onChange: (value: string) => void;

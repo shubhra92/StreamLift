@@ -11,7 +11,8 @@ import {
   DialogDescription
 } from "@/components/ui/dialog";
 import { TorrentFileSelector } from "./TorrentFileSelector";
-import { LocationSelect } from "../downloads/LocationSelect";
+import { LocationSelect, locationName, locationDotClass } from "../downloads/LocationSelect";
+import { getWorkerTorrentMetadata } from "@/app/lib/workerConnection";
 import { parseTorrentFile } from "@/app/lib/torrentParser";
 import { Upload } from "lucide-react";
 
@@ -98,7 +99,12 @@ export function AddTorrentModal({
 
   // ------------------------------------------------------------------
   // Proceed to file selector via metadata API
+  // An online worker resolves metadata via aria2c; if it's offline we
+  // fall back to Express.
   // ------------------------------------------------------------------
+  const workerId = location.startsWith("worker-") ? location.slice("worker-".length) : null;
+  const worker = workerId ? workers.find((w) => w.id === workerId) : undefined;
+
   const handleFetchMetadata = async () => {
     if (!magnetLink) return;
 
@@ -109,13 +115,18 @@ export function AddTorrentModal({
 
     setFetchingMetadata(true);
     try {
-      const response = await fetch("/api/torrent-download/metadata", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ magnet_link: magnetLink }),
-      });
-
-      const result = await response.json();
+      let result: { status: boolean; message: string; data?: any };
+      if (workerId && worker?.online) {
+        // Let the worker resolve metadata over aria2c — it will fetch the torrent anyway.
+        result = await getWorkerTorrentMetadata(workerId, magnetLink);
+      } else {
+        const response = await fetch("/api/torrent-download/metadata", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ magnet_link: magnetLink }),
+        });
+        result = await response.json();
+      }
 
       if (!result.status) {
         alert(result.message || "Failed to fetch torrent metadata");
@@ -250,6 +261,17 @@ export function AddTorrentModal({
                 )}
               </div>
 
+              {/* Location chosen first — it decides who fetches the metadata */}
+              <div className="space-y-1.5">
+                <label className="text-sm text-muted-foreground">Download location</label>
+                <LocationSelect value={location} onChange={setLocation} workers={workers} />
+                {workerId && !worker?.online && (
+                  <p className="text-xs text-muted-foreground">
+                    Worker offline — fetching metadata via server instead.
+                  </p>
+                )}
+              </div>
+
               <div className="flex flex-col-reverse sm:flex-row gap-3">
                 <Button
                   variant="outline"
@@ -279,9 +301,8 @@ export function AddTorrentModal({
                   metadata={metadata}
                   fileNameOverride={fileNameOverride}
                   onFileNameOverrideChange={setFileNameOverride}
-                  location={location}
-                  onLocationChange={setLocation}
-                  workers={workers}
+                  locationName={locationName(location, workers)}
+                  locationDotClass={locationDotClass(location, workers)}
                   onConfirm={handleConfirmSelection}
                   onCancel={() => setStep("input")}
                   loading={loading}

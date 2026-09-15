@@ -464,6 +464,34 @@ export async function createWorkerShareLink(
   return res.json();
 }
 
+/** Probe an HTTP(S) URL on a worker (mirrors Express /api/file-info). */
+export async function getWorkerFileInfo(
+  workerId: string,
+  url: string,
+  signal?: AbortSignal,
+): Promise<{ fileName: string; fileSize: number | null; fileType: string | null; fileExtension: string | null }> {
+  const res = await callWorker(workerId, "POST", "/file-info", { url }, undefined, signal);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? `Worker file-info failed (${res.status})`);
+  }
+  return res.json();
+}
+
+/** Resolve a magnet link on a worker via aria2c (mirrors Express /api/torrent-download/metadata). */
+export async function getWorkerTorrentMetadata(
+  workerId: string,
+  magnetLink: string,
+  signal?: AbortSignal,
+): Promise<{ status: boolean; message: string; data: any }> {
+  const res = await callWorker(workerId, "POST", "/torrent-metadata", { magnetLink }, undefined, signal);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? err.message ?? `Worker torrent-metadata failed (${res.status})`);
+  }
+  return res.json();
+}
+
 /** Cancel an in-progress download on the worker. */
 export async function cancelWorkerDownload(
   workerId: string,

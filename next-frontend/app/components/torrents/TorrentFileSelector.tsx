@@ -4,7 +4,6 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { FileVideo, FileAudio, FileImage, FileText, FileArchive, File, Check } from "lucide-react";
-import { LocationSelect } from "../downloads/LocationSelect";
 
 interface TorrentFile {
   index: number;
@@ -28,9 +27,10 @@ interface TorrentFileSelectorProps {
   metadata: TorrentMetadata;
   fileNameOverride: string;
   onFileNameOverrideChange: (value: string) => void;
-  location: string;
-  onLocationChange: (value: string) => void;
-  workers?: { id: string; name: string; online: boolean }[];
+  /** Chosen on the previous step — displayed read-only here */
+  locationName: string;
+  /** Dot color for the location badge (null = no dot, e.g. cloud/server) */
+  locationDotClass?: string | null;
   onConfirm: (selectedIndices: number[], selectedFiles: TorrentFile[]) => void;
   onCancel: () => void;
   loading: boolean;
@@ -40,9 +40,8 @@ export function TorrentFileSelector({
   metadata,
   fileNameOverride,
   onFileNameOverrideChange,
-  location,
-  onLocationChange,
-  workers = [],
+  locationName,
+  locationDotClass,
   onConfirm,
   onCancel,
   loading,
@@ -120,12 +119,17 @@ export function TorrentFileSelector({
         />
       </div>
 
-      {/* Storage location */}
+      {/* Storage location — fixed once chosen on the previous step */}
       <div>
         <label className="text-sm text-muted-foreground mb-2 block">
           Storage Location
         </label>
-        <LocationSelect value={location} onChange={onLocationChange} workers={workers} />
+        <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-4 py-2.5">
+          {locationDotClass && (
+            <span className={`h-2.5 w-2.5 rounded-full ${locationDotClass}`} />
+          )}
+          <span className="text-sm font-medium">{locationName}</span>
+        </div>
         <p className="text-xs text-muted-foreground mt-1">
           MEGA recommended for persistent storage
         </p>
