@@ -360,7 +360,9 @@ def test_info_hash_from_magnet():
 
 
 def test_fetch_torrent_metadata(monkeypatch, tmp_path):
-    from streamlift_worker import aria2c_stream
+    from streamlift_worker import aria2c_stream, downloader
+
+    monkeypatch.setattr(downloader, "_ensure_aria2c", lambda: True)
 
     info = {
         "name": "Big.Bundle",
@@ -392,3 +394,47 @@ def test_fetch_torrent_metadata(monkeypatch, tmp_path):
     assert files[0]["type"] == "video"
     assert files[1]["name"] == "subtitle.srt"
     assert files[1]["type"] == "other"
+
+
+def test_fetch_metadata_installs_aria2c_first(monkeypatch, tmp_path):
+    """Ensure aria2c is installed before the metadata phase runs."""
+    from streamlift_worker import aria2c_stream, downloader
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        downloader,
+        "_ensure_aria2c",
+        lambda: (calls.append("ensure"), True)[1],
+    )
+    monkeypatch.setattr(
+        aria2c_stream,
+        "_metadata_phase",
+        lambda *a, **kw: (calls.append("phase"), None)[1],
+    )
+
+    result = aria2c_stream.fetch_torrent_metadata(
+        "magnet:?xt=urn:btih:aabbccdd112233445566778899aabbccdd"
+    )
+    assert result is None  # phase returned nothing
+    assert calls == ["ensure", "phase"]
+
+
+def test_fetch_metadata_skips_phase_when_aria2c_missing(monkeypatch):
+    """Cannot install aria2c → RuntimeError and the metadata phase never runs."""
+    import pytest
+
+    from streamlift_worker import aria2c_stream, downloader
+
+    monkeypatch.setattr(downloader, "_ensure_aria2c", lambda: False)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        aria2c_stream,
+        "_metadata_phase",
+        lambda *a, **kw: (calls.append("phase"), None)[1],
+    )
+
+    with pytest.raises(RuntimeError, match="aria2c"):
+        aria2c_stream.fetch_torrent_metadata(
+            "magnet:?xt=urn:btih:aabbccdd112233445566778899aabbccdd"
+        )
+    assert calls == []

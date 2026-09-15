@@ -557,7 +557,13 @@ async def worker_torrent_metadata(
             aria2c_stream._bt_tracker_map(),
         )
 
-    metadata = await _resolve()
+    try:
+        metadata = await _resolve()
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"aria2c is not available and could not be installed: {e}",
+        )
     if metadata is None:
         raise HTTPException(
             status_code=408,

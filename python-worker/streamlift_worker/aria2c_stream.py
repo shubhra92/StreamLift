@@ -344,7 +344,13 @@ def fetch_torrent_metadata(
     ``{name, infoHash, totalSize, totalSizeFormatted, fileCount, files}``
     where each file is ``{index, name, path, size, sizeFormatted, type}``
     (files sorted by size desc). ``None`` when metadata can't be fetched.
+    Raises ``RuntimeError`` when aria2c is missing and cannot be installed.
     """
+    from streamlift_worker.downloader import _ensure_aria2c  # lazy: no import cycle
+
+    if not _ensure_aria2c():
+        raise RuntimeError("aria2c could not be installed")
+
     scratch = tempfile.mkdtemp(prefix="sl-meta-")
     try:
         torrent_path = _metadata_phase(scratch, magnet_link, tracker=tracker)
