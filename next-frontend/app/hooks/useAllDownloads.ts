@@ -6,13 +6,13 @@ import type { IDBFileDownload } from "@/app/lib/idb/schema";
 
 export type NetworkStatus = "online" | "offline";
 
-export interface UseTorrentsResult {
+export interface UseAllDownloadsResult {
   downloads: IDBFileDownload[];
   networkStatus: NetworkStatus;
   syncNow: () => void;
 }
 
-export function useTorrents(): UseTorrentsResult {
+export function useAllDownloads(): UseAllDownloadsResult {
   const [downloads, setDownloads] = useState<IDBFileDownload[]>([]);
   const [networkStatus, setNetworkStatus] = useState<NetworkStatus>("online");
   const client = useRef(WorkerClient.getInstance());
@@ -21,19 +21,21 @@ export function useTorrents(): UseTorrentsResult {
     const wc = client.current;
     void wc.init();
 
-    const onData = (rows: IDBFileDownload[]) => setDownloads(rows);
+    const onDownloads = (rows: IDBFileDownload[]) => {
+      setDownloads(rows);
+    };
     const unsubNetwork = wc.subscribeNetwork((s) => setNetworkStatus(s));
 
-    wc.subscribe("torrents", onData);
+    wc.subscribe("downloads", onDownloads);
 
     return () => {
-      wc.unsubscribe("torrents", onData);
+      wc.unsubscribe("downloads", onDownloads);
       unsubNetwork();
     };
   }, []);
 
   const syncNow = useCallback(() => {
-    client.current.syncNow("torrents");
+    client.current.syncNow("downloads");
   }, []);
 
   return { downloads, networkStatus, syncNow };

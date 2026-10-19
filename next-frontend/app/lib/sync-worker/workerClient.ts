@@ -54,7 +54,6 @@ class WorkerClient {
 
   // ── Data subscribers ──────────────────────────────────────────────────────
   private downloadSubs: Set<DownloadDataCallback> = new Set();
-  private torrentSubs:  Set<DownloadDataCallback> = new Set();
   private workerSubs:   Set<WorkerDataCallback>   = new Set();
 
   // ── Dependency registry ───────────────────────────────────────────────────
@@ -120,10 +119,10 @@ class WorkerClient {
     // This must happen BEFORE the worker is connected so the wiped cursor
     // is what gets sent in the 'declare' message — not the stale one.
     try {
-      const idbRows = await getAllDownloads("http");
+      const idbRows = await getAllDownloads(undefined);
       const hasStale = idbRows.some((r) => r.status === "downloading");
       if (hasStale) {
-        await setCursor("downloads_cursor", new Date(0).toISOString());
+        await setCursor("filedownloads_cursor", new Date(0).toISOString());
       }
     } catch {
       // IDB unavailable — safe to continue
@@ -252,7 +251,7 @@ class WorkerClient {
     }>,
     orphanIds?: string[]   // IDs to remove from IDB (reconciliation from worker)
   ): Promise<void> {
-    if (entity === "downloads" || entity === "torrents") {
+    if (entity === "downloads") {
       // Remove orphans first (externally deleted rows)
       if (orphanIds && orphanIds.length > 0) {
         const { deleteDownloadFromIDB } = await import("@/app/lib/idb/IDBStore");
@@ -261,10 +260,8 @@ class WorkerClient {
       if (rows.length > 0) {
         await upsertDownloads(rows as unknown as FileDownload[]);
       }
-      const downloadType = entity === "downloads" ? "http" : "torrent";
-      const idbRows = await getAllDownloads(downloadType);
-      const subs = entity === "downloads" ? this.downloadSubs : this.torrentSubs;
-      subs.forEach((cb) => cb(idbRows));
+      const idbRows = await getAllDownloads(undefined);
+      this.downloadSubs.forEach((cb) => cb(idbRows));
 
     } else if (entity === "workers") {
       if (orphanIds && orphanIds.length > 0) {
@@ -298,8 +295,7 @@ class WorkerClient {
    */
   private async flushDeclare(): Promise<void> {
     const CURSOR_KEYS: Record<SyncEntity, string> = {
-      downloads: "downloads_cursor",
-      torrents:  "torrents_cursor",
+      downloads: "filedownloads_cursor",
       workers:   "workers_cursor",
     };
 
@@ -321,9 +317,11 @@ class WorkerClient {
           if (entity === "workers") {
             const rows = await getAllWorkers();
             ids = rows.map((r) => r.id);
+          } else if (entity === "downloads") {
+            const rows = await getAllDownloads(undefined);
+            ids = rows.map((r) => r.id);
           } else {
-            const type = entity === "downloads" ? "http" : "torrent";
-            const rows = await getAllDownloads(type);
+            const rows = await getAllDownloads(undefined);
             ids = rows.map((r) => r.id);
           }
           return [entity, ids] as const;
@@ -346,27 +344,19 @@ class WorkerClient {
 
   // ─── Data subscribe / unsubscribe ─────────────────────────────────────────
 
-  subscribe(entity: "downloads" | "torrents", cb: DownloadDataCallback): void;
+  subscribe(entity: "downloads", cb: DownloadDataCallback): void;
   subscribe(entity: "workers", cb: WorkerDataCallback): void;
   subscribe(entity: SyncEntity, cb: DownloadDataCallback | WorkerDataCallback): void {
-    if (this.isFallback) { this._fallback.subscribe(entity, cb); return; }
+    if (this.isFallback) { this._fallback.subscribe(entity as any, cb as any); return; }
 
-    if (entity === "downloads") {
+    if (entity === "downloads" || (entity as any) === "torrents") {
+      const target = "downloads" as const;
       this.downloadSubs.add(cb as DownloadDataCallback);
       if (this.downloadSubs.size === 1) {
-        this.needs.add("downloads");
+        this.needs.add(target);
         if (this.guestVerified) {
           void this.flushDeclare();
-          void this.emitFromIDB("downloads");
-        }
-      }
-    } else if (entity === "torrents") {
-      this.torrentSubs.add(cb as DownloadDataCallback);
-      if (this.torrentSubs.size === 1) {
-        this.needs.add("torrents");
-        if (this.guestVerified) {
-          void this.flushDeclare();
-          void this.emitFromIDB("torrents");
+          void this.emitFromIDB(target);
         }
       }
     } else if (entity === "workers") {
@@ -381,21 +371,15 @@ class WorkerClient {
     }
   }
 
-  unsubscribe(entity: "downloads" | "torrents", cb: DownloadDataCallback): void;
+  unsubscribe(entity: "downloads", cb: DownloadDataCallback): void;
   unsubscribe(entity: "workers", cb: WorkerDataCallback): void;
   unsubscribe(entity: SyncEntity, cb: DownloadDataCallback | WorkerDataCallback): void {
-    if (this.isFallback) { this._fallback.unsubscribe(entity, cb); return; }
+    if (this.isFallback) { this._fallback.unsubscribe(entity as any, cb as any); return; }
 
-    if (entity === "downloads") {
+    if (entity === "downloads" || (entity as any) === "torrents") {
       this.downloadSubs.delete(cb as DownloadDataCallback);
       if (this.downloadSubs.size === 0) {
         this.needs.delete("downloads");
-        void this.flushDeclare();
-      }
-    } else if (entity === "torrents") {
-      this.torrentSubs.delete(cb as DownloadDataCallback);
-      if (this.torrentSubs.size === 0) {
-        this.needs.delete("torrents");
         void this.flushDeclare();
       }
     } else if (entity === "workers") {
@@ -510,11 +494,11 @@ class WorkerClient {
 
     // Wipe IDB cursor first so if the worker restarts it also starts clean
     const CURSOR_KEYS: Record<SyncEntity, string> = {
-      downloads: "downloads_cursor",
-      torrents:  "torrents_cursor",
+      downloads: "filedownloads_cursor",
       workers:   "workers_cursor",
     };
-    await setCursor(CURSOR_KEYS[entity] as any, new Date(0).toISOString());
+    const key = (entity as any) === "torrents" ? "filedownloads_cursor" : CURSOR_KEYS[entity];
+    await setCursor(key as any, new Date(0).toISOString());
 
     // If the worker isn't ready yet, wait for it so resetCursor is the LAST
     // thing in the queue — after declare (which may set an old cursor).
@@ -547,12 +531,9 @@ class WorkerClient {
   // ─── IDB seed helpers ─────────────────────────────────────────────────────
 
   private async emitFromIDB(entity: SyncEntity): Promise<void> {
-    if (entity === "downloads") {
-      const rows = await getAllDownloads("http");
+    if (entity === "downloads" || (entity as any) === "torrents") {
+      const rows = await getAllDownloads(undefined);
       this.downloadSubs.forEach((cb) => cb(rows));
-    } else if (entity === "torrents") {
-      const rows = await getAllDownloads("torrent");
-      this.torrentSubs.forEach((cb) => cb(rows));
     } else if (entity === "workers") {
       const rows = await getAllWorkers();
       this.workerSubs.forEach((cb) => cb(rows));
@@ -570,7 +551,6 @@ class WorkerClient {
   async deleteDownload(id: string): Promise<void> {
     await deleteDownloadFromIDB(id);
     await this.emitFromIDB("downloads");
-    await this.emitFromIDB("torrents");
   }
 
   async deleteWorker(id: string): Promise<void> {

@@ -17,9 +17,8 @@ function useGuestInfo() {
 }
 
 const NAV_LINKS = [
-  { href: "/",        label: "HTTP Downloads", short: "HTTP",    Icon: Download },
-  { href: "/torrents",label: "Torrents",        short: "Torrent", Icon: Magnet   },
-  { href: "/workers", label: "Workers",         short: "Workers", Icon: Cpu      },
+  { href: "/",        label: "Downloads",       short: "Downloads", Icon: Download },
+  { href: "/workers", label: "Workers",          short: "Workers",   Icon: Cpu      },
 ] as const;
 
 export function Navigation() {

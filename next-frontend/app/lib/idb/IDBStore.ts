@@ -43,11 +43,16 @@ export function workerToIDB(
 // ─── fileDownloads ────────────────────────────────────────────────────────────
 
 export async function getAllDownloads(
-  downloadType: "http" | "torrent"
+  downloadType?: "http" | "torrent"
 ): Promise<IDBFileDownload[]> {
   try {
     const db = await getDB();
-    const all = await db.getAllFromIndex("fileDownloads", "by_downloadType", downloadType);
+    let all: IDBFileDownload[];
+    if (downloadType === "http" || downloadType === "torrent") {
+      all = await db.getAllFromIndex("fileDownloads", "by_downloadType", downloadType);
+    } else {
+      all = await db.getAll("fileDownloads");
+    }
     // Sort newest-first (mirrors the server action ORDER BY createdAt DESC)
     return all.sort((a, b) => {
       const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;

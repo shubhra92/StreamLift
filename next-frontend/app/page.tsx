@@ -5,13 +5,15 @@ import { motion, AnimatePresence } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { useProgress } from "./hooks/useProgress"; //need go deep
 import { useWorkerProgress } from "./hooks/useWorkerProgress"; //need go deep
-import { useDownloads } from "./hooks/useDownloads"; //need go deep
+import { useAllDownloads } from "./hooks/useAllDownloads"; //need go deep
 import { useWorkers } from "./hooks/useWorkers"; //need go deep
 import { createDownload, deleteDownload, updateDownload, claimDownload } from "./actions/downloads"; //need go deep
+import { createTorrentDownload, claimTorrentDownload, updateTorrentDownload, deleteTorrentDownload } from "./actions/torrents"; //need go deep
 import type { FileDownload } from "./db/schema"; //need go deep
 import type { IDBFileDownload } from "./lib/idb/schema"; //need go deep
 import type { FileInfo } from "./components/downloads";
 import { startDownload } from "./lib/startDownload";
+import useTorrentService from "./service/torrentService";
 import {
   downloadWorkerLocalFile,
   openWorkerLocalFileInBrowser,
@@ -30,10 +32,11 @@ import {
   DownloadList,
   DownloadDetails,
   LocalDownloadTray,
-  AddDownloadModal,
+  AddUnifiedModal,
   EditDownloadModal,
   PartCountDialog,
 } from "./components/downloads"; //need go deep
+import type { SelectedFilesMeta } from "./components/torrents/AddTorrentModal";
 
 function isWorkerLocation(location: string | null | undefined): boolean {
   if (!location) return false;
@@ -66,8 +69,9 @@ export default function Home() {
   const panelRef = useRef<HTMLDivElement>(null);
   const cloudControlsRef = useRef<Map<string, { retryPart: (partIndex: number) => void }>>(new Map());
 
-  const { downloads: idbDownloads, networkStatus, syncNow } = useDownloads();
+  const { downloads: idbDownloads, networkStatus, syncNow } = useAllDownloads();
   const downloads = idbDownloads.map(toFileDownload);
+  const torrentService = useTorrentService();
   const workerFileAvailabilityKey = downloads
     .filter((download) => download.status === "completed" && !!download.workerId)
     .map((download) => `${download.id}:${download.workerId}:${download.updatedAt?.getTime() ?? 0}`)
@@ -189,14 +193,23 @@ export default function Home() {
 
     void wc.init().then(() => {
       unsub = wc.subscribeServerDispatch(async (download: any) => {
-        if (download.downloadType !== "http") return;
-        const claim = await claimDownload(download.id);
-        if (!claim.success) return;
-        const { status } = await startDownload(claim.data!);
-        if (!status) {
-          await updateDownload(download.id, { status: "pending" });
+        if (download.downloadType === "http") {
+          const claim = await claimDownload(download.id);
+          if (!claim.success) return;
+          const { status } = await startDownload(claim.data!);
+          if (!status) {
+            await updateDownload(download.id, { status: "pending" });
+          }
+          syncNow();
+        } else if (download.downloadType === "torrent") {
+          const claim = await claimTorrentDownload(download.id);
+          if (!claim.success) return;
+          const { status } = await torrentService.startDownload(claim.data!);
+          if (!status) {
+            await updateTorrentDownload(download.id, { status: "pending" });
+          }
+          syncNow();
         }
-        syncNow();
       });
     });
 
@@ -269,12 +282,39 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", handleMouseDown);
   }, [selectedId]);
 
-  const handleAddDownload = async (url: string, location: string, fileName: string, fileInfo: FileInfo) => {
+  const handleAddHttp = async (
+    sourceUrl: string,
+    location: string,
+    fileName?: string,
+    fileSize?: number | null,
+    fileType?: string | null
+  ) => {
     setLoading(true);
     try {
-      await createDownload(url, location, fileName, fileInfo.fileSize, fileInfo.fileType);
+      await createDownload(sourceUrl, location, fileName, fileSize, fileType);
       setIsModalOpen(false);
-      // Just create the DB record — the SharedWorker dispatcher will trigger it
+      syncNow();
+    } catch (err: any) {
+      alert(err.message ?? "Failed to create download");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddTorrent = async (
+    magnetLink: string,
+    location: string,
+    fileIndices: number[],
+    meta: SelectedFilesMeta
+  ) => {
+    setLoading(true);
+    try {
+      const result = await createTorrentDownload(magnetLink, location, fileIndices, meta);
+      if (!result.success) {
+        alert(result.message ?? "Failed to create download");
+        return;
+      }
+      setIsModalOpen(false);
       syncNow();
     } finally {
       setLoading(false);
@@ -560,8 +600,8 @@ export default function Home() {
             className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4"
           >
             <div>
-              <h2 className="text-xl md:text-2xl font-bold">HTTP Downloads</h2>
-              <p className="text-sm text-muted-foreground mt-1">Download files from direct URLs</p>
+              <h2 className="text-xl md:text-2xl font-bold">Downloads</h2>
+              <p className="text-sm text-muted-foreground mt-1">Download files from direct URLs or torrents</p>
             </div>
             <Button
               onClick={() => setIsModalOpen(true)}
@@ -629,10 +669,11 @@ export default function Home() {
         onRetryCloudPart={retryCloudPart}
       />
 
-      <AddDownloadModal
+      <AddUnifiedModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        onSubmit={handleAddDownload}
+        onAddHttp={handleAddHttp}
+        onAddTorrent={handleAddTorrent}
         loading={loading}
         workers={workers}
       />

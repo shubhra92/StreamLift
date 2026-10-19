@@ -106,6 +106,31 @@ export async function getDownloads(
   return { data, syncedAt };
 }
 
+export async function getAllDownloads(
+  since?: string
+): Promise<DeltaSyncResult<FileDownload>> {
+  const guestId = await getGuestId();
+  if (!guestId) return { data: [], syncedAt: new Date().toISOString() };
+
+  const syncedAt = new Date().toISOString();
+
+  const conditions = [eq(fileDownloads.guestId, guestId)];
+
+  // Delta sync: only return rows updated after the cursor
+  if (since) {
+    const { gte } = await import("drizzle-orm");
+    conditions.push(gte(fileDownloads.updatedAt, new Date(since)));
+  }
+
+  const data = await db
+    .select()
+    .from(fileDownloads)
+    .where(and(...conditions))
+    .orderBy(desc(fileDownloads.createdAt));
+
+  return { data, syncedAt };
+}
+
 /**
  * Atomically claim a pending download by transitioning it from
  * 'pending' → 'downloading' using a conditional UPDATE.

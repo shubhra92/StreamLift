@@ -49,7 +49,7 @@ import type { IDBFileDownload, IDBWorker } from "./schema";
 
 // ─── Entity types ─────────────────────────────────────────────────────────────
 
-export type SyncEntity = "downloads" | "torrents" | "workers";
+export type SyncEntity = "downloads" | "workers";
 
 // ─── Callbacks ────────────────────────────────────────────────────────────────
 
@@ -75,19 +75,16 @@ interface SyncBroadcast {
 
 const INTERVALS: Record<SyncEntity, number> = {
   downloads: 30_000,
-  torrents:  30_000,
   workers:   15_000,
 };
 
 const CURSOR_KEY: Record<SyncEntity, SyncMetaKey> = {
-  downloads: "downloads_cursor",
-  torrents:  "torrents_cursor",
+  downloads: "filedownloads_cursor",
   workers:   "workers_cursor",
 };
 
 const SYNCED_AT_KEY: Record<SyncEntity, SyncMetaKey> = {
-  downloads: "downloads_synced_at",
-  torrents:  "torrents_synced_at",
+  downloads: "filedownloads_synced_at",
   workers:   "workers_synced_at",
 };
 
@@ -222,8 +219,8 @@ class SyncManager {
     }, LEADER_HEARTBEAT_MS);
 
     // Start intervals for any entities that already have subscribers
-    for (const entity of (["downloads", "torrents", "workers"] as SyncEntity[])) {
-      if (this.subscribers[entity].size > 0 && !this.intervals[entity]) {
+    for (const entity of (["downloads", "workers"] as SyncEntity[])) {
+      if ((entity === "downloads" ? this.subscribers["downloads"].size : this.subscribers["workers"] as any).size > 0 && !this.intervals[entity]) {
         this.startInterval(entity);
       }
     }
@@ -407,25 +404,14 @@ class SyncManager {
     const now = new Date().toISOString();
 
     if (entity === "downloads") {
-      const { getDownloads } = await import("@/app/actions/downloads");
-      const result = await getDownloads(cursor);
+      const { getAllDownloads } = await import("@/app/actions/downloads");
+      const result = await getAllDownloads(cursor);
       await upsertDownloads(result.data);
       if (result.data.length > 0 || !cursor) {
         await setCursor(CURSOR_KEY[entity], result.syncedAt);
       }
       await setCursor(SYNCED_AT_KEY[entity], now);
       await this.emitFromIDB("downloads");
-      return now;
-
-    } else if (entity === "torrents") {
-      const { getTorrentDownloads } = await import("@/app/actions/torrents");
-      const result = await getTorrentDownloads(cursor);
-      await upsertDownloads(result.data);
-      if (result.data.length > 0 || !cursor) {
-        await setCursor(CURSOR_KEY[entity], result.syncedAt);
-      }
-      await setCursor(SYNCED_AT_KEY[entity], now);
-      await this.emitFromIDB("torrents");
       return now;
 
     } else if (entity === "workers") {
@@ -481,11 +467,8 @@ class SyncManager {
 
   private async emitFromIDB(entity: SyncEntity): Promise<void> {
     if (entity === "downloads") {
-      const rows = await getAllDownloads("http");
+      const rows = await getAllDownloads(undefined);
       this.emit("downloads", rows);
-    } else if (entity === "torrents") {
-      const rows = await getAllDownloads("torrent");
-      this.emit("torrents", rows);
     } else if (entity === "workers") {
       const rows = await getAllWorkers();
       this.emit("workers", rows);

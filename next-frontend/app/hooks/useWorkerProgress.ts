@@ -27,7 +27,6 @@ function triggerImmediateSync() {
   void import("@/app/lib/sync-worker/workerClient").then(({ default: WorkerClient }) => {
     const wc = WorkerClient.getInstance();
     wc.syncNow("downloads");
-    wc.syncNow("torrents");
   });
 }
 

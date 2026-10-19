@@ -5,7 +5,7 @@ import { Download, Trash2, Pencil, Loader2, Link } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TableCell, TableRow } from "@/components/ui/table";
-import { formatDate, formatFileSize, getStatusClass, getStatusVariant } from "./utils";
+import { formatDate, formatFileSize, getStatusClass, getStatusVariant, getTypeClass } from "./utils";
 import type { DownloadItemProps } from "./types";
 import { LocationLabel } from "./LocationLabel";
 import { DownloadingIcon, GlobeDownload } from "@/components/ui/custom-icons";
@@ -90,7 +90,7 @@ export function DownloadItem({
       onClick={() => onSelect(download.id)}
     >
       {/* Mobile Card View */}
-      <TableCell className="p-3 md:hidden" colSpan={6}>
+      <TableCell className="p-3 md:hidden" colSpan={7}>
         <div className="space-y-2">
           <div className="flex items-start justify-between gap-2">
             <p className="font-medium text-sm truncate flex-1">
@@ -131,6 +131,8 @@ export function DownloadItem({
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span>{download.fileSize ? formatFileSize(download.fileSize) : "-"}</span>
+            <span>•</span>
+            <span className="capitalize">{download.downloadType === "torrent" ? "Torrent" : "HTTP"}</span>
             <span>•</span>
             <span className="capitalize"><LocationLabel location={download.location} /></span>
           </div>
@@ -228,6 +230,11 @@ export function DownloadItem({
         <span className="block truncate" title={download.fileName || undefined}>
           {download.fileName || "-"}
         </span>
+      </TableCell>
+      <TableCell className="hidden md:table-cell px-4 py-3 whitespace-nowrap">
+        <Badge className={`${getTypeClass(download.downloadType)} text-xs`}>
+          {download.downloadType === "torrent" ? "torrent" : "http"}
+        </Badge>
       </TableCell>
       <TableCell className="hidden md:table-cell px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">
         {download.fileSize ? formatFileSize(download.fileSize) : "-"}

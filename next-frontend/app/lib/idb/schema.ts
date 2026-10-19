@@ -37,13 +37,11 @@ export type IDBWorker = Omit<Worker, "createdAt" | "updatedAt"> & {
 // ─── Sync meta keys ───────────────────────────────────────────────────────────
 
 export type SyncMetaKey =
-  | "downloads_cursor"   // max updatedAt seen for http downloads (delta query)
-  | "torrents_cursor"    // max updatedAt seen for torrent downloads (delta query)
-  | "workers_cursor"     // max updatedAt seen for workers (delta query)
-  | "downloads_synced_at" // wall-clock of last completed downloads sync
-  | "torrents_synced_at"  // wall-clock of last completed torrents sync
-  | "workers_synced_at"   // wall-clock of last completed workers sync
-  | "guest_id";           // guards against guest rotation
+  | "filedownloads_cursor" // max updatedAt seen for file downloads (delta query)
+  | "workers_cursor"       // max updatedAt seen for workers (delta query)
+  | "filedownloads_synced_at" // wall-clock of last completed downloads sync
+  | "workers_synced_at"     // wall-clock of last completed workers sync
+  | "guest_id";             // guards against guest rotation
 
 // ─── DBSchema ─────────────────────────────────────────────────────────────────
 

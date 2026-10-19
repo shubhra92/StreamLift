@@ -2,7 +2,7 @@
  * GET /api/sync/downloads?since=<ISO>
  *
  * Called by the SharedWorker (which cannot use Next.js server actions).
- * Returns delta rows for http downloads scoped to the authenticated guest.
+ * Returns delta rows for all file downloads (http + torrent) scoped to the authenticated guest.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -25,7 +25,6 @@ export async function GET(req: NextRequest) {
   const idsOnly  = req.nextUrl.searchParams.get("ids_only") === "true";
 
   const conditions = [
-    eq(fileDownloads.downloadType, "http"),
     eq(fileDownloads.guestId, guest.id),
   ];
 
@@ -39,10 +38,7 @@ export async function GET(req: NextRequest) {
     const rows = await db
       .select({ id: fileDownloads.id })
       .from(fileDownloads)
-      .where(and(
-        eq(fileDownloads.downloadType, "http"),
-        eq(fileDownloads.guestId, guest.id),
-      ));
+      .where(eq(fileDownloads.guestId, guest.id));
     return NextResponse.json({ ids: rows.map((r) => r.id), syncedAt });
   }
 

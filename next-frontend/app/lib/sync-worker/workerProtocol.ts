@@ -5,7 +5,7 @@
 
 // ─── Tab → Worker ─────────────────────────────────────────────────────────────
 
-export type SyncEntity = "downloads" | "torrents" | "workers";
+export type SyncEntity = "downloads" | "workers";
 
 export type TabToWorkerMessage =
   | { type: "init"; origin?: string }

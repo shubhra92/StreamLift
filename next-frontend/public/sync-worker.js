@@ -23,7 +23,7 @@
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-var INTERVALS = { downloads: 30000, torrents: 30000, workers: 15000 };
+var INTERVALS = { downloads: 30000, workers: 15000 };
 var WORKER_POLL_INTERVAL = 3000;
 var EXPRESS_POLL_INTERVAL = 10000;
 
@@ -40,18 +40,18 @@ var ports    = new Set();
  */
 var portNeeds = new Map();   // Map<MessagePort, Set<string>>
 
-var syncIntervals   = { downloads: null, torrents: null, workers: null };
-var lastSyncedAt    = { downloads: 0, torrents: 0, workers: 0 };
-var cursors         = { downloads: null, torrents: null, workers: null };
-var syncing         = { downloads: false, torrents: false, workers: false };
-var debounceTimers  = {};
+var syncIntervals   = { downloads: null, workers: null };
+var lastSyncedAt    = { downloads: 0, workers: 0 };
+var cursors         = { downloads: null, workers: null };
+var syncing         = { downloads: false, workers: false };
+var debounceTimers  = { downloads: null, workers: null };
 
 /** Counts syncs per entity — reconciliation runs every RECONCILE_EVERY syncs */
-var syncCount       = { downloads: 0, torrents: 0, workers: 0 };
+var syncCount       = { downloads: 0, workers: 0 };
 var RECONCILE_EVERY = 5;
 
 /** In-worker cache of IDB-known IDs (sent by tabs on first data ack) */
-var broadcastIds    = { downloads: null, torrents: null, workers: null };
+var broadcastIds    = { downloads: null, workers: null };
 
 /**
  * Buffered IDB IDs from tabs, accumulated during the 500 ms boot-debounce
@@ -59,10 +59,10 @@ var broadcastIds    = { downloads: null, torrents: null, workers: null };
  * sets; we union them before the first reconcile so no orphan is missed.
  * Keyed by entity. Each value is a Set<string> or null (not yet seeded).
  */
-var pendingIdbIds   = { downloads: null, torrents: null, workers: null };
+var pendingIdbIds   = { downloads: null, workers: null };
 
 /** Boot-debounce timers — one per entity, 500 ms */
-var bootDebounce    = { downloads: null, torrents: null, workers: null };
+var bootDebounce    = { downloads: null, workers: null };
 var BOOT_DEBOUNCE_MS = 500;
 
 var origin   = "";
@@ -227,7 +227,7 @@ function recomputeIntervals() {
     needs.forEach(function(entity) { union.add(entity); });
   });
 
-  ["downloads", "torrents", "workers"].forEach(function(entity) {
+  ["downloads", "workers"].forEach(function(entity) {
     var needed = union.has(entity);
     var running = syncIntervals[entity] !== null;
 
@@ -287,9 +287,9 @@ function runSync(entity) {
   syncing[entity] = true;
   fetchAndBroadcast(entity).then(function() {
     syncing[entity] = false;
-    // Run dispatcher only after download/torrent syncs — halves dispatch frequency.
+    // Run dispatcher only after file download syncs.
     // Workers sync (every 15s) does NOT trigger dispatch.
-    if (entity === "downloads" || entity === "torrents") {
+    if (entity === "downloads") {
       runDispatcher();
     }
   }).catch(function(err) {
@@ -343,47 +343,6 @@ function fetchAndBroadcast(entity) {
         }
         broadcast({ type: "data", entity: "downloads", rows: res.data || [], orphanIds: orphanIds });
         broadcast({ type: "saveCursor", entity: "downloads", cursor: res.syncedAt });
-      });
-    });
-
-  } else if (entity === "torrents") {
-    var url = "/api/sync/torrents" + (cursors.torrents ? "?since=" + encodeURIComponent(cursors.torrents) : "");
-    return safeFetch(url).then(function(res) {
-      if (!res) return;
-      cursors.torrents = res.syncedAt;
-      lastSyncedAt.torrents = Date.now();
-
-      if (!shouldReconcile) {
-        if (broadcastIds.torrents && res.data) {
-          res.data.forEach(function(r) { broadcastIds.torrents.add(r.id); });
-        } else if (res.data) {
-          broadcastIds.torrents = new Set(res.data.map(function(r) { return r.id; }));
-        }
-        broadcast({ type: "data", entity: "torrents", rows: res.data || [] });
-        broadcast({ type: "saveCursor", entity: "torrents", cursor: res.syncedAt });
-        return;
-      }
-
-      return safeFetch("/api/sync/torrents?ids_only=true").then(function(idsRes) {
-        var serverIds = (idsRes && idsRes.ids) ? idsRes.ids : null;
-        var orphanIds = [];
-        if (serverIds) {
-          var serverIdSet = new Set(serverIds);
-          // Seed broadcastIds from tabs' IDB IDs if this is the first sync
-          if (!broadcastIds.torrents && pendingIdbIds.torrents) {
-            broadcastIds.torrents = new Set(pendingIdbIds.torrents);
-          }
-          pendingIdbIds.torrents = null; // consumed
-          if (broadcastIds.torrents) {
-            broadcastIds.torrents.forEach(function(id) {
-              if (!serverIdSet.has(id)) orphanIds.push(id);
-            });
-          }
-          broadcastIds.torrents = serverIdSet;
-          if (res.data) res.data.forEach(function(r) { broadcastIds.torrents.add(r.id); });
-        }
-        broadcast({ type: "data", entity: "torrents", rows: res.data || [], orphanIds: orphanIds });
-        broadcast({ type: "saveCursor", entity: "torrents", cursor: res.syncedAt });
       });
     });
 
