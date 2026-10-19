@@ -37,12 +37,13 @@ interface LocationSelectProps {
   className?: string;
   /** Workers list — passed from parent (comes from useWorkers/IDB, not fetched here) */
   workers?: WorkerOption[];
+  workersOnly?: boolean;
 }
 
-export function LocationSelect({ value, onChange, className, workers = [] }: LocationSelectProps) {
+export function LocationSelect({ value, onChange, className, workers = [], workersOnly = false }: LocationSelectProps) {
   // "cloud" is the UI value; resolve to the actual backend value on change
   const handleChange = (val: string) => {
-    if (val === "cloud") {
+    if (!workersOnly && val === "cloud") {
       onChange(cloudLocation);
     } else {
       onChange(val);
@@ -51,7 +52,7 @@ export function LocationSelect({ value, onChange, className, workers = [] }: Loc
 
   // Map the actual stored value back to "cloud" for display
   const displayValue =
-    value === "cloud" || value === "mega" || value === "server" ? "cloud" : value;
+    (!workersOnly && (value === "cloud" || value === "mega" || value === "server")) ? "cloud" : value;
 
   return (
     <Select value={displayValue} onValueChange={handleChange}>
@@ -65,15 +66,19 @@ export function LocationSelect({ value, onChange, className, workers = [] }: Loc
       </SelectTrigger>
 
       <SelectContent>
-        <SelectItem value="cloud">
-          {cloudLabel}
-        </SelectItem>
+        {!workersOnly && (
+          <SelectItem value="cloud">
+            {cloudLabel}
+          </SelectItem>
+        )}
 
         {workers.length > 0 && (
           <>
-            <SelectItem value="all-workers">
-              All Workers (auto-assign)
-            </SelectItem>
+            {!workersOnly && (
+              <SelectItem value="all-workers">
+                All Workers (auto-assign)
+              </SelectItem>
+            )}
 
             <SelectGroup>
               <SelectLabel>Specific Worker</SelectLabel>

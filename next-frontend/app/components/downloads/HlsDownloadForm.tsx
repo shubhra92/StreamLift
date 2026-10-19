@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Button } from "@/components/ui/button";
+import { LocationSelect, locationName, locationDotClass } from "./LocationSelect";
 import { getWorkerFileInfo } from "@/app/lib/workerConnection";
 import type { FileInfo } from "./types";
 
@@ -68,7 +69,7 @@ export function HlsDownloadForm({
   const [urlError, setUrlError] = useState<string | null>(null);
   const [fetchState, setFetchState] = useState<FetchState>({ status: "idle" });
   const [fileName, setFileName] = useState("");
-  const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
+  const [location, setLocation] = useState<string>("");
 
   const urlInputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -88,7 +89,7 @@ export function HlsDownloadForm({
     setUrlError(null);
     setFetchState({ status: "idle" });
     setFileName("");
-    setSelectedWorkerId(null);
+    setLocation("");
   };
 
   const handleNext = async () => {
@@ -111,8 +112,10 @@ export function HlsDownloadForm({
       return;
     }
 
-    const workerId = selectedWorkerId ?? onlineWorkers[0].id;
-    setSelectedWorkerId(workerId);
+    const workerId = location.startsWith("worker-") ? location.slice("worker-".length) : onlineWorkers[0]?.id;
+    if (!workerId && onlineWorkers.length > 0) {
+      setLocation(`worker-${onlineWorkers[0].id}`);
+    }
 
     setUrlError(null);
     setFetchState({ status: "loading" });
@@ -151,15 +154,14 @@ export function HlsDownloadForm({
   const handleCreate = async () => {
     const fetchedInfo = fetchState.status === "done" ? fetchState.info : null;
     if (!fetchedInfo) return;
-    const workerId = selectedWorkerId ?? onlineWorkers[0].id;
-    if (!workerId) {
+    const loc = location.startsWith("worker-") ? location : (onlineWorkers.length > 0 ? `worker-${onlineWorkers[0].id}` : "");
+    if (!loc.startsWith("worker-")) {
       setUrlError("No online worker selected.");
       return;
     }
-    const location = `worker-${workerId}`;
     await onSubmit(
       url.trim(),
-      location,
+      loc,
       fileName.trim() || fetchedInfo.fileName,
       fetchedInfo.fileSize,
       fetchedInfo.fileType
@@ -216,19 +218,11 @@ export function HlsDownloadForm({
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-sm text-muted-foreground">Worker</label>
-            <select
-              value={selectedWorkerId ?? (onlineWorkers[0]?.id ?? "")}
-              onChange={(e) => setSelectedWorkerId(e.target.value)}
-              disabled={isFetching || onlineWorkers.length === 0}
-              className="w-full p-2 border rounded-md bg-background text-foreground"
-            >
-              {onlineWorkers.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
-                </option>
-              ))}
-            </select>
+            <label className="text-sm text-muted-foreground">Download location</label>
+            <LocationSelect value={location} onChange={setLocation} workers={onlineWorkers} workersOnly />
+            {onlineWorkers.length === 0 && (
+              <p className="text-xs text-destructive">No online workers available. HLS requires an online worker.</p>
+            )}
             <p className="text-xs text-muted-foreground">
               HLS streams are remuxed on the worker. Cloud/Server are not supported.
             </p>
@@ -302,10 +296,10 @@ export function HlsDownloadForm({
           <div className="space-y-1">
             <label className="text-sm font-medium text-foreground">Download location</label>
             <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-4 py-2.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-green-500" />
-              <span className="text-sm font-medium">
-                {onlineWorkers.find((w) => w.id === (selectedWorkerId ?? onlineWorkers[0].id))?.name ?? "Worker"}
-              </span>
+              {locationDotClass(location, onlineWorkers) && (
+                <span className={`h-2.5 w-2.5 rounded-full ${locationDotClass(location, onlineWorkers)}`} />
+              )}
+              <span className="text-sm font-medium">{locationName(location, onlineWorkers) || "Worker"}</span>
             </div>
           </div>
 
