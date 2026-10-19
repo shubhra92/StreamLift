@@ -52,11 +52,20 @@ export async function createDownload(
   fileName?: string,
   fileSize?: number | null,
   fileType?: string | null,
+  downloadType: "http" | "hls" = "http",
 ) {
   const guestId = await getGuestId();
   if (!guestId) throw new Error("Unauthorized");
   const { workerId, error } = await resolveWorkerAssignment(location, guestId);
   if (error) throw new Error(error);
+
+  if (downloadType === "hls") {
+    if (!location?.startsWith("worker-")) {
+      throw new Error("HLS downloads must be assigned to a worker.");
+    }
+  }
+
+  const dt = downloadType === "hls" ? "hls" : "http";
 
   const [data] = await db.insert(fileDownloads).values({
     guestId: guestId ?? undefined,
@@ -65,7 +74,7 @@ export async function createDownload(
     workerId,
     fileName: fileName || "default",
     status: "pending",
-    downloadType: "http",
+    downloadType: dt,
     ...(fileSize != null && { fileSize }),
     ...(fileType   && { fileType }),
   }).returning();

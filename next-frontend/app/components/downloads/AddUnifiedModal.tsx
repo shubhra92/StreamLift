@@ -3,12 +3,13 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Download, Magnet } from "lucide-react";
+import { Download, Magnet, Video } from "lucide-react";
 import { HttpDownloadForm } from "./HttpDownloadForm";
 import { TorrentDownloadForm } from "../torrents/TorrentDownloadForm";
+import { HlsDownloadForm } from "./HlsDownloadForm";
 import type { SelectedFilesMeta } from "../torrents/AddTorrentModal";
 
-type Tab = "http" | "torrent";
+type Tab = "http" | "torrent" | "hls";
 
 export interface AddUnifiedModalProps {
   isOpen: boolean;
@@ -26,6 +27,13 @@ export interface AddUnifiedModalProps {
     fileIndices: number[],
     meta: SelectedFilesMeta
   ) => Promise<void>;
+  onAddHls: (
+    sourceUrl: string,
+    location: string,
+    fileName?: string,
+    fileSize?: number | null,
+    fileType?: string | null
+  ) => Promise<void>;
   loading: boolean;
   workers?: { id: string; name: string; online: boolean }[];
 }
@@ -35,6 +43,7 @@ export function AddUnifiedModal({
   onClose,
   onAddHttp,
   onAddTorrent,
+  onAddHls,
   loading,
   workers = [],
 }: AddUnifiedModalProps) {
@@ -46,7 +55,7 @@ export function AddUnifiedModal({
         <DialogHeader>
           <DialogTitle>Add New Download</DialogTitle>
           <DialogDescription>
-            Add an HTTP URL or torrent/magnet link.
+            Add an HTTP URL, HLS stream (.m3u8), or torrent/magnet link.
           </DialogDescription>
         </DialogHeader>
 
@@ -65,6 +74,18 @@ export function AddUnifiedModal({
           </button>
           <button
             type="button"
+            onClick={() => setTab("hls")}
+            className={`flex items-center gap-2 flex-1 px-3 py-2 rounded-sm text-sm font-medium transition-colors ${
+              tab === "hls"
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Video className="h-4 w-4" />
+            HLS
+          </button>
+          <button
+            type="button"
             onClick={() => setTab("torrent")}
             className={`flex items-center gap-2 flex-1 px-3 py-2 rounded-sm text-sm font-medium transition-colors ${
               tab === "torrent"
@@ -80,6 +101,14 @@ export function AddUnifiedModal({
         {tab === "http" && (
           <HttpDownloadForm
             onSubmit={onAddHttp}
+            onCancel={onClose}
+            loading={loading}
+            workers={workers}
+          />
+        )}
+        {tab === "hls" && (
+          <HlsDownloadForm
+            onSubmit={onAddHls}
             onCancel={onClose}
             loading={loading}
             workers={workers}

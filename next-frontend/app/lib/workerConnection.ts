@@ -298,7 +298,7 @@ export interface TriggerDownloadParams {
   downloadId:   string;
   sourceUrl:    string;
   fileName:     string;
-  downloadType: "http" | "torrent";
+  downloadType: "http" | "torrent" | "hls";
   fileIndices?: number[] | null;
 }
 

@@ -209,6 +209,14 @@ export default function Home() {
             await updateTorrentDownload(download.id, { status: "pending" });
           }
           syncNow();
+        } else if (download.downloadType === "hls") {
+          const claim = await claimDownload(download.id);
+          if (!claim.success) return;
+          const { status } = await startDownload(claim.data!);
+          if (!status) {
+            await updateDownload(download.id, { status: "pending" });
+          }
+          syncNow();
         }
       });
     });
@@ -291,7 +299,26 @@ export default function Home() {
   ) => {
     setLoading(true);
     try {
-      await createDownload(sourceUrl, location, fileName, fileSize, fileType);
+      await createDownload(sourceUrl, location, fileName, fileSize, fileType, "http");
+      setIsModalOpen(false);
+      syncNow();
+    } catch (err: any) {
+      alert(err.message ?? "Failed to create download");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddHls = async (
+    sourceUrl: string,
+    location: string,
+    fileName?: string,
+    fileSize?: number | null,
+    fileType?: string | null
+  ) => {
+    setLoading(true);
+    try {
+      await createDownload(sourceUrl, location, fileName, fileSize, fileType, "hls");
       setIsModalOpen(false);
       syncNow();
     } catch (err: any) {
@@ -674,6 +701,7 @@ export default function Home() {
         onClose={() => setIsModalOpen(false)}
         onAddHttp={handleAddHttp}
         onAddTorrent={handleAddTorrent}
+        onAddHls={handleAddHls}
         loading={loading}
         workers={workers}
       />

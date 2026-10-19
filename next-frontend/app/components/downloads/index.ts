@@ -5,4 +5,5 @@ export { AddDownloadModal } from "./AddDownloadModal";
 export { EditDownloadModal } from "./EditDownloadModal";
 export { PartCountDialog } from "./PartCountDialog";
 export { AddUnifiedModal } from "./AddUnifiedModal";
+export { HlsDownloadForm } from "./HlsDownloadForm";
 export type { DownloadItemProps, DownloadListProps, DownloadDetailsProps, FileInfo } from "./types";

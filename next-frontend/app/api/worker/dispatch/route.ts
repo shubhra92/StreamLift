@@ -157,6 +157,10 @@ export async function POST(req: NextRequest) {
       const workerId = download.workerId;
       if (!workerId) continue;
       if (busyWorkerIds.has(workerId)) continue;
+      if (download.downloadType === "hls" && isServerLocation(download.location)) {
+        continue;
+      }
+
       const worker = onlineWorkerMap.get(workerId);
       if (!worker || !worker.pinggyUrl) continue;
 

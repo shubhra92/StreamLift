@@ -27,6 +27,14 @@ export async function startDownload(
     return { status: true, message: "Download queued for worker", data: { id: fileDownload.id } };
   }
 
+  if (fileDownload.downloadType === "hls") {
+    return {
+      status: false,
+      message: "HLS downloads must run on a worker",
+      data: { id: fileDownload.id },
+    };
+  }
+
   try {
     const response = await fetch(`/api/stream-download/${location}`, {
       method: "POST",

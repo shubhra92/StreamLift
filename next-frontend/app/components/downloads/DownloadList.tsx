@@ -46,7 +46,7 @@ export function DownloadList({
             {/* File name gets all remaining space */}
             <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 min-w-0">File Name</TableHead>
             {/* Fixed-width columns that never grow */}
-            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-24">Type</TableHead>
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-28">Type</TableHead>
             <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-32">File Size</TableHead>
             <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-36">Location</TableHead>
             <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-36">Status</TableHead>

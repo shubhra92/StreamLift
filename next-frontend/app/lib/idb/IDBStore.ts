@@ -43,12 +43,12 @@ export function workerToIDB(
 // ─── fileDownloads ────────────────────────────────────────────────────────────
 
 export async function getAllDownloads(
-  downloadType?: "http" | "torrent"
+  downloadType?: "http" | "torrent" | "hls"
 ): Promise<IDBFileDownload[]> {
   try {
     const db = await getDB();
     let all: IDBFileDownload[];
-    if (downloadType === "http" || downloadType === "torrent") {
+    if (downloadType === "http" || downloadType === "torrent" || downloadType === "hls") {
       all = await db.getAllFromIndex("fileDownloads", "by_downloadType", downloadType);
     } else {
       all = await db.getAll("fileDownloads");
@@ -193,7 +193,7 @@ export async function clearAllIDB(): Promise<void> {
  * Returns the number of rows removed.
  */
 export async function reconcileDownloads(
-  downloadType: "http" | "torrent",
+  downloadType: "http" | "torrent" | "hls",
   serverIds: string[]
 ): Promise<number> {
   try {

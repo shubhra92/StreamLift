@@ -32,10 +32,19 @@ export const getStatusClass = (status: string | null) => {
 export const getTypeClass = (type: string | null | undefined) => {
   const t = (type || "http").toLowerCase();
   switch (t) {
-    // case "http": return "bg-purple-100 text-purple-800";
-    // case "torrent": return "bg-amber-100 text-amber-800";
     case "http": return "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300";
     case "torrent": return "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-900/40 dark:text-fuchsia-300";
+    case "hls": return "bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-300";
     default: return "bg-slate-100 text-slate-700";
+  }
+}
+
+export const getTypeLabel = (type: string | null | undefined) => {
+  const t = (type || "http").toLowerCase();
+  switch (t) {
+    case "http": return "HTTP";
+    case "torrent": return "Torrent";
+    case "hls": return "HLS";
+    default: return t;
   }
 }

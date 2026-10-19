@@ -5,7 +5,7 @@ import { Download, Trash2, Pencil, Loader2, Link } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TableCell, TableRow } from "@/components/ui/table";
-import { formatDate, formatFileSize, getStatusClass, getStatusVariant, getTypeClass } from "./utils";
+import { formatDate, formatFileSize, getStatusClass, getStatusVariant, getTypeClass, getTypeLabel } from "./utils";
 import type { DownloadItemProps } from "./types";
 import { LocationLabel } from "./LocationLabel";
 import { DownloadingIcon, GlobeDownload } from "@/components/ui/custom-icons";
@@ -132,7 +132,7 @@ export function DownloadItem({
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span>{download.fileSize ? formatFileSize(download.fileSize) : "-"}</span>
             <span>•</span>
-            <span className="capitalize">{download.downloadType === "torrent" ? "Torrent" : "HTTP"}</span>
+            <span className="capitalize">{download.downloadType === "torrent" ? "Torrent" : download.downloadType === "hls" ? "HLS" : "HTTP"}</span>
             <span>•</span>
             <span className="capitalize"><LocationLabel location={download.location} /></span>
           </div>
@@ -233,7 +233,7 @@ export function DownloadItem({
       </TableCell>
       <TableCell className="hidden md:table-cell px-4 py-3 whitespace-nowrap">
         <Badge className={`${getTypeClass(download.downloadType)} text-xs`}>
-          {download.downloadType === "torrent" ? "torrent" : "http"}
+          {download.downloadType === "torrent" ? "torrent" : download.downloadType === "hls" ? "hls" : "http"}
         </Badge>
       </TableCell>
       <TableCell className="hidden md:table-cell px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">
