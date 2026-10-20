@@ -11,7 +11,9 @@ description = "StreamLift distributed download worker — runs in Google Colab"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "requests>=2.32.0",
+    # Colab pins requests==2.32.4; an unbounded requirement lets a
+    # --force-reinstall silently upgrade it and break google-colab.
+    "requests>=2.32.0,<2.33",
     "psutil>=5.9.0",
     "fastapi>=0.115.0",
     "uvicorn>=0.34.0",

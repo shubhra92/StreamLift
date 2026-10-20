@@ -4,6 +4,7 @@ config (/api/worker/config) at startup. No .env file needed; the user just
 runs the one-liner from the UI.
 """
 
+import os
 import time
 from dataclasses import dataclass
 from typing import Literal
@@ -25,6 +26,31 @@ RETRY_DELAY        = 5    # seconds, multiplied by attempt number
 MAX_LOG_QUEUE      = 50
 HEARTBEAT_INTERVAL = 8    # background heartbeat thread interval (seconds)
 SERVER_PORT        = 8000
+
+# ── On-demand media playback (Watch page) ────────────────────────────────────
+HLS_SEGMENT_SECONDS  = 6      # VOD segment length for transcoded playback
+HLS_BATCH_SEGMENTS   = 20     # segments one background encoder run produces (120s)
+HLS_SEGMENT_WAIT     = 20     # max seconds an HTTP request waits for a segment
+HLS_IDLE_TIMEOUT     = 10 * 60  # seconds before unwatched playback artifacts are removed
+HLS_MAX_CONCURRENT   = 2      # concurrent playback ffmpeg jobs (downloads win)
+HLS_SEGMENT_TIMEOUT  = 120    # max seconds without a completed segment before a batch is killed
+HLS_TRANSCODE_PRESET = "ultrafast"  # transcode is a last resort; speed wins
+HLS_TRANSCODE_CRF    = 23
+HLS_AUDIO_BITRATE    = "128k"
+HLS_MAX_RATE         = "5M"   # cap the transcode bitrate so playback never starves the tunnel
+HLS_MAX_BUFSIZE      = "10M"
+PLAYBACK_DIR_NAME    = ".playback"  # worker-side playback workspace
+
+# Transcodes never upscale, and are capped here so 4K sources stay watchable
+# on small CPUs (override with STREAMLIFT_PLAYBACK_MAX_HEIGHT, e.g. 1080).
+def _playback_max_height() -> int:
+    try:
+        value = int(os.environ.get("STREAMLIFT_PLAYBACK_MAX_HEIGHT", "") or 0)
+    except ValueError:
+        value = 0
+    return value if value > 0 else 720
+
+HLS_MAX_HEIGHT = _playback_max_height()
 
 
 @dataclass

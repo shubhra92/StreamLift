@@ -46,6 +46,36 @@ within ~2 minutes of pushing the tag.
 
 ---
 
+## Updating a worker that is already running in Colab
+
+Colab pins some system packages (for example `requests==2.32.4`). Installing
+the worker with `--force-reinstall` **without** `--no-deps` also reinstalls its
+dependencies at the newest allowed versions, which can upgrade those pins and
+produce pip conflict warnings.
+
+Use `--no-deps` for updates — the worker's dependencies are already present in
+the Colab image:
+
+```python
+# Stop the old process first. Reinstalling files does not update a running worker.
+!pkill -f streamlift-worker
+
+# From PyPI:
+!pip install -q -U --no-deps streamlift-worker
+
+# ...or from a locally built wheel / source archive:
+# !pip install -q --no-deps --force-reinstall /content/streamlift_worker-<version>-py3-none-any.whl
+
+# Verify the installed version, then run the normal start cell again.
+!streamlift-worker --version
+```
+
+> A `pip` warning about `opentelemetry-*` conflicting with `google-adk` is
+> unrelated to StreamLift — neither `streamlift-worker` nor
+> `streamlift-megapy` depends on OpenTelemetry.
+
+---
+
 ## Version numbering
 
 The version is read directly from the Git tag by `setuptools-scm`:

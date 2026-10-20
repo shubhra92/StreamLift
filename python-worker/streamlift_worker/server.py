@@ -19,19 +19,19 @@ Endpoints:
 
 import asyncio
 import json
+import mimetypes
 import os
 import re
 import secrets
 import threading
 import time
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from streamlift_worker import logger
@@ -331,6 +331,7 @@ async def download_completed_file(
     x_session_token: Optional[str] = Header(default=None),
     download_token: Optional[str] = None,
     range: Optional[str] = None,
+    inline: Optional[str] = None,
 ):
     if x_session_token:
         _require_session_token(x_session_token)
@@ -343,6 +344,10 @@ async def download_completed_file(
     path, file_name = resolved
     if range:
         return _range_response(path, range)
+    if inline in ("1", "true", "yes"):
+        # Direct <video>/<audio> playback: correct MIME, no attachment header.
+        media_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+        return FileResponse(path, media_type=media_type, headers={"Cache-Control": "no-store"})
     return FileResponse(path, filename=file_name, media_type="application/octet-stream")
 
 
@@ -382,6 +387,198 @@ async def begin_browser_download(download_token: str, request: Request):
     file_path = f"downloads/{download_id}/files/{file_index}"
     query = urlencode({"download_token": download_token})
     return RedirectResponse(url=f"{http_base_url}{file_path}?{query}", status_code=307)
+
+
+# ── Playback (Watch page) ─────────────────────────────────────────────────────
+
+def _require_watchable_file(download_id: str, file_index: int) -> None:
+    if not resolve_completed_file(download_id, file_index):
+        raise HTTPException(status_code=404, detail="Completed file is no longer available on this worker")
+
+
+@app.post("/downloads/{download_id}/files/{file_index}/media-ticket")
+async def create_media_ticket(
+    download_id: str,
+    file_index: int,
+    caps: Optional[str] = None,
+    x_session_token: Optional[str] = Header(default=None),
+):
+    """Report how a file will be played and mint the raw-file ticket.
+
+    ``caps`` is the client's codec capability string (e.g.
+    ``"h264,hevc,av1|aac,mp3,opus"``); it selects whether the video can be
+    copied (progressive) or must be re-encoded (HLS). The returned token only
+    authorizes the raw file endpoint — the playback endpoints are tokenless,
+    the tunnel URL itself is the secret.
+    """
+    _require_session_token(x_session_token)
+    _require_watchable_file(download_id, file_index)
+
+    from streamlift_worker import streaming
+
+    # The probe can shell out to ffprobe; keep the event loop free.
+    loop = asyncio.get_running_loop()
+    session = await loop.run_in_executor(
+        None, streaming.describe, download_id, file_index, caps
+    )
+    if session is None:
+        raise HTTPException(
+            status_code=503,
+            detail="This file cannot be prepared for playback on this worker",
+        )
+    token = _get_or_create_browser_download_token(download_id, file_index)
+    payload = streaming.status_payload(session)
+    payload["success"] = True
+    payload["token"] = token
+    return payload
+
+
+@app.post("/downloads/{download_id}/files/{file_index}/media-prepare")
+async def prepare_media(
+    download_id: str,
+    file_index: int,
+    caps: Optional[str] = None,
+    x_session_token: Optional[str] = Header(default=None),
+):
+    """Start (idempotently) converting a file into a ready-to-play copy."""
+    _require_session_token(x_session_token)
+    _require_watchable_file(download_id, file_index)
+
+    from streamlift_worker import streaming
+
+    loop = asyncio.get_running_loop()
+    session = await loop.run_in_executor(
+        None, streaming.prepare, download_id, file_index, caps
+    )
+    if session is None:
+        raise HTTPException(
+            status_code=503,
+            detail="This file cannot be prepared for playback on this worker",
+        )
+    payload = streaming.status_payload(session)
+    payload["success"] = True
+    return payload
+
+
+@app.get("/downloads/{download_id}/files/{file_index}/media-status")
+async def media_status(
+    download_id: str,
+    file_index: int,
+    caps: Optional[str] = None,
+    x_session_token: Optional[str] = Header(default=None),
+):
+    """Report playback preparation progress for a file."""
+    _require_session_token(x_session_token)
+    _require_watchable_file(download_id, file_index)
+
+    from streamlift_worker import streaming
+
+    loop = asyncio.get_running_loop()
+    session = await loop.run_in_executor(
+        None, streaming.describe, download_id, file_index, caps
+    )
+    if session is None:
+        raise HTTPException(
+            status_code=503,
+            detail="This file cannot be prepared for playback on this worker",
+        )
+    payload = streaming.status_payload(session)
+    payload["success"] = True
+    return payload
+
+
+@app.get("/media/{download_id}/{file_index}")
+async def stream_prepared_media(
+    download_id: str,
+    file_index: int,
+    caps: Optional[str] = None,
+):
+    """Serve the prepared MP4 with HTTP range support (progressive playback).
+
+    No token: the worker's tunnel URL is the authorization.
+    """
+    from streamlift_worker import streaming
+
+    prepared = streaming.get_media(download_id, file_index, caps)
+    if prepared is None:
+        raise HTTPException(status_code=409, detail="Playback file is not ready yet")
+    path, media_type = prepared
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "no-store",
+            "Accept-Ranges": "bytes",
+        },
+    )
+
+
+@app.get("/watch/{download_id}/{file_index}/index.m3u8")
+async def watch_playlist(
+    download_id: str,
+    file_index: int,
+    caps: Optional[str] = None,
+):
+    """Return the complete VOD playlist for a worker-local media file.
+
+    Segments are produced on demand in background batches, but the playlist
+    itself is built up front from the file's duration so players see real VOD
+    from the first request. No token: the tunnel URL is the authorization.
+    """
+    from streamlift_worker import streaming
+
+    loop = asyncio.get_running_loop()
+    playlist = await loop.run_in_executor(
+        None,
+        streaming.get_playlist,
+        download_id,
+        file_index,
+        caps,
+    )
+    if playlist is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Playback is not available for this file "
+                "(missing ffmpeg/ffprobe, unreadable source, or unknown duration)"
+            ),
+        )
+    return Response(
+        content=playlist,
+        media_type="application/vnd.apple.mpegurl",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/watch/{download_id}/{file_index}/{segment}")
+async def watch_segment(
+    download_id: str,
+    file_index: int,
+    segment: str,
+    caps: Optional[str] = None,
+):
+    """Serve one HLS segment produced for a playback session."""
+    from streamlift_worker import streaming
+
+    # Segment production runs ffmpeg (seconds), so it must never block the
+    # event loop that serves heartbeats and the rest of the API.
+    loop = asyncio.get_running_loop()
+    path = await loop.run_in_executor(
+        None, streaming.get_segment_path, download_id, file_index, segment, caps
+    )
+    if not path:
+        raise HTTPException(status_code=404, detail="Playback segment not found")
+    return FileResponse(
+        path,
+        media_type="video/mp2t",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/download")
