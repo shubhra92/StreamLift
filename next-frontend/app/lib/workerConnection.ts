@@ -517,6 +517,189 @@ export async function getWorkerLocalFiles(
   return data.filesByDownload ?? {};
 }
 
+export type WorkerMediaMode = "progressive" | "hls";
+export type WorkerMediaState = "idle" | "preparing" | "ready" | "error";
+
+export interface WorkerMediaStatus {
+  /** "progressive" = remuxed MP4 with range support; "hls" = virtual VOD. */
+  mode: WorkerMediaMode;
+  state: WorkerMediaState;
+  /** 0..1, only meaningful while state is "preparing". */
+  progress: number;
+  /** Human-readable failure reason when state is "error". */
+  detail: string | null;
+  /** Encoder throughput vs realtime (e.g. 1.4 = 1.4x), when transcoding. */
+  speed: number | null;
+  /** Source video height in pixels. */
+  height: number | null;
+  /** Output height when the video is re-encoded (HLS mode only). */
+  targetHeight: number | null;
+  /** Encoder used for HLS transcodes ("libx264" or "h264_nvenc"). */
+  encoder: string | null;
+}
+
+export interface WorkerMediaTicket extends WorkerMediaStatus {
+  /** Authorizes the raw-file (direct) URL only; playback URLs are tokenless. */
+  token: string;
+}
+
+interface RawMediaStatus {
+  mode?: string;
+  state?: string;
+  progress?: number;
+  detail?: string | null;
+  speed?: number | null;
+  height?: number | null;
+  targetHeight?: number | null;
+  encoder?: string | null;
+}
+
+function toNumberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function toMediaStatus(data: RawMediaStatus): WorkerMediaStatus {
+  const mode: WorkerMediaMode = data.mode === "hls" ? "hls" : "progressive";
+  const state: WorkerMediaState =
+    data.state === "preparing" || data.state === "ready" || data.state === "error"
+      ? data.state
+      : "idle";
+  const rawProgress = typeof data.progress === "number" ? data.progress : 0;
+  const progress = Number.isFinite(rawProgress) ? Math.min(1, Math.max(0, rawProgress)) : 0;
+  return {
+    mode,
+    state,
+    progress,
+    detail: data.detail ?? null,
+    speed: toNumberOrNull(data.speed),
+    height: toNumberOrNull(data.height),
+    targetHeight: toNumberOrNull(data.targetHeight),
+    encoder: typeof data.encoder === "string" ? data.encoder : null,
+  };
+}
+
+/** Optional ``?caps=`` query selecting the worker's copy/transcode plan. */
+function mediaCapsQuery(caps?: string): string {
+  return caps ? `?caps=${encodeURIComponent(caps)}` : "";
+}
+
+async function readMediaStatus(res: Response, fallbackMessage: string): Promise<WorkerMediaStatus> {
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}) as { detail?: string });
+    const detail = typeof err.detail === "string" ? err.detail : undefined;
+    // A bare "Not Found" means the worker predates this playback API.
+    throw new Error(detail && detail !== "Not Found" ? detail : fallbackMessage);
+  }
+  return toMediaStatus((await res.json()) as RawMediaStatus);
+}
+
+/** Learn how the worker will serve a file and get the raw-file ticket. */
+export async function getWorkerMediaTicket(
+  workerId: string,
+  downloadId: string,
+  fileIndex: number,
+  caps?: string,
+): Promise<WorkerMediaTicket> {
+  const res = await callWorker(
+    workerId,
+    "POST",
+    `/downloads/${encodeURIComponent(downloadId)}/files/${fileIndex}/media-ticket${mediaCapsQuery(caps)}`,
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}) as { detail?: string });
+    throw new Error(err.detail ?? `Could not prepare playback (${res.status})`);
+  }
+  const data = (await res.json()) as RawMediaStatus & { token?: string };
+  if (!data.token) throw new Error("Worker did not return a playback ticket");
+  return { token: data.token, ...toMediaStatus(data) };
+}
+
+/** Ask the worker to start converting a file (idempotent) and report progress. */
+export async function prepareWorkerMedia(
+  workerId: string,
+  downloadId: string,
+  fileIndex: number,
+  caps?: string,
+): Promise<WorkerMediaStatus> {
+  const res = await callWorker(
+    workerId,
+    "POST",
+    `/downloads/${encodeURIComponent(downloadId)}/files/${fileIndex}/media-prepare${mediaCapsQuery(caps)}`,
+  );
+  return readMediaStatus(res, "Could not prepare this file for playback");
+}
+
+/** Report conversion progress for a file that is being prepared. */
+export async function getWorkerMediaStatus(
+  workerId: string,
+  downloadId: string,
+  fileIndex: number,
+  caps?: string,
+): Promise<WorkerMediaStatus> {
+  const res = await callWorker(
+    workerId,
+    "GET",
+    `/downloads/${encodeURIComponent(downloadId)}/files/${fileIndex}/media-status${mediaCapsQuery(caps)}`,
+  );
+  return readMediaStatus(res, "Could not check playback progress");
+}
+
+export interface WorkerPlaybackUrls {
+  /** Raw worker file URL (native formats), auth via ?download_token. */
+  directUrl: string;
+  /** Prepared MP4 copy (copy-safe codecs), served with HTTP range support. */
+  progressiveUrl: string;
+  /** VOD HLS playlist URL; the worker transcodes segments on demand. */
+  hlsUrl: string;
+}
+
+/**
+ * Build playback URLs that point at the worker tunnel directly.
+ *
+ * The app server only hands the browser a ticket; every media byte is
+ * transferred between the browser and the worker (no Next.js bandwidth).
+ * Playback endpoints are tokenless — the tunnel URL is the secret — so the
+ * download token is only attached to the raw-file URL below.
+ */
+export async function getWorkerPlaybackUrls(
+  workerId: string,
+  downloadId: string,
+  fileIndex: number,
+  token: string,
+  caps?: string,
+): Promise<WorkerPlaybackUrls> {
+  // Read after the ticket call in case it refreshed the cached connection.
+  const conn = await getConnection(workerId);
+  const base = conn.pinggyUrl.replace(/\/$/, "");
+  const dl = encodeURIComponent(downloadId);
+  const capsQuery = mediaCapsQuery(caps);
+
+  return {
+    directUrl: `${base}/downloads/${dl}/files/${fileIndex}?download_token=${encodeURIComponent(token)}&inline=1`,
+    progressiveUrl: `${base}/media/${dl}/${fileIndex}${capsQuery}`,
+    hlsUrl: `${base}/watch/${dl}/${fileIndex}/index.m3u8${capsQuery}`,
+  };
+}
+
+/**
+ * Free Pinggy tunnels show a browser screening page unless the request carries
+ * `X-Pinggy-No-Screen`. hls.js can add that header; a plain <video> element
+ * cannot, so direct and progressive playback are unreliable on free tunnels,
+ * while HLS works. Pro/self-hosted URLs are not affected.
+ */
+export function isFreePinggyPlaybackUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return (
+      host.endsWith(".pinggy-free.link") ||
+      host.endsWith(".free.pinggy.net") ||
+      host.endsWith(".free.pinggy.online")
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Download a completed local worker file directly to the user's device.
  *

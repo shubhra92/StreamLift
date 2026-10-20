@@ -3,6 +3,7 @@
 !pip install -q streamlift-worker
 !pip install -q streamlift-megapy
 !apt-get install -y -q aria2 > /dev/null
+!apt-get install -y -q ffmpeg > /dev/null
 
 !streamlift-worker \
   --worker-id    "{{WORKER_ID}}" \

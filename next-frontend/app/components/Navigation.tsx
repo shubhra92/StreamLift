@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Download, Magnet, Cpu, User, ChevronDown } from "lucide-react";
+import { Download, Magnet, Cpu, User, ChevronDown, MonitorPlay } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { getCurrentGuest } from "@/app/lib/idb/guestGuard";
 
@@ -17,8 +17,9 @@ function useGuestInfo() {
 }
 
 const NAV_LINKS = [
-  { href: "/",        label: "Downloads",       short: "Downloads", Icon: Download },
-  { href: "/workers", label: "Workers",          short: "Workers",   Icon: Cpu      },
+  { href: "/watch",   label: "Watch",            short: "Watch",     Icon: MonitorPlay  },
+  { href: "/",        label: "Downloads",       short: "Downloads", Icon: Download     },
+  { href: "/workers", label: "Workers",          short: "Workers",   Icon: Cpu          },
 ] as const;
 
 export function Navigation() {
@@ -27,7 +28,10 @@ export function Navigation() {
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const active = NAV_LINKS.find((l) => l.href === pathname) ?? NAV_LINKS[0];
+  const active =
+    NAV_LINKS.find((l) => l.href === pathname) ??
+    NAV_LINKS.find((l) => l.href === "/") ??
+    NAV_LINKS[0];
 
   // Close dropdown on outside click
   useEffect(() => {
