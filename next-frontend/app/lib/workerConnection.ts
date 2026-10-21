@@ -520,6 +520,38 @@ export async function getWorkerLocalFiles(
 export type WorkerMediaMode = "progressive" | "hls";
 export type WorkerMediaState = "idle" | "preparing" | "ready" | "error";
 
+export interface WorkerAudioTrack {
+  /** Zero-based position in the player's audio menu. */
+  index: number;
+  /** Absolute ffmpeg stream index in the source file. */
+  streamIndex: number;
+  codec: string | null;
+  channels: number | null;
+  language: string | null;
+  title: string | null;
+  default: boolean;
+}
+
+export interface WorkerSubtitleTrack {
+  /** Zero-based position in the player's subtitle menu. */
+  index: number;
+  /** Absolute ffmpeg stream index in the source file. */
+  streamIndex: number;
+  codec: string | null;
+  language: string | null;
+  title: string | null;
+  default: boolean;
+  forced: boolean;
+  /** Image-based (PGS/VobSub) tracks cannot be rendered in a browser. */
+  bitmap: boolean;
+}
+
+export interface WorkerChapter {
+  start: number;
+  end: number;
+  title: string;
+}
+
 export interface WorkerMediaStatus {
   /** "progressive" = remuxed MP4 with range support; "hls" = virtual VOD. */
   mode: WorkerMediaMode;
@@ -536,11 +568,40 @@ export interface WorkerMediaStatus {
   targetHeight: number | null;
   /** Encoder used for HLS transcodes ("libx264" or "h264_nvenc"). */
   encoder: string | null;
+  /** Every selectable audio track in the source. */
+  audioTracks: WorkerAudioTrack[];
+  /** Every subtitle track in the source (text and bitmap). */
+  subtitleTracks: WorkerSubtitleTrack[];
+  /** Chapter markers, when the container has them. */
+  chapters: WorkerChapter[];
+  /** True when the worker serves a master playlist with alternate audio. */
+  multiAudio: boolean;
 }
 
 export interface WorkerMediaTicket extends WorkerMediaStatus {
   /** Authorizes the raw-file (direct) URL only; playback URLs are tokenless. */
   token: string;
+}
+
+interface RawAudioTrack {
+  index?: number;
+  streamIndex?: number;
+  codec?: string | null;
+  channels?: number | null;
+  language?: string | null;
+  title?: string | null;
+  default?: boolean;
+}
+
+interface RawSubtitleTrack extends RawAudioTrack {
+  forced?: boolean;
+  bitmap?: boolean;
+}
+
+interface RawChapter {
+  start?: number;
+  end?: number;
+  title?: string;
 }
 
 interface RawMediaStatus {
@@ -552,10 +613,58 @@ interface RawMediaStatus {
   height?: number | null;
   targetHeight?: number | null;
   encoder?: string | null;
+  multiAudio?: boolean;
+  audioTracks?: RawAudioTrack[];
+  subtitleTracks?: RawSubtitleTrack[];
+  chapters?: RawChapter[];
 }
 
 function toNumberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function toAudioTracks(raw: RawAudioTrack[] | undefined): WorkerAudioTrack[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((track, position) => ({
+      index: typeof track.index === "number" ? track.index : position,
+      streamIndex:
+        typeof track.streamIndex === "number" ? track.streamIndex : position,
+      codec: track.codec ?? null,
+      channels: toNumberOrNull(track.channels),
+      language: track.language ?? null,
+      title: track.title ?? null,
+      default: Boolean(track.default),
+    }))
+    .sort((a, b) => a.index - b.index);
+}
+
+function toSubtitleTracks(raw: RawSubtitleTrack[] | undefined): WorkerSubtitleTrack[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((track, position) => ({
+      index: typeof track.index === "number" ? track.index : position,
+      streamIndex:
+        typeof track.streamIndex === "number" ? track.streamIndex : position,
+      codec: track.codec ?? null,
+      language: track.language ?? null,
+      title: track.title ?? null,
+      default: Boolean(track.default),
+      forced: Boolean(track.forced),
+      bitmap: Boolean(track.bitmap),
+    }))
+    .sort((a, b) => a.index - b.index);
+}
+
+function toChapters(raw: RawChapter[] | undefined): WorkerChapter[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((chapter) => ({
+      start: toNumberOrNull(chapter.start) ?? 0,
+      end: toNumberOrNull(chapter.end) ?? 0,
+      title: chapter.title?.trim() || "Chapter",
+    }))
+    .filter((chapter) => chapter.end > chapter.start);
 }
 
 function toMediaStatus(data: RawMediaStatus): WorkerMediaStatus {
@@ -566,6 +675,7 @@ function toMediaStatus(data: RawMediaStatus): WorkerMediaStatus {
       : "idle";
   const rawProgress = typeof data.progress === "number" ? data.progress : 0;
   const progress = Number.isFinite(rawProgress) ? Math.min(1, Math.max(0, rawProgress)) : 0;
+  const audioTracks = toAudioTracks(data.audioTracks);
   return {
     mode,
     state,
@@ -575,6 +685,10 @@ function toMediaStatus(data: RawMediaStatus): WorkerMediaStatus {
     height: toNumberOrNull(data.height),
     targetHeight: toNumberOrNull(data.targetHeight),
     encoder: typeof data.encoder === "string" ? data.encoder : null,
+    audioTracks,
+    subtitleTracks: toSubtitleTracks(data.subtitleTracks),
+    chapters: toChapters(data.chapters),
+    multiAudio: Boolean(data.multiAudio) || audioTracks.length > 1,
   };
 }
 
@@ -651,6 +765,12 @@ export interface WorkerPlaybackUrls {
   progressiveUrl: string;
   /** VOD HLS playlist URL; the worker transcodes segments on demand. */
   hlsUrl: string;
+  /** Base URL for `/subtitles/{track}.vtt` (append track + mediaQuery). */
+  subtitlesBaseUrl: string;
+  /** Base URL for `/thumbnail` (append `?t=..&w=..` + caps). */
+  thumbnailUrlBase: string;
+  /** `?caps=...` when capabilities were supplied, otherwise empty. */
+  mediaQuery: string;
 }
 
 /**
@@ -678,6 +798,9 @@ export async function getWorkerPlaybackUrls(
     directUrl: `${base}/downloads/${dl}/files/${fileIndex}?download_token=${encodeURIComponent(token)}&inline=1`,
     progressiveUrl: `${base}/media/${dl}/${fileIndex}${capsQuery}`,
     hlsUrl: `${base}/watch/${dl}/${fileIndex}/index.m3u8${capsQuery}`,
+    subtitlesBaseUrl: `${base}/downloads/${dl}/files/${fileIndex}/subtitles`,
+    thumbnailUrlBase: `${base}/downloads/${dl}/files/${fileIndex}/thumbnail`,
+    mediaQuery: capsQuery,
   };
 }
 

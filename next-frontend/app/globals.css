@@ -188,3 +188,65 @@
     transform: translateY(58px);
   }
 }
+
+/* Compact player sliders (volume + subtitle appearance). */
+.player-range {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 1rem;
+  background: transparent;
+  cursor: pointer;
+}
+
+.player-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.player-range::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  margin-top: -4px;
+  height: 12px;
+  width: 12px;
+  border: 0;
+  border-radius: 9999px;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.35);
+  transition: transform 120ms ease;
+}
+
+.player-range:hover::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+
+.player-range::-moz-range-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.player-range::-moz-range-thumb {
+  height: 12px;
+  width: 12px;
+  border: 0;
+  border-radius: 9999px;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.35);
+}
+
+.player-range:focus-visible {
+  outline: 2px solid rgba(96, 165, 250, 0.8);
+  outline-offset: 2px;
+  border-radius: 9999px;
+}
+
+input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+input[type="color"]::-webkit-color-swatch {
+  border: 0;
+  border-radius: 3px;
+}

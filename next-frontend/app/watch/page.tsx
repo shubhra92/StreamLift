@@ -75,6 +75,15 @@ export default function WatchPage() {
         workerId={selection?.workerId ?? null}
         workerName={selection?.workerName}
         file={selection?.file ?? null}
+        files={
+          selection
+            ? groups.find((group) => group.worker.id === selection.workerId)?.files ?? []
+            : []
+        }
+        onChangeFile={(file) => {
+          if (!selection) return;
+          setSelection({ ...selection, file });
+        }}
         onClose={() => setSelection(null)}
       />
     </main>
