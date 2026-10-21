@@ -144,6 +144,8 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # Cache preflights; subtitle/thumbnail requests carry a tunnel header.
+    max_age=600,
     # Content-Range is NOT CORS-safelisted — without this, browsers hide it
     # from fetch() and the client cannot validate byte-range responses.
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length", "Content-Disposition"],
@@ -513,36 +515,60 @@ async def stream_prepared_media(
     )
 
 
-@app.get("/watch/{download_id}/{file_index}/index.m3u8")
-async def watch_playlist(
+@app.get("/downloads/{download_id}/files/{file_index}/subtitles/{track}.vtt")
+async def subtitle_track(
     download_id: str,
     file_index: int,
+    track: int,
     caps: Optional[str] = None,
 ):
-    """Return the complete VOD playlist for a worker-local media file.
-
-    Segments are produced on demand in background batches, but the playlist
-    itself is built up front from the file's duration so players see real VOD
-    from the first request. No token: the tunnel URL is the authorization.
-    """
+    """Return one embedded text subtitle track converted to WebVTT."""
+    _require_watchable_file(download_id, file_index)
     from streamlift_worker import streaming
 
     loop = asyncio.get_running_loop()
-    playlist = await loop.run_in_executor(
-        None,
-        streaming.get_playlist,
-        download_id,
-        file_index,
-        caps,
+    result = await loop.run_in_executor(
+        None, streaming.get_subtitle, download_id, file_index, track, caps
     )
-    if playlist is None:
+    if result is None:
         raise HTTPException(
-            status_code=503,
-            detail=(
-                "Playback is not available for this file "
-                "(missing ffmpeg/ffprobe, unreadable source, or unknown duration)"
-            ),
+            status_code=404,
+            detail="This subtitle track cannot be displayed in a browser",
         )
+    path, media_type = result
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers={"Cache-Control": "no-cache, no-transform"},
+    )
+
+
+@app.get("/downloads/{download_id}/files/{file_index}/thumbnail")
+async def media_thumbnail(
+    download_id: str,
+    file_index: int,
+    t: float = 0,
+    w: int = 320,
+    caps: Optional[str] = None,
+):
+    """Return a cached JPEG preview frame for the seek bar."""
+    _require_watchable_file(download_id, file_index)
+    from streamlift_worker import streaming
+
+    loop = asyncio.get_running_loop()
+    path = await loop.run_in_executor(
+        None, streaming.get_thumbnail, download_id, file_index, t, w, caps
+    )
+    if not path:
+        raise HTTPException(status_code=404, detail="Preview is not available")
+    return FileResponse(
+        path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+def _playlist_response(playlist: str) -> Response:
     return Response(
         content=playlist,
         media_type="application/vnd.apple.mpegurl",
@@ -553,12 +579,91 @@ async def watch_playlist(
     )
 
 
+async def _load_playlist(
+    download_id: str,
+    file_index: int,
+    caps: Optional[str],
+    *,
+    kind: str,
+    track: Optional[int] = None,
+    quality: Optional[str] = None,
+) -> str:
+    from streamlift_worker import streaming
+
+    loop = asyncio.get_running_loop()
+    playlist = await loop.run_in_executor(
+        None,
+        streaming.get_playlist,
+        download_id,
+        file_index,
+        caps,
+        kind,
+        track,
+        quality,
+    )
+    if playlist is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Playback is not available for this file "
+                "(missing ffmpeg/ffprobe, unreadable source, or unknown duration)"
+            ),
+        )
+    return playlist
+
+
+@app.get("/watch/{download_id}/{file_index}/index.m3u8")
+async def watch_playlist(
+    download_id: str,
+    file_index: int,
+    caps: Optional[str] = None,
+):
+    """Entry playlist: a quality/audio master, or a plain audio playlist.
+
+    Segments are produced on demand in background batches, but the playlist
+    itself is built up front from the file's duration so players see real VOD
+    from the first request. No token: the tunnel URL is the authorization.
+    """
+    playlist = await _load_playlist(download_id, file_index, caps, kind="index")
+    return _playlist_response(playlist)
+
+
+@app.get("/watch/{download_id}/{file_index}/video.m3u8")
+async def watch_video_playlist(
+    download_id: str,
+    file_index: int,
+    caps: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    """Video rendition (original or a transcoded quality) for the master."""
+    playlist = await _load_playlist(
+        download_id, file_index, caps, kind="video", quality=q
+    )
+    return _playlist_response(playlist)
+
+
+@app.get("/watch/{download_id}/{file_index}/audio/{track}.m3u8")
+async def watch_audio_playlist(
+    download_id: str,
+    file_index: int,
+    track: int,
+    caps: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    """One audio rendition referenced by the master playlist."""
+    playlist = await _load_playlist(
+        download_id, file_index, caps, kind="audio", track=track, quality=q
+    )
+    return _playlist_response(playlist)
+
+
 @app.get("/watch/{download_id}/{file_index}/{segment}")
 async def watch_segment(
     download_id: str,
     file_index: int,
     segment: str,
     caps: Optional[str] = None,
+    q: Optional[str] = None,
 ):
     """Serve one HLS segment produced for a playback session."""
     from streamlift_worker import streaming
@@ -567,7 +672,13 @@ async def watch_segment(
     # event loop that serves heartbeats and the rest of the API.
     loop = asyncio.get_running_loop()
     path = await loop.run_in_executor(
-        None, streaming.get_segment_path, download_id, file_index, segment, caps
+        None,
+        streaming.get_segment_path,
+        download_id,
+        file_index,
+        segment,
+        caps,
+        q,
     )
     if not path:
         raise HTTPException(status_code=404, detail="Playback segment not found")

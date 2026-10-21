@@ -24,17 +24,42 @@ ORIGINAL_PATH = os.environ.get("PATH", "")
 FAKE_FFPROBE = """#!/usr/bin/env bash
 set -e
 last="${@: -1}"
+if [[ "$last" == *.ts && "$*" == *"packet="* ]]; then
+  # Stream-copy validation reads the packets of the freshly written segment.
+  # Return a six-second GOP starting at that segment's absolute boundary.
+  base="$(basename "$last")"
+  digits="${base//[^0-9]/}"
+  idx=$((10#${digits:-0}))
+  start_ms=$((idx * 6000))
+  printf '{"packets":['
+  first=1
+  for ms in 0 1000 2000 3000 4000 5000 5900; do
+    total=$((start_ms + ms))
+    if [[ $first -eq 1 ]]; then first=0; else printf ','; fi
+    flags="___"
+    if [[ $ms -eq 0 ]]; then flags="K__"; fi
+    printf '{"stream_index":0,"pts_time":"%d.%03d","flags":"%s"}' \
+      $((total / 1000)) $((total % 1000)) "$flags"
+  done
+  printf ']}\\n'
+  exit 0
+fi
+if [[ "$*" == *"packet="* ]]; then
+  # Keyframes at six-second boundaries; enough for the copy rendition tests.
+  printf '{"packets":[{"stream_index":0,"pts_time":"0.000000","flags":"K__"},{"stream_index":0,"pts_time":"6.000000","flags":"K__"},{"stream_index":0,"pts_time":"12.000000","flags":"K__"},{"stream_index":0,"pts_time":"18.000000","flags":"K__"},{"stream_index":0,"pts_time":"24.000000","flags":"K__"}]}\\n'
+  exit 0
+fi
 if [[ "$last" == *tail* ]]; then
   duration="30.5"
 else
   duration="30.0"
 fi
 if [[ "$last" == *copy* ]]; then
-  codec='{"index":0,"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"pix_fmt":"yuv420p","avg_frame_rate":"24/1"},{"index":1,"codec_type":"audio","codec_name":"aac"}'
+  codec='{"index":0,"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"pix_fmt":"yuv420p","avg_frame_rate":"24/1","bit_rate":"8000000"},{"index":1,"codec_type":"audio","codec_name":"aac"}'
 else
-  codec='{"index":0,"codec_type":"video","codec_name":"hevc","width":3840,"height":2160,"pix_fmt":"yuv420p10le","avg_frame_rate":"24/1"},{"index":1,"codec_type":"audio","codec_name":"ac3"}'
+  codec='{"index":0,"codec_type":"video","codec_name":"hevc","width":3840,"height":2160,"pix_fmt":"yuv420p10le","avg_frame_rate":"24/1","bit_rate":"30000000"},{"index":1,"codec_type":"audio","codec_name":"ac3"}'
 fi
-printf '{"streams":[%s],"format":{"duration":"%s"}}\\n' "$codec" "$duration"
+printf '{"packets":[],"streams":[%s],"format":{"duration":"%s"}}\\n' "$codec" "$duration"
 """
 
 FAKE_FFMPEG = """#!/usr/bin/env bash
@@ -196,6 +221,20 @@ def test_copy_safe_file_uses_progressive_mp4(media_env):
         "height": 1080,
         "targetHeight": None,
         "encoder": None,
+        "multiAudio": False,
+        "audioTracks": [
+            {
+                "index": 0,
+                "streamIndex": 1,
+                "codec": "aac",
+                "channels": None,
+                "language": None,
+                "title": None,
+                "default": False,
+            }
+        ],
+        "subtitleTracks": [],
+        "chapters": [],
     }
 
     # Preparing again is a no-op (same artifact).
@@ -213,7 +252,12 @@ def test_progressive_session_can_fall_back_to_hls(media_env):
     # Progressive sessions intentionally start without an encoder.
     assert session.encoder_args == ()
 
-    playlist = streaming.get_playlist("fallback1", 0)
+    master = streaming.get_playlist("fallback1", 0)
+    assert master is not None
+    assert "#EXT-X-STREAM-INF" in master
+    assert "q=original" in master
+
+    playlist = streaming.get_playlist("fallback1", 0, kind="video")
     assert playlist is not None
     assert "#EXT-X-PLAYLIST-TYPE:VOD" in playlist
     assert "#EXT-X-ENDLIST" in playlist
@@ -224,6 +268,120 @@ def test_progressive_session_can_fall_back_to_hls(media_env):
     assert os.path.getsize(path) > 0
     # The batch selected an encoder lazily for the fallback.
     assert session.encoder_name
+
+
+def test_original_copy_segment_validation_accepts_healthy_gop(media_env):
+    _add_media(media_env, "validate1", "movie-copy.mkv")
+    session = streaming._ensure_session(
+        "validate1", 0, None, start=False, quality="original"
+    )
+    assert session is not None
+    assert session.copy_video is True
+
+    segment = os.path.join(session.output_dir, "seg_00000.ts")
+    with open(segment, "wb") as handle:
+        handle.write(b"fake-segment")
+
+    valid, reason = streaming._validate_copy_segment(session, 0, segment)
+    assert valid, reason
+
+
+def test_healthy_original_segment_is_served_without_fallback(media_env):
+    _add_media(media_env, "originalserve", "movie-copy.mkv")
+
+    path = streaming.get_segment_path(
+        "originalserve", 0, "seg_00000.ts", quality="original"
+    )
+    assert path is not None
+    assert os.path.isfile(path)
+
+    session = streaming._sessions[
+        ("originalserve", 0, streaming.parse_caps(None).key, "original")
+    ]
+    assert session.copy_video is True
+    assert 0 in session.completed
+    assert not session.fallback_segments
+
+
+def test_original_copy_segment_validation_rejects_no_video(
+    media_env, monkeypatch, tmp_path
+):
+    _add_media(media_env, "validate2", "movie-copy.mkv")
+    session = streaming._ensure_session(
+        "validate2", 0, None, start=False, quality="original"
+    )
+    assert session is not None
+
+    bad_bin = tmp_path / "badbin"
+    bad_bin.mkdir()
+    _write_executable(
+        bad_bin / "ffprobe",
+        "#!/usr/bin/env bash\nprintf '{\"packets\":[]}\\n'\n",
+    )
+    monkeypatch.setenv("PATH", f"{bad_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    segment = os.path.join(session.output_dir, "seg_00000.ts")
+    with open(segment, "wb") as handle:
+        handle.write(b"bad-segment")
+
+    valid, reason = streaming._validate_copy_segment(session, 0, segment)
+    assert valid is False
+    assert "no video packets" in reason
+
+
+def test_original_copy_segment_validation_rejects_pts_gap(
+    media_env, monkeypatch, tmp_path
+):
+    _add_media(media_env, "validate3", "movie-copy.mkv")
+    session = streaming._ensure_session(
+        "validate3", 0, None, start=False, quality="original"
+    )
+    assert session is not None
+
+    bad_bin = tmp_path / "gapbin"
+    bad_bin.mkdir()
+    _write_executable(
+        bad_bin / "ffprobe",
+        "#!/usr/bin/env bash\n"
+        "printf '{\"packets\":["
+        "{\"pts_time\":\"0.000\",\"flags\":\"K__\"},"
+        "{\"pts_time\":\"2.500\",\"flags\":\"___\"},"
+        "{\"pts_time\":\"5.900\",\"flags\":\"___\"}"
+        "]}\\n'\n",
+    )
+    monkeypatch.setenv("PATH", f"{bad_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    segment = os.path.join(session.output_dir, "seg_00000.ts")
+    with open(segment, "wb") as handle:
+        handle.write(b"gappy-segment")
+
+    valid, reason = streaming._validate_copy_segment(session, 0, segment)
+    assert valid is False
+    assert "timestamp gap" in reason
+
+
+def test_failed_original_segment_is_transcoded_on_demand(media_env, monkeypatch):
+    _add_media(media_env, "fallbackcopy", "movie-copy.mkv")
+    monkeypatch.setattr(
+        streaming,
+        "_validate_copy_segment",
+        lambda session, index, path: (False, "forced validation failure"),
+    )
+
+    path = streaming.get_segment_path(
+        "fallbackcopy", 0, "seg_00000.ts", quality="original"
+    )
+    assert path is not None
+    assert os.path.isfile(path)
+    assert os.path.getsize(path) > 0
+
+    session = streaming._sessions[
+        ("fallbackcopy", 0, streaming.parse_caps(None).key, "original")
+    ]
+    assert 0 in session.fallback_segments
+    assert 0 in session.completed
+    assert session.copy_validation_failures >= 1
+    assert session.encoder_args
 
 
 def test_audio_only_copy_file_is_served_as_audio(media_env, monkeypatch):
@@ -318,7 +476,8 @@ def test_hevc_copy_depends_on_client_caps(media_env, monkeypatch):
 # ── Virtual VOD HLS mode ─────────────────────────────────────────────────────
 
 
-def test_transcode_file_uses_complete_vod_playlist(media_env):
+def test_transcode_file_uses_complete_vod_playlist(media_env, monkeypatch):
+    monkeypatch.setattr(streaming, "HLS_MAX_HEIGHT", 1080)
     _add_media(media_env, "hls1", "movie.mkv")
 
     session = streaming.describe("hls1", 0)
@@ -327,9 +486,18 @@ def test_transcode_file_uses_complete_vod_playlist(media_env):
     assert session.state == streaming.STATE_READY
     assert streaming.get_media("hls1", 0) is None
 
-    # The playlist carries the client's capabilities (not an auth token), so
-    # each segment request maps back to this exact session.
-    playlist = streaming.get_playlist("hls1", 0, "h264|aac")
+    # The master carries the client's capabilities and quality ladder. HEVC
+    # cannot be copied into MPEG-TS, so there is no 4K original variant here.
+    master = streaming.get_playlist("hls1", 0, "h264|aac")
+    assert master is not None
+    assert "#EXT-X-STREAM-INF" in master
+    assert "q=original" not in master
+    assert "q=1080" in master
+    assert "q=720" in master
+
+    # Each quality has its own complete VOD playlist, and every segment URL
+    # carries both the capability string and the quality id.
+    playlist = streaming.get_playlist("hls1", 0, "h264|aac", kind="video", quality="1080")
     assert playlist is not None
     lines = playlist.splitlines()
     assert lines[0] == "#EXTM3U"
@@ -340,7 +508,7 @@ def test_transcode_file_uses_complete_vod_playlist(media_env):
 
     segments = [line for line in lines if line.startswith("seg_")]
     assert segments == [
-        f"seg_{index:05d}.ts?caps=h264%7Caac" for index in range(5)
+        f"seg_{index:05d}.ts?caps=h264%7Caac&q=1080" for index in range(5)
     ]
     assert "#EXTINF:6.000," in lines
 
@@ -402,7 +570,7 @@ def test_batch_command_never_upscales(media_env, monkeypatch):
 
 def test_vod_playlist_folds_tiny_tail(media_env):
     _add_media(media_env, "hls-tail", "movie.mkv")
-    playlist = streaming.get_playlist("hls-tail", 0)
+    playlist = streaming.get_playlist("hls-tail", 0, kind="video")
     assert playlist is not None
     assert "#EXTINF:6.500," in playlist
     assert "#EXT-X-TARGETDURATION:7" in playlist
@@ -464,6 +632,295 @@ def test_shutdown_removes_artifacts(media_env):
     assert streaming._sessions == {}
 
 
+def test_multi_audio_master_playlist_and_track_metadata(media_env, monkeypatch):
+    info = streaming.ProbeInfo(
+        video_index=0,
+        audio_index=1,
+        video_codec="h264",
+        audio_codec="aac",
+        duration=12.0,
+        width=1920,
+        height=1080,
+        pix_fmt="yuv420p",
+        frame_rate=24.0,
+        audio_streams=[
+            streaming.AudioTrack(1, "aac", 2, "eng", "English", True),
+            streaming.AudioTrack(2, "ac3", 6, "jpn", "Japanese", False),
+        ],
+        subtitle_streams=[
+            streaming.SubtitleTrack(3, "subrip", "eng", "English", True, False),
+            streaming.SubtitleTrack(4, "hdmv_pgs_subtitle", "eng", "Signs", False, True),
+        ],
+        chapters=[
+            streaming.Chapter(0.0, 6.0, "Intro"),
+            streaming.Chapter(6.0, 12.0, "Main"),
+        ],
+    )
+    monkeypatch.setattr(streaming, "_probe", lambda path: info)
+    _add_media(media_env, "multi1", "movie.mkv")
+
+    session = streaming.describe("multi1", 0)
+    assert session is not None
+    # Alternate audio renditions require HLS even when the video is copyable.
+    assert session.mode == streaming.MODE_HLS
+
+    master = streaming.get_playlist("multi1", 0, kind="index")
+    assert master is not None
+    assert master.count("#EXT-X-MEDIA:TYPE=AUDIO") == 2
+    assert 'NAME="English"' in master
+    assert 'NAME="Japanese"' in master
+    assert 'DEFAULT=YES' in master
+    assert 'URI="audio/1.m3u8' in master
+    assert "video.m3u8" in master
+
+    video = streaming.get_playlist("multi1", 0, kind="video")
+    assert video is not None and "seg_00000.ts" in video
+
+    audio = streaming.get_playlist("multi1", 0, kind="audio", track=1)
+    assert audio is not None
+    # The audio playlist is one directory below the shared segment directory.
+    assert "../aud_1_00000.ts" in audio
+    assert "aud_1_00001.ts" in audio
+    assert streaming.get_playlist("multi1", 0, kind="audio", track=9) is None
+
+    segment = streaming.get_segment_path("multi1", 0, "aud_1_00000.ts")
+    assert segment is not None and os.path.isfile(segment)
+    assert streaming.get_segment_path("multi1", 0, "aud_9_00000.ts") is None
+
+    payload = streaming.status_payload(session)
+    assert payload["multiAudio"] is True
+    assert [track["title"] for track in payload["audioTracks"]] == [
+        "English",
+        "Japanese",
+    ]
+    assert [track["bitmap"] for track in payload["subtitleTracks"]] == [False, True]
+    assert payload["chapters"] == [
+        {"start": 0.0, "end": 6.0, "title": "Intro"},
+        {"start": 6.0, "end": 12.0, "title": "Main"},
+    ]
+
+
+def test_quality_ladder_keeps_4k_original_and_caps_transcodes(monkeypatch):
+    monkeypatch.setattr(streaming, "HLS_MAX_HEIGHT", 1080)
+    info = streaming.ProbeInfo(
+        video_index=0,
+        audio_index=1,
+        video_codec="h264",
+        audio_codec="aac",
+        duration=10.0,
+        width=3840,
+        height=2160,
+        pix_fmt="yuv420p",
+        frame_rate=24.0,
+    )
+    variants = streaming._quality_variants(info)
+    assert [variant["quality"] for variant in variants] == [
+        "original",
+        "1080",
+        "720",
+        "480",
+        "360",
+    ]
+    assert [variant["height"] for variant in variants] == [2160, 1080, 720, 480, 360]
+
+    hevc = streaming.ProbeInfo(
+        video_index=0,
+        audio_index=1,
+        video_codec="hevc",
+        audio_codec="aac",
+        duration=10.0,
+        width=3840,
+        height=2160,
+        pix_fmt="yuv420p10le",
+        frame_rate=24.0,
+    )
+    assert [variant["quality"] for variant in streaming._quality_variants(hevc)] == [
+        "1080",
+        "720",
+        "480",
+        "360",
+    ]
+
+
+def test_master_exposes_original_and_transcoded_qualities(media_env, monkeypatch):
+    monkeypatch.setattr(streaming, "HLS_MAX_HEIGHT", 1080)
+    _add_media(media_env, "quality1", "movie-copy.mkv")
+
+    master = streaming.get_playlist("quality1", 0)
+    assert master is not None
+    assert "q=original" in master
+    assert 'NAME="Original (1080p)"' in master
+    assert "RESOLUTION=1920x1080" in master
+    assert "q=720" in master
+    assert "q=480" in master
+    assert "q=360" in master
+    # The original 1080p copy must not be duplicated as a 1080p transcode.
+    assert "q=1080" not in master
+
+    original = streaming.get_playlist("quality1", 0, kind="video", quality="original")
+    assert original is not None
+    assert "q=original" in original
+    assert "seg_00000.ts?caps=" in original
+
+    copy_session = streaming._sessions[
+        ("quality1", 0, streaming.parse_caps(None).key, "original")
+    ]
+    assert copy_session.copy_video is True
+    command = streaming._build_batch_command(
+        copy_session, 0, 2, "/tmp/list.csv", "/tmp/seg_%05d.ts"
+    )
+    assert command[command.index("-c:v") + 1] == "copy"
+    assert "-an" in command
+    assert "-force_key_frames" not in command
+
+    transcoded = streaming.get_playlist("quality1", 0, kind="video", quality="720")
+    assert transcoded is not None
+    transcode_session = streaming._sessions[
+        ("quality1", 0, streaming.parse_caps(None).key, "720")
+    ]
+    transcode_command = streaming._build_batch_command(
+        transcode_session, 0, 2, "/tmp/list.csv", "/tmp/seg_%05d.ts"
+    )
+    assert "copy" not in transcode_command
+    assert "libx264" in transcode_command
+    assert transcode_command[transcode_command.index("-vf") + 1] == "scale=-2:720"
+
+
+def test_hevc_master_has_transcodes_but_no_original(media_env, monkeypatch):
+    monkeypatch.setattr(streaming, "HLS_MAX_HEIGHT", 1080)
+    _add_media(media_env, "quality2", "movie.mkv")
+
+    master = streaming.get_playlist("quality2", 0)
+    assert master is not None
+    assert "q=original" not in master
+    assert "q=1080" in master
+    assert "q=720" in master
+    assert "q=480" in master
+    assert "q=360" in master
+
+    # HEVC is not copy-safe for MPEG-TS HLS yet.
+    assert streaming.get_playlist(
+        "quality2", 0, kind="video", quality="original"
+    ) is None
+    assert streaming.get_playlist(
+        "quality2", 0, kind="video", quality="9999"
+    ) is None
+
+
+def test_single_audio_quality_session_uses_shared_audio_rendition(media_env, monkeypatch):
+    monkeypatch.setattr(streaming, "HLS_MAX_HEIGHT", 1080)
+    _add_media(media_env, "quality3", "movie.mkv")
+
+    master = streaming.get_playlist("quality3", 0)
+    assert master is not None
+    assert master.count("#EXT-X-MEDIA:TYPE=AUDIO") == 1
+    assert 'URI="audio/0.m3u8' in master
+
+    audio = streaming.get_playlist("quality3", 0, kind="audio", track=0)
+    assert audio is not None
+    assert "aud_0_00000.ts" in audio
+    segment = streaming.get_segment_path("quality3", 0, "aud_0_00000.ts")
+    assert segment is not None and os.path.isfile(segment)
+
+    # Video renditions are audio-free; the shared audio group owns the audio.
+    video = streaming.get_playlist(
+        "quality3", 0, kind="video", quality="720"
+    )
+    assert video is not None
+    session = streaming._sessions[
+        ("quality3", 0, streaming.parse_caps(None).key, "720")
+    ]
+    command = streaming._build_batch_command(
+        session, 0, 2, "/tmp/list.csv", "/tmp/seg_%05d.ts"
+    )
+    assert "-an" in command
+
+
+def test_subtitle_extraction_serves_webvtt(media_env, monkeypatch):
+    info = streaming.ProbeInfo(
+        video_index=0,
+        audio_index=1,
+        video_codec="h264",
+        audio_codec="aac",
+        duration=12.0,
+        subtitle_streams=[
+            streaming.SubtitleTrack(2, "subrip", "eng", "English"),
+        ],
+    )
+    monkeypatch.setattr(streaming, "_probe", lambda path: info)
+    _add_media(media_env, "subs1", "movie.mkv")
+
+    result = streaming.get_subtitle("subs1", 0, 0)
+    assert result is not None
+    path, media_type = result
+    assert media_type == "text/vtt"
+    assert os.path.isfile(path) and os.path.getsize(path) > 0
+    # A second request is served from cache.
+    assert streaming.get_subtitle("subs1", 0, 0) == result
+    assert streaming.get_subtitle("subs1", 0, 1) is None
+
+
+def test_thumbnail_generation(media_env, monkeypatch):
+    info = streaming.ProbeInfo(
+        video_index=0,
+        audio_index=1,
+        video_codec="h264",
+        audio_codec="aac",
+        duration=12.0,
+        width=1920,
+        height=1080,
+    )
+    monkeypatch.setattr(streaming, "_probe", lambda path: info)
+    _add_media(media_env, "thumbs1", "movie.mkv")
+
+    path = streaming.get_thumbnail("thumbs1", 0, 3.2, 320)
+    assert path is not None
+    assert path.endswith("_320.jpg")
+    assert os.path.isfile(path) and os.path.getsize(path) > 0
+    assert streaming.get_thumbnail("thumbs1", 0, 3.2, 320) == path
+    # Clamped to the supported preview width.
+    small = streaming.get_thumbnail("thumbs1", 0, 4.0, 20)
+    assert small is not None and small.endswith("_160.jpg")
+
+
+def test_watch_routes_forward_quality_parameter(monkeypatch, tmp_path):
+    """HTTP layer must preserve ``q`` for playlists and segments."""
+    from fastapi.testclient import TestClient
+
+    from streamlift_worker import server
+
+    calls: list[tuple] = []
+
+    def fake_playlist(*args):
+        calls.append(args)
+        return "#EXTM3U\n#EXT-X-ENDLIST\n"
+
+    segment_file = tmp_path / "seg_00000.ts"
+    segment_file.write_bytes(b"segment")
+
+    def fake_segment(*args):
+        calls.append(args)
+        return str(segment_file)
+
+    monkeypatch.setattr(streaming, "get_playlist", fake_playlist)
+    monkeypatch.setattr(streaming, "get_segment_path", fake_segment)
+    client = TestClient(server.app)
+
+    playlist = client.get(
+        "/watch/abc/2/video.m3u8",
+        params={"caps": "h264|aac", "q": "720"},
+    )
+    assert playlist.status_code == 200
+    assert calls[-1] == ("abc", 2, "h264|aac", "video", None, "720")
+
+    segment = client.get(
+        "/watch/abc/2/seg_00000.ts",
+        params={"caps": "h264|aac", "q": "original"},
+    )
+    assert segment.status_code == 200
+    assert calls[-1] == ("abc", 2, "seg_00000.ts", "h264|aac", "original")
+
+
 # ── Optional real-ffmpeg smoke test ─────────────────────────────────────────
 
 
@@ -507,10 +964,10 @@ def test_real_ffmpeg_roundtrip(tmp_path, monkeypatch):
     assert prepared is not None
     assert os.path.getsize(prepared[0]) > 0
 
-    # Force the HLS path: the playlist must be complete VOD and the first
-    # segment must be decodable with a keyframe at 0.
+    # Force the HLS path: the video playlist must be complete VOD and the
+    # first segment must be decodable with a keyframe at 0.
     session.mode = streaming.MODE_HLS
-    playlist = streaming.get_playlist("real1", 0)
+    playlist = streaming.get_playlist("real1", 0, kind="video")
     assert playlist is not None and playlist.rstrip().endswith("#EXT-X-ENDLIST")
     segment = streaming.get_segment_path("real1", 0, "seg_00000.ts")
     assert segment is not None

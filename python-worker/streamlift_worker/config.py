@@ -41,14 +41,16 @@ HLS_MAX_RATE         = "5M"   # cap the transcode bitrate so playback never star
 HLS_MAX_BUFSIZE      = "10M"
 PLAYBACK_DIR_NAME    = ".playback"  # worker-side playback workspace
 
-# Transcodes never upscale, and are capped here so 4K sources stay watchable
-# on small CPUs (override with STREAMLIFT_PLAYBACK_MAX_HEIGHT, e.g. 1080).
+# Re-encoded HLS renditions never upscale and are capped here so 4K sources
+# stay watchable on small CPUs. The original-quality rendition is stream-copied
+# and is not subject to this cap. Override with
+# STREAMLIFT_PLAYBACK_MAX_HEIGHT (e.g. 2160) if the worker can handle it.
 def _playback_max_height() -> int:
     try:
         value = int(os.environ.get("STREAMLIFT_PLAYBACK_MAX_HEIGHT", "") or 0)
     except ValueError:
         value = 0
-    return value if value > 0 else 720
+    return value if value > 0 else 1080
 
 HLS_MAX_HEIGHT = _playback_max_height()
 
