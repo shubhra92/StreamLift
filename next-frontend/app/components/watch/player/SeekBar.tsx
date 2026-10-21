@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   isFreePinggyPlaybackUrl,
   type WorkerChapter,
@@ -22,6 +22,20 @@ interface Props {
   onSeek: (time: number) => void;
   onScrubStart?: () => void;
   onScrubEnd?: () => void;
+}
+
+/** Punch a 2px transparent gap through the track at each chapter boundary. */
+function chapterGapMask(positions: number[]): string | undefined {
+  if (positions.length === 0) return undefined;
+  const stops = ["#fff 0%"];
+  for (const position of positions) {
+    stops.push(`#fff calc(${position}% - 1px)`);
+    stops.push(`transparent calc(${position}% - 1px)`);
+    stops.push(`transparent calc(${position}% + 1px)`);
+    stops.push(`#fff calc(${position}% + 1px)`);
+  }
+  stops.push("#fff 100%");
+  return `linear-gradient(to right, ${stops.join(", ")})`;
 }
 
 export function SeekBar({
@@ -46,6 +60,21 @@ export function SeekBar({
   const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
   const played = safeDuration > 0 ? Math.min(1, currentTime / safeDuration) : 0;
   const hoverTime = hoverRatio !== null ? hoverRatio * safeDuration : null;
+  const chapterGapPositions =
+    safeDuration > 0
+      ? [
+          ...new Set(
+            chapters
+              .filter((chapter) => chapter.start > 0)
+              .map((chapter) => (chapter.start / safeDuration) * 100)
+              .filter((position) => position > 0 && position < 100),
+          ),
+        ].sort((a, b) => a - b)
+      : [];
+  const trackMask = chapterGapMask(chapterGapPositions);
+  const trackMaskStyle: CSSProperties | undefined = trackMask
+    ? { maskImage: trackMask, WebkitMaskImage: trackMask }
+    : undefined;
 
   const ratioFromClientX = (clientX: number): number => {
     const element = trackRef.current;
@@ -206,25 +235,30 @@ export function SeekBar({
           }
         }}
       >
-        <div className="relative h-1.5 w-full overflow-visible rounded-full bg-white/20 transition-all group-hover/seek:h-2 group-focus-visible/seek:h-2">
-          {buffered.map((range, index) => {
-            if (safeDuration <= 0) return null;
-            const left = Math.max(0, Math.min(1, range.start / safeDuration));
-            const right = Math.max(0, Math.min(1, range.end / safeDuration));
-            if (right <= left) return null;
-            return (
-              <span
-                key={`${range.start}-${range.end}-${index}`}
-                className="absolute inset-y-0 rounded-full bg-white/30"
-                style={{ left: `${left * 100}%`, width: `${(right - left) * 100}%` }}
-              />
-            );
-          })}
+        <div className="relative h-1.5 w-full overflow-visible rounded-full transition-all group-hover/seek:h-2 group-focus-visible/seek:h-2">
+          <div
+            className="absolute inset-0 overflow-visible rounded-full bg-white/20"
+            style={trackMaskStyle}
+          >
+            {buffered.map((range, index) => {
+              if (safeDuration <= 0) return null;
+              const left = Math.max(0, Math.min(1, range.start / safeDuration));
+              const right = Math.max(0, Math.min(1, range.end / safeDuration));
+              if (right <= left) return null;
+              return (
+                <span
+                  key={`${range.start}-${range.end}-${index}`}
+                  className="absolute inset-y-0 rounded-full bg-white/30"
+                  style={{ left: `${left * 100}%`, width: `${(right - left) * 100}%` }}
+                />
+              );
+            })}
 
-          <span
-            className="absolute inset-y-0 left-0 rounded-full bg-blue-500"
-            style={{ width: `${played * 100}%` }}
-          />
+            <span
+              className="absolute inset-y-0 left-0 rounded-full bg-blue-500"
+              style={{ width: `${played * 100}%` }}
+            />
+          </div>
 
           {chapters.map((chapter, index) => {
             if (safeDuration <= 0 || chapter.start <= 0) return null;
@@ -232,8 +266,10 @@ export function SeekBar({
               <span
                 key={`${chapter.start}-${index}`}
                 title={chapter.title}
-                className="absolute -top-0.5 h-[calc(100%+4px)] w-0.5 -translate-x-1/2 rounded bg-black/70"
-                style={{ left: `${Math.max(0, Math.min(100, (chapter.start / safeDuration) * 100))}%` }}
+                className="absolute -top-0.5 h-[calc(100%+4px)] w-0.5 -translate-x-1/2"
+                style={{
+                  left: `${Math.max(0, Math.min(100, (chapter.start / safeDuration) * 100))}%`,
+                }}
               />
             );
           })}

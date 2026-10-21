@@ -6,6 +6,7 @@ export interface PlayerPrefs {
   rate: number;
   loop: boolean;
   autoplayNext: boolean;
+  controlBackgroundOpacity: number;
 }
 
 export const DEFAULT_PLAYER_PREFS: PlayerPrefs = {
@@ -14,6 +15,7 @@ export const DEFAULT_PLAYER_PREFS: PlayerPrefs = {
   rate: 1,
   loop: false,
   autoplayNext: false,
+  controlBackgroundOpacity: 1,
 };
 
 const PREFS_KEY = "streamlift:player:prefs";
@@ -63,6 +65,11 @@ export function loadPlayerPrefs(): PlayerPrefs {
         : DEFAULT_PLAYER_PREFS.rate,
     loop: Boolean(stored.loop),
     autoplayNext: Boolean(stored.autoplayNext),
+    controlBackgroundOpacity:
+      typeof stored.controlBackgroundOpacity === "number" &&
+      Number.isFinite(stored.controlBackgroundOpacity)
+        ? Math.max(0, Math.min(1, stored.controlBackgroundOpacity))
+        : DEFAULT_PLAYER_PREFS.controlBackgroundOpacity,
   };
 }
 

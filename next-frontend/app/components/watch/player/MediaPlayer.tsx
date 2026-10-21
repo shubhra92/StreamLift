@@ -231,6 +231,9 @@ export function MediaPlayer({
   const [rate, setRate] = useState(initialPrefs.rate);
   const [loop, setLoop] = useState(initialPrefs.loop);
   const [autoplayNext, setAutoplayNext] = useState(initialPrefs.autoplayNext);
+  const [controlBackgroundOpacity, setControlBackgroundOpacity] = useState(
+    initialPrefs.controlBackgroundOpacity,
+  );
   const lastAudibleVolumeRef = useRef(initialPrefs.volume > 0 ? initialPrefs.volume : 1);
 
   const [playing, setPlaying] = useState(false);
@@ -515,8 +518,15 @@ export function MediaPlayer({
   }, [loop, isVideo, fileKey]);
 
   useEffect(() => {
-    savePlayerPrefs({ volume, muted, rate, loop, autoplayNext });
-  }, [volume, muted, rate, loop, autoplayNext]);
+    savePlayerPrefs({
+      volume,
+      muted,
+      rate,
+      loop,
+      autoplayNext,
+      controlBackgroundOpacity,
+    });
+  }, [volume, muted, rate, loop, autoplayNext, controlBackgroundOpacity]);
 
   // ── Media element events ──────────────────────────────────────────────────
   useEffect(() => {
@@ -1393,6 +1403,16 @@ export function MediaPlayer({
   const hasPreviousValue = Boolean(hasPrevious && onPreviousFile);
   const showControlsClass =
     controlsVisible || !playing || openMenu !== null || shortcutsOpen;
+  const topBarBackground = `linear-gradient(to bottom, rgba(0, 0, 0, ${
+    0.9 * controlBackgroundOpacity
+  }), rgba(0, 0, 0, ${
+    0.45 * controlBackgroundOpacity
+  }), rgba(0, 0, 0, 0))`;
+  const bottomBarBackground = `linear-gradient(to top, rgba(0, 0, 0, ${
+    0.95 * controlBackgroundOpacity
+  }), rgba(0, 0, 0, ${
+    0.8 * controlBackgroundOpacity
+  }), rgba(0, 0, 0, 0))`;
 
   return (
     <div
@@ -1489,9 +1509,10 @@ export function MediaPlayer({
 
       {/* Top bar */}
       <div
-        className={`pointer-events-none absolute inset-x-0 top-0 z-[65] bg-gradient-to-b from-black/90 via-black/45 to-transparent px-3 pb-10 pt-3 transition-opacity duration-200 ${
+        className={`pointer-events-none absolute inset-x-0 top-0 z-[65] px-3 pb-10 pt-3 transition-opacity duration-200 ${
           showControlsClass ? "opacity-100" : "invisible opacity-0"
         }`}
+        style={{ backgroundImage: topBarBackground }}
       >
         <div className="pointer-events-auto flex items-start gap-2">
           <div className="min-w-0 flex-1">
@@ -1528,26 +1549,6 @@ export function MediaPlayer({
           </button>
         </div>
       </div>
-
-      {/* Center play / buffering */}
-      {status === "ready" && !playing && !waiting && (
-        <div
-          className="absolute inset-0 z-30 flex items-center justify-center bg-black/10"
-          onClick={handleSurfaceClick}
-        >
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              togglePlay();
-            }}
-            className="flex h-16 w-16 items-center justify-center rounded-full bg-white/15 text-white shadow-2xl shadow-black/50 backdrop-blur-md transition hover:scale-105 hover:bg-white/25 sm:h-20 sm:w-20"
-            aria-label="Play"
-          >
-            <Play className="ml-1 h-7 w-7 sm:h-8 sm:w-8" fill="currentColor" />
-          </button>
-        </div>
-      )}
 
       {status === "ready" && waiting && (
         <div className="pointer-events-none absolute inset-0 z-[45] flex items-center justify-center">
@@ -1731,9 +1732,10 @@ export function MediaPlayer({
 
       {/* Bottom controls */}
       <div
-        className={`absolute inset-x-0 bottom-0 z-40 bg-gradient-to-t from-black/95 via-black/80 to-transparent px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-12 transition-opacity duration-200 ${
+        className={`absolute inset-x-0 bottom-0 z-40 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-12 transition-opacity duration-200 ${
           showControlsClass ? "opacity-100" : "pointer-events-none invisible opacity-0"
         }`}
+        style={{ backgroundImage: bottomBarBackground }}
       >
         <SeekBar
           currentTime={currentTime}
@@ -1887,6 +1889,8 @@ export function MediaPlayer({
             onLoopChange={setLoop}
             autoplayNext={autoplayNext}
             onAutoplayNextChange={setAutoplayNext}
+            controlBackgroundOpacity={controlBackgroundOpacity}
+            onControlBackgroundOpacityChange={setControlBackgroundOpacity}
             hasNext={hasNextValue}
             statsOpen={statsOpen}
             onToggleStats={() => setStatsOpen((current) => !current)}

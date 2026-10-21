@@ -7,6 +7,7 @@ import {
   MenuNote,
   MenuSection,
   PlayerMenuButton,
+  RangeRow,
   ToggleRow,
 } from "./Menu";
 
@@ -31,6 +32,8 @@ interface Props {
   onLoopChange: (loop: boolean) => void;
   autoplayNext: boolean;
   onAutoplayNextChange: (value: boolean) => void;
+  controlBackgroundOpacity: number;
+  onControlBackgroundOpacityChange: (value: number) => void;
   hasNext: boolean;
   statsOpen: boolean;
   onToggleStats: () => void;
@@ -53,6 +56,8 @@ export function SettingsMenu({
   onLoopChange,
   autoplayNext,
   onAutoplayNextChange,
+  controlBackgroundOpacity,
+  onControlBackgroundOpacityChange,
   hasNext,
   statsOpen,
   onToggleStats,
@@ -131,6 +136,19 @@ export function SettingsMenu({
         checked={autoplayNext}
         onChange={onAutoplayNextChange}
       />
+
+      <MenuDivider />
+      <MenuSection>Appearance</MenuSection>
+      <RangeRow
+        label="Control background"
+        value={controlBackgroundOpacity}
+        min={0}
+        max={1}
+        step={0.05}
+        display={`${Math.round(controlBackgroundOpacity * 100)}%`}
+        onChange={onControlBackgroundOpacityChange}
+      />
+      <MenuNote>Set to 0% to remove the title and control-bar shading.</MenuNote>
 
       <MenuDivider />
       <MenuItem
