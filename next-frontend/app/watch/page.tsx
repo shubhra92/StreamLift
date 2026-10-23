@@ -4,7 +4,11 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import { Loader2, MonitorPlay } from "lucide-react";
 import { useWatchMedia } from "../hooks/useWatchMedia";
-import { MediaPlayerDialog, WatchWorkerSection } from "../components/watch";
+import {
+  ConnectToTvButton,
+  MediaPlayerDialog,
+  WatchWorkerSection,
+} from "../components/watch";
 import { OfflineBanner } from "../components/OfflineBanner";
 import type { WatchFile } from "../components/watch/types";
 
@@ -25,12 +29,15 @@ export default function WatchPage() {
           <motion.div
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="mb-4"
+            className="mb-4 flex items-start justify-between gap-3"
           >
-            <h2 className="text-xl md:text-2xl font-bold">Watch</h2>
-            <p className="text-sm text-muted-foreground mt-1">
-              Play video and audio files stored on your online workers
-            </p>
+            <div className="min-w-0">
+              <h2 className="text-xl md:text-2xl font-bold">Watch</h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                Play video and audio files stored on your online workers
+              </p>
+            </div>
+            <ConnectToTvButton />
           </motion.div>
 
           <OfflineBanner networkStatus={networkStatus} />

@@ -50,6 +50,8 @@ export async function rotateSessionToken(
       "X-Auth-Token": workerAuthToken,
     },
     body: JSON.stringify({ newSessionToken: newToken }),
+    // A dead tunnel must not hang catalog/connection requests forever.
+    signal: AbortSignal.timeout(8_000),
   });
 
   if (!res.ok) {

@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, boolean, uuid, bigint, unique } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, integer, boolean, uuid, bigint, unique, index } from 'drizzle-orm/pg-core';
 
 export const guests = pgTable('guests', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -77,3 +77,57 @@ export const fileDownloads = pgTable('file_downloads', {
 });
 
 export type FileDownload = typeof fileDownloads.$inferSelect;
+
+// ── Android TV pairing ────────────────────────────────────────────────────────
+
+/**
+ * A paired Android TV. The TV never holds the browser guest cookie — it gets
+ * its own bearer token, hashed here, so the web UI can revoke individual TVs.
+ */
+export const tvDevices = pgTable('tv_devices', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  guestId: uuid('guest_id').notNull().references(() => guests.id, { onDelete: 'cascade' }),
+  name: text('name').notNull().default('Android TV'),
+  model: text('model'),
+  appVersion: text('app_version'),
+  tokenHash: text('token_hash'),                 // null until the TV polls after approval
+  lastSeenAt: timestamp('last_seen_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+  revokedAt: timestamp('revoked_at'),
+}, (t) => [
+  index('tv_devices_guest_idx').on(t.guestId),
+  index('tv_devices_token_idx').on(t.tokenHash),
+]);
+
+export type TvDevice = typeof tvDevices.$inferSelect;
+export type NewTvDevice = typeof tvDevices.$inferInsert;
+
+/**
+ * A short-lived pairing claim. The TV creates a device secret, displays the
+ * server-generated 6-character code, and polls until a web session approves it.
+ * Only hashes are stored; the raw code and secret never touch the database.
+ */
+export const tvPairings = pgTable('tv_pairings', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  codeHash: text('code_hash').notNull(),
+  deviceSecretHash: text('device_secret_hash').notNull(),
+  deviceName: text('device_name'),
+  model: text('model'),
+  appVersion: text('app_version'),
+  status: text('status').notNull().default('pending'), // pending | approved | denied | expired
+  guestId: uuid('guest_id').references(() => guests.id, { onDelete: 'cascade' }),
+  deviceId: uuid('device_id').references(() => tvDevices.id, { onDelete: 'cascade' }),
+  attempts: integer('attempts').notNull().default(0),
+  ipHash: text('ip_hash'),
+  expiresAt: timestamp('expires_at').notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+  approvedAt: timestamp('approved_at'),
+  consumedAt: timestamp('consumed_at'),
+}, (t) => [
+  index('tv_pairings_code_idx').on(t.codeHash),
+  index('tv_pairings_secret_idx').on(t.deviceSecretHash),
+  index('tv_pairings_expiry_idx').on(t.expiresAt),
+]);
+
+export type TvPairing = typeof tvPairings.$inferSelect;
+export type NewTvPairing = typeof tvPairings.$inferInsert;
