@@ -1,0 +1,173 @@
+name: Release Android TV APK
+
+# TV releases are independent from Python worker releases.
+# Push tv-vX.Y.Z (e.g. tv-v0.1.0) to build, sign, and publish the APK.
+on:
+  push:
+    tags:
+      - "tv-v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tv-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build signed APK and publish GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Derive version from tag
+        id: version
+        run: |
+          set -euo pipefail
+
+          TAG="${GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^tv-v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::Tag '$TAG' is invalid. Expected tv-vMAJOR.MINOR.PATCH (for example tv-v0.1.0)."
+            exit 1
+          fi
+
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+
+          if (( MINOR > 99 || PATCH > 99 )); then
+            echo "::error::MINOR and PATCH must be 0-99 so versionCode stays unique and monotonic."
+            exit 1
+          fi
+
+          VERSION_NAME="${MAJOR}.${MINOR}.${PATCH}"
+          VERSION_CODE=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))
+
+          if (( VERSION_CODE < 1 || VERSION_CODE > 2100000000 )); then
+            echo "::error::Computed versionCode $VERSION_CODE is outside the valid Android range."
+            exit 1
+          fi
+
+          echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "Building StreamLift TV $VERSION_NAME (versionCode $VERSION_CODE)"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-35 build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Check signing secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.TV_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.TV_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.TV_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.TV_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          missing=0
+          for name in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Repository secret TV_${name} is not set."
+              missing=1
+            fi
+          done
+
+          if (( missing != 0 )); then
+            echo "::error::Add the TV signing secrets before tagging a TV release."
+            exit 1
+          fi
+
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.TV_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+
+          KEYSTORE_PATH="$RUNNER_TEMP/streamlift-tv-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          test -s "$KEYSTORE_PATH"
+          echo "TV_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        working-directory: kotlin-tv
+        env:
+          TV_KEYSTORE_PASSWORD: ${{ secrets.TV_KEYSTORE_PASSWORD }}
+          TV_KEY_ALIAS: ${{ secrets.TV_KEY_ALIAS }}
+          TV_KEY_PASSWORD: ${{ secrets.TV_KEY_PASSWORD }}
+          # Optional repository variable; leave unset to configure the server on the TV.
+          STREAMLIFT_SERVER_URL: ${{ vars.STREAMLIFT_SERVER_URL }}
+        run: |
+          set -euo pipefail
+
+          chmod +x ./gradlew
+          ./gradlew :app:assembleRelease \
+            -PappVersionName="${{ steps.version.outputs.name }}" \
+            -PappVersionCode="${{ steps.version.outputs.code }}" \
+            -PrequireReleaseSigning=true
+
+      - name: Verify and prepare release assets
+        run: |
+          set -euo pipefail
+
+          APK_DIR="kotlin-tv/app/build/outputs/apk/release"
+          APK_SOURCE="$APK_DIR/app-release.apk"
+          if [[ ! -f "$APK_SOURCE" ]]; then
+            echo "::error::Expected signed APK at $APK_SOURCE"
+            ls -R "$APK_DIR" || true
+            exit 1
+          fi
+
+          APK_NAME="streamlift-tv-${{ steps.version.outputs.name }}.apk"
+          ASSET_DIR="$RUNNER_TEMP/release-assets"
+          mkdir -p "$ASSET_DIR"
+          cp "$APK_SOURCE" "$ASSET_DIR/$APK_NAME"
+
+          BUILD_TOOLS_DIR="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
+          "$BUILD_TOOLS_DIR/apksigner" verify --print-certs "$ASSET_DIR/$APK_NAME"
+
+          cd "$ASSET_DIR"
+          sha256sum "$APK_NAME" > "$APK_NAME.sha256"
+          ls -lh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: StreamLift TV ${{ steps.version.outputs.name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            ${{ runner.temp }}/release-assets/streamlift-tv-${{ steps.version.outputs.name }}.apk
+            ${{ runner.temp }}/release-assets/streamlift-tv-${{ steps.version.outputs.name }}.apk.sha256
+          body: |
+            ## Install on Android TV
+
+            1. Download `streamlift-tv-${{ steps.version.outputs.name }}.apk` from the assets below.
+            2. Sideload it with the **Downloader** app or over ADB:
+               ```bash
+               adb install -r streamlift-tv-${{ steps.version.outputs.name }}.apk
+               ```
+            3. Open **StreamLift TV** and pair it from the web app's `/watch` page.
+
+            This is a release build, so the server must be reachable over HTTPS.
+            Verify the download with the attached checksum:
+
+            ```bash
+            sha256sum -c streamlift-tv-${{ steps.version.outputs.name }}.apk.sha256
+            ```

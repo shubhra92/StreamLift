@@ -4,3 +4,7 @@
 **/debug-*
 
 **/.DS_Store
+
+# Android signing material — never commit these.
+*.jks
+*.keystore
