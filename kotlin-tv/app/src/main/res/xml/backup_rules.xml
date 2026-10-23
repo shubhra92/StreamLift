@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Never restore a device token into a different install/keystore. -->
+    <exclude domain="sharedpref" path="streamlift_tv_auth.xml" />
+</full-backup-content>

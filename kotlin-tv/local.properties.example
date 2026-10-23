@@ -1,0 +1,6 @@
+# Copy to local.properties (never commit it).
+sdk.dir=/path/to/Android/sdk
+
+# Optional: bake a default StreamLift server URL into the APK.
+# The TV Settings screen can still override it at runtime.
+streamlift.server.url=https://streamlift.example.com
