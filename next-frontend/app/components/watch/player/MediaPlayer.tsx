@@ -234,6 +234,12 @@ export function MediaPlayer({
   const [controlBackgroundOpacity, setControlBackgroundOpacity] = useState(
     initialPrefs.controlBackgroundOpacity,
   );
+  const [hideControlsOnSpacebarPause, setHideControlsOnSpacebarPause] = useState(
+    initialPrefs.hideControlsOnSpacebarPause,
+  );
+  // Set when the spacebar pauses the media so the paused surface can stay
+  // overlay-free. Any pointer interaction clears it again.
+  const [suppressPausedControls, setSuppressPausedControls] = useState(false);
   const lastAudibleVolumeRef = useRef(initialPrefs.volume > 0 ? initialPrefs.volume : 1);
 
   const [playing, setPlaying] = useState(false);
@@ -362,6 +368,29 @@ export function MediaPlayer({
       media.pause();
     }
   }, []);
+
+  // Spacebar gets its own entry point: when "Clean pause with Space" is on,
+  // pausing this way hides the top title bar and the bottom control bar until
+  // the viewer interacts again.
+  const togglePlayFromKeyboard = useCallback(() => {
+    const media = mediaRef.current;
+    const willPause =
+      isVideo &&
+      hideControlsOnSpacebarPause &&
+      media !== null &&
+      !media.paused &&
+      !media.ended &&
+      !guardPausedRef.current;
+    if (willPause) {
+      if (hideTimerRef.current !== null) {
+        window.clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+      setSuppressPausedControls(true);
+      setControlsVisible(false);
+    }
+    togglePlay();
+  }, [hideControlsOnSpacebarPause, isVideo, togglePlay]);
 
   const seekTo = useCallback((time: number) => {
     const media = mediaRef.current;
@@ -495,6 +524,7 @@ export function MediaPlayer({
   }, [openMenu, playing, shortcutsOpen]);
 
   const showControls = useCallback(() => {
+    setSuppressPausedControls(false);
     setControlsVisible(true);
     scheduleHide();
   }, [scheduleHide]);
@@ -525,8 +555,17 @@ export function MediaPlayer({
       loop,
       autoplayNext,
       controlBackgroundOpacity,
+      hideControlsOnSpacebarPause,
     });
-  }, [volume, muted, rate, loop, autoplayNext, controlBackgroundOpacity]);
+  }, [
+    volume,
+    muted,
+    rate,
+    loop,
+    autoplayNext,
+    controlBackgroundOpacity,
+    hideControlsOnSpacebarPause,
+  ]);
 
   // ── Media element events ──────────────────────────────────────────────────
   useEffect(() => {
@@ -796,6 +835,7 @@ export function MediaPlayer({
       frameCountTotalRef.current = quality?.totalVideoFrames ?? 0;
       lastVideoFrameAtRef.current = performance.now();
       armFrameCallback();
+      setSuppressPausedControls(false);
       setPlaying(true);
       setWaiting(false);
     };
@@ -851,6 +891,7 @@ export function MediaPlayer({
       cancelFrameCallback();
       endedRef.current = true;
       lastPositionRef.current = 0;
+      setSuppressPausedControls(false);
       setPlaying(false);
       setWaiting(false);
       clearResume(fileKey);
@@ -947,6 +988,7 @@ export function MediaPlayer({
     setShortcutsOpen(false);
     setResumeToast(null);
     setControlsVisible(true);
+    setSuppressPausedControls(false);
     resumeAppliedRef.current = "";
     lastSavedRef.current = 0;
     lastPositionRef.current = 0;
@@ -1044,24 +1086,43 @@ export function MediaPlayer({
     );
   }, []);
 
+  // Undo a "clean pause" if the viewer turns the option off while paused.
+  useEffect(() => {
+    if (!hideControlsOnSpacebarPause) setSuppressPausedControls(false);
+  }, [hideControlsOnSpacebarPause]);
+
   // Auto-hide controls.
   useEffect(() => {
-    if (!playing || openMenu !== null || shortcutsOpen) {
-      setControlsVisible(true);
-      if (hideTimerRef.current !== null) {
-        window.clearTimeout(hideTimerRef.current);
-        hideTimerRef.current = null;
-      }
-      return;
-    }
-    scheduleHide();
-    return () => {
+    const clearHideTimer = () => {
       if (hideTimerRef.current !== null) {
         window.clearTimeout(hideTimerRef.current);
         hideTimerRef.current = null;
       }
     };
-  }, [openMenu, playing, scheduleHide, shortcutsOpen]);
+    if (openMenu !== null || shortcutsOpen) {
+      // Menus always show the controls; opening one ends a clean pause.
+      setSuppressPausedControls(false);
+      setControlsVisible(true);
+      clearHideTimer();
+      return;
+    }
+    if (!playing) {
+      if (suppressPausedControls) {
+        // A spacebar pause keeps the surface overlay-free until the viewer
+        // moves the pointer.
+        clearHideTimer();
+        setControlsVisible(false);
+      } else {
+        setControlsVisible(true);
+        clearHideTimer();
+      }
+      return;
+    }
+    scheduleHide();
+    return () => {
+      clearHideTimer();
+    };
+  }, [openMenu, playing, scheduleHide, shortcutsOpen, suppressPausedControls]);
 
   // Playback statistics.
   useEffect(() => {
@@ -1119,6 +1180,7 @@ export function MediaPlayer({
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
   const actionsRef = useRef({
     togglePlay,
+    togglePlayFromKeyboard,
     seekBy,
     seekTo,
     changeVolume,
@@ -1147,6 +1209,7 @@ export function MediaPlayer({
   });
   actionsRef.current = {
     togglePlay,
+    togglePlayFromKeyboard,
     seekBy,
     seekTo,
     changeVolume,
@@ -1221,7 +1284,8 @@ export function MediaPlayer({
 
       if (key === " " || key.toLowerCase() === "k") {
         handled();
-        actions.togglePlay();
+        if (key === " ") actions.togglePlayFromKeyboard();
+        else actions.togglePlay();
       } else if (key === "ArrowLeft") {
         handled();
         actions.seekBy(-5);
@@ -1402,7 +1466,9 @@ export function MediaPlayer({
   const hasNextValue = Boolean(hasNext && onNextFile);
   const hasPreviousValue = Boolean(hasPrevious && onPreviousFile);
   const showControlsClass =
-    controlsVisible || !playing || openMenu !== null || shortcutsOpen;
+    (!suppressPausedControls && (controlsVisible || !playing)) ||
+    openMenu !== null ||
+    shortcutsOpen;
   const topBarBackground = `linear-gradient(to bottom, rgba(0, 0, 0, ${
     0.9 * controlBackgroundOpacity
   }), rgba(0, 0, 0, ${
@@ -1421,7 +1487,7 @@ export function MediaPlayer({
       data-player-root=""
       className={`relative w-full select-none overflow-hidden bg-black outline-none ${
         fullscreen ? "h-screen" : ""
-      } ${!showControlsClass && playing ? "cursor-none" : ""}`}
+      } ${!showControlsClass ? "cursor-none" : ""}`}
       onPointerMove={showControls}
       onPointerDown={showControls}
       onPointerLeave={() => {
@@ -1891,6 +1957,9 @@ export function MediaPlayer({
             onAutoplayNextChange={setAutoplayNext}
             controlBackgroundOpacity={controlBackgroundOpacity}
             onControlBackgroundOpacityChange={setControlBackgroundOpacity}
+            hideControlsOnSpacebarPause={hideControlsOnSpacebarPause}
+            onHideControlsOnSpacebarPauseChange={setHideControlsOnSpacebarPause}
+            showPauseControlsOption={isVideo}
             hasNext={hasNextValue}
             statsOpen={statsOpen}
             onToggleStats={() => setStatsOpen((current) => !current)}

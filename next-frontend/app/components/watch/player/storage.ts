@@ -7,6 +7,8 @@ export interface PlayerPrefs {
   loop: boolean;
   autoplayNext: boolean;
   controlBackgroundOpacity: number;
+  /** Pausing with the spacebar leaves the video surface free of overlays. */
+  hideControlsOnSpacebarPause: boolean;
 }
 
 export const DEFAULT_PLAYER_PREFS: PlayerPrefs = {
@@ -16,6 +18,7 @@ export const DEFAULT_PLAYER_PREFS: PlayerPrefs = {
   loop: false,
   autoplayNext: false,
   controlBackgroundOpacity: 1,
+  hideControlsOnSpacebarPause: true,
 };
 
 const PREFS_KEY = "streamlift:player:prefs";
@@ -70,6 +73,10 @@ export function loadPlayerPrefs(): PlayerPrefs {
       Number.isFinite(stored.controlBackgroundOpacity)
         ? Math.max(0, Math.min(1, stored.controlBackgroundOpacity))
         : DEFAULT_PLAYER_PREFS.controlBackgroundOpacity,
+    hideControlsOnSpacebarPause:
+      typeof stored.hideControlsOnSpacebarPause === "boolean"
+        ? stored.hideControlsOnSpacebarPause
+        : DEFAULT_PLAYER_PREFS.hideControlsOnSpacebarPause,
   };
 }
 

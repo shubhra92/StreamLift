@@ -34,6 +34,9 @@ interface Props {
   onAutoplayNextChange: (value: boolean) => void;
   controlBackgroundOpacity: number;
   onControlBackgroundOpacityChange: (value: number) => void;
+  hideControlsOnSpacebarPause: boolean;
+  onHideControlsOnSpacebarPauseChange: (value: boolean) => void;
+  showPauseControlsOption: boolean;
   hasNext: boolean;
   statsOpen: boolean;
   onToggleStats: () => void;
@@ -58,6 +61,9 @@ export function SettingsMenu({
   onAutoplayNextChange,
   controlBackgroundOpacity,
   onControlBackgroundOpacityChange,
+  hideControlsOnSpacebarPause,
+  onHideControlsOnSpacebarPauseChange,
+  showPauseControlsOption,
   hasNext,
   statsOpen,
   onToggleStats,
@@ -136,6 +142,14 @@ export function SettingsMenu({
         checked={autoplayNext}
         onChange={onAutoplayNextChange}
       />
+      {showPauseControlsOption && (
+        <ToggleRow
+          label="Clean pause with Space"
+          description="Spacebar pauses without showing the title and control bar"
+          checked={hideControlsOnSpacebarPause}
+          onChange={onHideControlsOnSpacebarPauseChange}
+        />
+      )}
 
       <MenuDivider />
       <MenuSection>Appearance</MenuSection>
