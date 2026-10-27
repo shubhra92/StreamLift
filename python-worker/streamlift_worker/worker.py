@@ -4,7 +4,7 @@ Worker startup orchestration.
 Boot sequence:
   1. Validate Mega credentials (if location=mega)
   2. Start FastAPI server in a background thread
-  3. Start Pinggy tunnel — get public URL
+  3. Start tunnel (Pinggy or Serveo) — get public URL
   4. Register with Next.js backend — get session token
   5. Initialise FastAPI server state with session token
   6. Start heartbeat background thread
@@ -27,18 +27,18 @@ from streamlift_worker.server import (
     update_public_http_url,
     update_session_token,
 )
-from streamlift_worker.tunnel import PinggyTunnel
+from streamlift_worker.tunnel import PinggyTunnel, ServeoTunnel, TunnlGgTunnel, ZrokTunnel
 
 # Shared task state — written by downloader.py, read by server.py
 _current_task: dict = {}
 
 
-def _heartbeat_loop(config: WorkerConfig, tunnel: PinggyTunnel) -> None:
+def _heartbeat_loop(config: WorkerConfig, tunnel: PinggyTunnel | ServeoTunnel) -> None:
     while not api.stop_event.is_set():
         try:
-            pinggy_url = tunnel.get_url() or ""
+            tunnel_url = tunnel.get_url() or ""
             metrics    = get_system_metrics()
-            api.heartbeat(config, metrics, pinggy_url, int(time.time() - START_TIME))
+            api.heartbeat(config, metrics, tunnel_url, int(time.time() - START_TIME))
         except Exception as e:
             logger.log("warning", f"Heartbeat error: {e}")
         api.stop_event.wait(timeout=HEARTBEAT_INTERVAL)
@@ -83,36 +83,62 @@ def run(config: WorkerConfig) -> None:
     time.sleep(1)  # give uvicorn a moment to bind the port
     logger.log("info", "FastAPI server started")
 
-    # ── Step 3: Start Pinggy tunnel ───────────────────────────────────────────
-    if not config.pinggy_token:
-        logger.log("error", "No Pinggy token found — pass --pinggy-token or make sure it's set in the worker config.")
-        sys.exit(1)
+    # ── Step 3: Start tunnel ──────────────────────────────────────────────────
+    tunnel: PinggyTunnel | ServeoTunnel | TunnlGgTunnel | ZrokTunnel
 
-    tunnel = PinggyTunnel(token=config.pinggy_token, port=config.server_port)
+    if config.tunnel_provider == "serveo":
+        tunnel = ServeoTunnel(port=config.server_port)
+        logger.log("info", "Tunnel provider: Serveo (HTTPS only, no token required)")
+
+    elif config.tunnel_provider == "tunnlgg":
+        tunnel = TunnlGgTunnel(
+            ssh_key_path=config.tunnlgg_ssh_key_path,
+            port=config.server_port,
+        )
+        mode = "stable" if config.tunnlgg_ssh_key_path else "anonymous"
+        logger.log("info", f"Tunnel provider: tunnl.gg ({mode} mode)")
+
+    elif config.tunnel_provider == "zrok":
+        if not config.zrok_token:
+            logger.log("error", "No zrok token found — pass --zrok-token or set it in the worker config.")
+            sys.exit(1)
+        tunnel = ZrokTunnel(token=config.zrok_token, port=config.server_port)
+        logger.log("info", "Tunnel provider: zrok")
+
+    else:
+        if not config.pinggy_token:
+            logger.log("error", "No Pinggy token found — pass --pinggy-token or make sure it's set in the worker config.")
+            sys.exit(1)
+        tunnel = PinggyTunnel(token=config.pinggy_token, port=config.server_port)
+        logger.log("info", "Tunnel provider: Pinggy")
 
     try:
-        pinggy_url = tunnel.start()
+        public_url = tunnel.start()
     except RuntimeError as e:
-        logger.log("error", f"Pinggy tunnel failed: {e}")
+        logger.log("error", f"Tunnel failed: {e}")
         sys.exit(1)
 
     # ── Step 4: Register with backend ────────────────────────────────────────
     ip = get_public_ip()
-    session_token = api.register(config, ip, pinggy_url)
+    session_token = api.register(config, ip, public_url)
     if session_token is None:
         sys.exit(1)
 
     # ── Step 5: Initialise FastAPI server state ───────────────────────────────
     init_server(config, _current_task, session_token, tunnel.get_http_url())
     logger.log("info", "Worker API ready and accepting connections")
-    logger.log("info", f"Public URL: {pinggy_url}")
-    logger.log("info", f"Public HTTP download URL: {tunnel.get_http_url()}")
+    logger.log("info", f"Public URL: {public_url}")
+    if tunnel.get_http_url():
+        logger.log("info", f"Public HTTP download URL: {tunnel.get_http_url()}")
+    else:
+        logger.log("info", "HTTP download URL: not available for this tunnel provider")
 
     # Re-register with new URL whenever the tunnel restarts
     def _on_tunnel_url_change(new_url: str) -> None:
         logger.log("info", f"Tunnel URL changed to {new_url}, re-registering...")
         update_public_http_url(tunnel.get_http_url())
-        logger.log("info", f"HTTP download URL changed to {tunnel.get_http_url()}")
+        if tunnel.get_http_url():
+            logger.log("info", f"HTTP download URL changed to {tunnel.get_http_url()}")
         new_session_token = api.register(config, ip, new_url)
         if new_session_token:
             update_session_token(new_session_token)

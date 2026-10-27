@@ -57,7 +57,7 @@ def _get(api_base_url: str, endpoint: str, params: dict[str, Any] | None = None)
 
 # ── Worker lifecycle ──────────────────────────────────────────────────────────
 
-def register(config: WorkerConfig, ip_address: str, pinggy_url: str) -> Optional[str]:
+def register(config: WorkerConfig, ip_address: str, tunnel_url: str) -> Optional[str]:
     """
     Register with the backend. Returns the session_token on success, None on failure.
     """
@@ -66,7 +66,7 @@ def register(config: WorkerConfig, ip_address: str, pinggy_url: str) -> Optional
         "authToken":  config.auth_token,
         "ipAddress":  ip_address,
         "version":    config.worker_version,
-        "pinggyUrl":  pinggy_url,
+        "tunnelUrl":  tunnel_url,
     })
     if result and result.get("success"):
         session_token = result.get("sessionToken", "")
@@ -76,15 +76,15 @@ def register(config: WorkerConfig, ip_address: str, pinggy_url: str) -> Optional
     return None
 
 
-def heartbeat(config: WorkerConfig, metrics: dict, pinggy_url: str, uptime_seconds: int = 0) -> None:
+def heartbeat(config: WorkerConfig, metrics: dict, tunnel_url: str, uptime_seconds: int = 0) -> None:
     """
-    Send heartbeat — updates last_heartbeat + pinggy_url in DB.
+    Send heartbeat — updates last_heartbeat + tunnel_url in DB.
     No longer returns newTasks — task dispatch is triggered by client directly.
     """
     _post(config, "/api/worker/heartbeat", {
         "workerId":  config.worker_id,
         "authToken": config.auth_token,
-        "pinggyUrl": pinggy_url,
+        "tunnelUrl": tunnel_url,
         "uptimeSeconds": uptime_seconds,
         # metrics removed — delivered via SSE stream only
     })
