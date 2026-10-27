@@ -717,9 +717,9 @@ function runDispatcher() {
       var download = res.download;
       if (!download) return;
 
-      if (res.destination === "worker" && res.pinggyUrl && res.sessionToken) {
+      if (res.destination === "worker" && res.tunnelUrl && res.sessionToken) {
         // Trigger worker download directly
-        var workerUrl = res.pinggyUrl + "/download";
+        var workerUrl = res.tunnelUrl + "/download";
         var indices = null;
         try {
           if (download.selectedFileIndices) {
@@ -732,9 +732,9 @@ function runDispatcher() {
           headers: {
             "Content-Type":    "application/json",
             "X-Session-Token": res.sessionToken,
-            // Pinggy free tunnels show a browser screening page unless this
-            // header is present. It also keeps this direct request API-only.
-            "X-Pinggy-No-Screen": "1",
+            // Tunnel bypass headers are computed server-side and returned by
+            // /api/worker/dispatch — no provider knowledge lives here.
+            ...(res.tunnelHeaders || {}),
           },
           body: JSON.stringify({
             downloadId:   download.id,

@@ -34,13 +34,15 @@ export const workers = pgTable('workers', {
   megaSession: text('mega_session'),                     // AES-256-GCM encrypted session JSON (session-only mode)
   megaNeedsRelink: boolean('mega_needs_relink').default(false), // set by worker when session dies
   megaRelinkReason: text('mega_relink_reason'),
-  pinggyToken: text('pinggy_token'),                     // AES-256-GCM encrypted
   authToken: text('auth_token').notNull(),
   version: text('version').default('1.0.0'),
   totalDownloads: integer('total_downloads').default(0),
   totalBytes: bigint('total_bytes', { mode: 'number' }).default(0),
   // ── v2: direct connection fields ─────────────────────────────────────────
-  pinggyUrl: text('pinggy_url'),                         // current public tunnel URL
+  tunnelUrl: text('tunnel_url'),                         // current public tunnel URL
+  // ── v3: multi-provider tunnel config ─────────────────────────────────────
+  activeTunnelProvider: text('active_tunnel_provider').default('pinggy'), // 'pinggy' | 'serveo' | 'tunnlgg' | 'zrok'
+  tunnelConfig: text('tunnel_config'),                   // AES-256-GCM encrypted JSON: { pinggy?, serveo?, tunnlgg?, zrok? }
   lastHeartbeat: timestamp('last_heartbeat'),            // updated every 8s by worker
   ipAddress: text('ip_address'),                         // worker's public IP (set on register)
   countryCode: text('country_code'),                     // ISO 3166-1 alpha-2 country for the current public IP

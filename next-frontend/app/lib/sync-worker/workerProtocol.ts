@@ -59,7 +59,7 @@ export interface ProgressPayload {
 export interface WorkerStatusPayload {
   online:        boolean;
   lastHeartbeat: string | null;
-  pinggyUrl:     string | null;
+  tunnelUrl:     string | null;
   version:       string;
   // live fields — only present when client connects directly to worker SSE
   metrics?:     unknown | null;
@@ -108,7 +108,8 @@ export type WorkerToTabMessage =
       runtimeStatus?: Record<string, {
         online:        boolean;
         lastHeartbeat: string | null;
-        pinggyUrl:     string | null;
+        tunnelUrl:     string | null;
+        tunnelHeaders: Record<string, string>;
         ipAddress:     string | null;
       }>;
       /** IDs present in IDB but deleted on server — tabs remove these */

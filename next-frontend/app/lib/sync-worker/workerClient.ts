@@ -247,7 +247,7 @@ class WorkerClient {
     entity: SyncEntity,
     rows: Record<string, unknown>[],
     runtimeStatus?: Record<string, {
-      online: boolean; lastHeartbeat: string | null; pinggyUrl?: string | null; ipAddress?: string | null;
+      online: boolean; lastHeartbeat: string | null; tunnelUrl?: string | null; tunnelHeaders?: Record<string, string>; ipAddress?: string | null;
     }>,
     orphanIds?: string[]   // IDs to remove from IDB (reconciliation from worker)
   ): Promise<void> {

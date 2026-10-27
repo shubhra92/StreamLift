@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: "Invalid JSON" }, { status: 400 });
   }
 
-  const { workerId, authToken, pinggyUrl } = body ?? {};
+  const { workerId, authToken, tunnelUrl } = body ?? {};
 
   if (!workerId || !authToken) {
     return NextResponse.json({ success: false, message: "Missing credentials" }, { status: 401 });
@@ -25,12 +25,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: "Invalid credentials" }, { status: 401 });
   }
 
-  // Update last_heartbeat + pinggy_url in DB — this is the source of truth for online status
+  // Update last_heartbeat + tunnel_url in DB — this is the source of truth for online status
   await db
     .update(workers)
     .set({
       lastHeartbeat: new Date(),
-      ...(pinggyUrl ? { pinggyUrl } : {}),
+      ...(tunnelUrl ? { tunnelUrl } : {}),
       updatedAt: new Date(),
     })
     .where(eq(workers.id, workerId));

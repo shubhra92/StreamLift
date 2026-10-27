@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type HlsType from "hls.js";
-import { isFreePinggyPlaybackUrl } from "@/app/lib/workerConnection";
+import { isFreePinggyPlaybackUrl, getTunnelBypassHeaders } from "@/app/lib/workerConnection";
 import type { PlaybackSource, SourceKind } from "./types";
 
 export interface EngineAudioTrack {
@@ -358,12 +358,17 @@ export function useMediaEngine({
           manifestLoadingMaxRetry: 4,
           startPosition: 0,
           enableWorker: true,
-          // Pinggy Free screens browser requests unless this header is set.
-          // Keep it off other tunnels so their requests stay preflight-free.
+          // Pinggy Free and Serveo free tier both screen browser requests
+          // unless their respective bypass headers are set. Headers are
+          // derived from the URL by getTunnelBypassHeaders — no provider
+          // knowledge lives here.
           ...(needsPinggyBypass
             ? {
                 xhrSetup: (xhr: XMLHttpRequest) => {
-                  xhr.setRequestHeader("X-Pinggy-No-Screen", "1");
+                  const headers = getTunnelBypassHeaders(source.url);
+                  Object.entries(headers).forEach(([k, v]) =>
+                    xhr.setRequestHeader(k, v),
+                  );
                 },
               }
             : {}),

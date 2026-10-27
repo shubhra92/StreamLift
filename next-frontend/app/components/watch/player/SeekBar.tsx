@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   isFreePinggyPlaybackUrl,
+  getTunnelBypassHeaders,
   type WorkerChapter,
 } from "@/app/lib/workerConnection";
 import { formatTime } from "./format";
@@ -108,7 +109,7 @@ export function SeekBar({
           const response = await fetch(url, {
             signal: controller.signal,
             ...(needsPinggyBypass
-              ? { headers: { "X-Pinggy-No-Screen": "1" } }
+              ? { headers: getTunnelBypassHeaders(thumbnailUrlBase) }
               : {}),
           });
           if (!response.ok) throw new Error(`thumbnail ${response.status}`);

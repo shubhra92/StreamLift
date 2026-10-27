@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: "Invalid JSON" }, { status: 400 });
   }
 
-  const { workerId, authToken, ipAddress, version, pinggyUrl } = body ?? {};
+  const { workerId, authToken, ipAddress, version, tunnelUrl } = body ?? {};
 
   if (!workerId || !authToken) {
     return NextResponse.json({ success: false, message: "Missing workerId or authToken" }, { status: 401 });
@@ -42,11 +42,11 @@ export async function POST(req: NextRequest) {
     ? existingWorker.countryCode
     : await resolveIpCountryCode(normalizedIpAddress);
 
-  // Persist pinggy URL + session token + heartbeat to DB
+  // Persist tunnel URL + session token + heartbeat to DB
   await db
     .update(workers)
     .set({
-      pinggyUrl:          pinggyUrl ?? null,
+      tunnelUrl:          tunnelUrl ?? null,
       lastHeartbeat:      new Date(),
       ipAddress:          normalizedIpAddress,
       countryCode,

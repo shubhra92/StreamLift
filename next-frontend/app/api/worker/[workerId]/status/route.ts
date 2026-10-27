@@ -47,7 +47,7 @@ export async function GET(
     online,
     ipAddress:     freshWorker.ipAddress    ?? null,
     lastHeartbeat: freshWorker.lastHeartbeat?.toISOString() ?? null,
-    pinggyUrl:     freshWorker.pinggyUrl    ?? null,
+    tunnelUrl:     freshWorker.tunnelUrl    ?? null,
     version:       freshWorker.version,
   });
 }

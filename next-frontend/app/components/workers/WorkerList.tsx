@@ -11,7 +11,7 @@ import {
 import { WorkerItem } from "./WorkerItem";
 import type { WorkerListProps } from "./types";
 
-export function WorkerList({ workers, selectedId, deletingIds, onSelect, onDelete, onCopyScript }: WorkerListProps) {
+export function WorkerList({ workers, selectedId, deletingIds, onSelect, onDelete, onCopyScript, onEdit }: WorkerListProps) {
   return (
     <div className="bg-card rounded-xl shadow-md border overflow-hidden">
       <Table className="w-full table-fixed">
@@ -23,7 +23,7 @@ export function WorkerList({ workers, selectedId, deletingIds, onSelect, onDelet
             <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-28">Location</TableHead>
             <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-40">IP Address</TableHead>
             <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-40">Created</TableHead>
-            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-24"></TableHead>
+            <TableHead className="px-4 py-3 text-sm font-medium text-gray-600 w-36 text-right pr-6"></TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -44,6 +44,7 @@ export function WorkerList({ workers, selectedId, deletingIds, onSelect, onDelet
                   onSelect={() => onSelect(worker.id)}
                   onDelete={() => onDelete(worker.id)}
                   onCopyScript={() => onCopyScript(worker.id)}
+                  onEdit={() => onEdit(worker.id)}
                 />
               ))
             )}

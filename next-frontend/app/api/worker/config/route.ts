@@ -4,16 +4,25 @@ import { db } from "@/app/db";
 import { workers } from "@/app/db/schema";
 import { eq } from "drizzle-orm";
 import { decryptCredentials } from "@/app/lib/crypto";
+import {
+  parseTunnelConfig,
+  getPinggyToken,
+  getZrokToken,
+  getTunnlGgSshKeyPath,
+  type TunnelProvider,
+} from "@/app/lib/tunnelConfig";
 
 export const dynamic = "force-dynamic";
 
 /**
  * GET /api/worker/config
  *
- * Worker bootstrap config for session-only workers. Returns everything a
- * worker needs to start when Mega credentials are NOT embedded in its Colab
- * script: download/compute settings, the (decrypted) Pinggy token, and the
- * (decrypted) Mega session minted by the browser.
+ * Worker bootstrap config. Returns everything a worker needs at startup:
+ * - download/compute settings
+ * - active tunnel provider + its decrypted credentials
+ * - decrypted Mega session (session-only mode)
+ *
+ * The worker reads this once at boot via __main__.py → api.fetch_worker_config().
  */
 export async function GET(req: NextRequest) {
   const workerId  = req.nextUrl.searchParams.get("workerId");
@@ -38,23 +47,46 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: false, message: "Worker not found" }, { status: 404 });
   }
 
+  // ── Resolve tunnel credentials ────────────────────────────────────────────
+  const provider: TunnelProvider =
+    (worker.activeTunnelProvider as TunnelProvider | null) ?? "pinggy";
+
   let pinggyToken: string | null = null;
-  if (worker.pinggyToken) {
-    try { pinggyToken = decryptCredentials(worker.pinggyToken); } catch { pinggyToken = null; }
+  let zrokToken: string | null = null;
+  let tunnlggSshKeyPath: string | null = null;
+
+  if (worker.tunnelConfig) {
+    try {
+      const raw = decryptCredentials(worker.tunnelConfig);
+      const cfg = parseTunnelConfig(raw);
+      pinggyToken       = getPinggyToken(cfg) || null;
+      zrokToken         = getZrokToken(cfg) || null;
+      tunnlggSshKeyPath = getTunnlGgSshKeyPath(cfg) || null;
+    } catch {
+      // decryption failed — credentials will be null
+    }
   }
 
+  // ── Mega session ──────────────────────────────────────────────────────────
   let megaSession: any = null;
   if (worker.megaSession) {
-    try { megaSession = JSON.parse(decryptCredentials(worker.megaSession)); } catch { megaSession = null; }
+    try {
+      megaSession = JSON.parse(decryptCredentials(worker.megaSession));
+    } catch {
+      megaSession = null;
+    }
   }
 
   return NextResponse.json({
     success: true,
     data: {
-      workerId:        worker.id,
-      downloadLocation: worker.downloadLocation,
-      computeType:      worker.computeType,
+      workerId:             worker.id,
+      downloadLocation:     worker.downloadLocation,
+      computeType:          worker.computeType,
+      tunnelProvider:       provider,
       pinggyToken,
+      zrokToken,
+      tunnlggSshKeyPath,
       megaSession,
     },
   });

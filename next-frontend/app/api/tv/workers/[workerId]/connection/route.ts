@@ -5,6 +5,7 @@ import { workers } from "@/app/db/schema";
 import { requireTvDevice } from "@/app/lib/tvAuth";
 import { isWorkerOnline } from "@/app/lib/workerPresence";
 import { isSessionTokenExpired, rotateSessionToken } from "@/app/lib/sessionToken";
+import { getTunnelBypassHeaders } from "@/app/lib/tunnelHeaders";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -40,7 +41,7 @@ export async function GET(
     );
   }
 
-  if (!worker.pinggyUrl || !worker.pinggyUrl.startsWith("https://")) {
+  if (!worker.tunnelUrl || !worker.tunnelUrl.startsWith("https://")) {
     return NextResponse.json(
       { success: false, error: "worker_offline", message: "Worker tunnel is offline" },
       { status: 503 },
@@ -58,7 +59,7 @@ export async function GET(
   let sessionToken = worker.sessionToken;
   if (forceRefresh || !sessionToken || isSessionTokenExpired(worker.sessionTokenExpiry)) {
     try {
-      sessionToken = await rotateSessionToken(worker.id, worker.pinggyUrl, worker.authToken);
+      sessionToken = await rotateSessionToken(worker.id, worker.tunnelUrl, worker.authToken);
     } catch (error) {
       console.error(`TV worker connection refresh failed for ${worker.id}:`, error);
       return NextResponse.json(
@@ -70,11 +71,12 @@ export async function GET(
 
   return NextResponse.json(
     {
-      success: true,
-      workerId: worker.id,
-      workerName: worker.name,
-      pinggyUrl: worker.pinggyUrl.replace(/\/+$/, ""),
+      success:       true,
+      workerId:      worker.id,
+      workerName:    worker.name,
+      tunnelUrl:     worker.tunnelUrl.replace(/\/+$/, ""),
       sessionToken,
+      tunnelHeaders: getTunnelBypassHeaders(worker.tunnelUrl),
     },
     { headers: { "Cache-Control": "no-store" } },
   );

@@ -14,7 +14,7 @@ export interface TvCatalogFile {
   size: number;
   kind: TvMediaKind;
   addedAt: string | null;
-  /** Worker thumbnail URL; the TV should send X-Pinggy-No-Screen with it. */
+  /** Worker thumbnail URL; the TV fetches via the dynamic tunnelHeaders from WorkerConnection. */
   thumbnailUrl: string | null;
 }
 

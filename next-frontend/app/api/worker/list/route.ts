@@ -13,6 +13,7 @@ import { db } from "@/app/db";
 import { workers } from "@/app/db/schema";
 import { eq, and, gte, desc } from "drizzle-orm";
 import { clearStaleWorkerConnections, isWorkerOnline } from "@/app/lib/workerPresence";
+import { getTunnelBypassHeaders } from "@/app/lib/tunnelHeaders";
 
 export const dynamic = "force-dynamic";
 
@@ -66,7 +67,7 @@ export async function GET(req: NextRequest) {
 
   // Derive online status from DB last_heartbeat — no in-memory store needed
   const allWorkers = await db
-    .select({ id: workers.id, lastHeartbeat: workers.lastHeartbeat, pinggyUrl: workers.pinggyUrl, ipAddress: workers.ipAddress })
+    .select({ id: workers.id, lastHeartbeat: workers.lastHeartbeat, tunnelUrl: workers.tunnelUrl, ipAddress: workers.ipAddress })
     .from(workers)
     .where(eq(workers.guestId, guest.id));
 
@@ -74,7 +75,8 @@ export async function GET(req: NextRequest) {
   const runtimeStatus: Record<string, {
     online:        boolean;
     lastHeartbeat: string | null;
-    pinggyUrl:     string | null;
+    tunnelUrl:     string | null;
+    tunnelHeaders: Record<string, string>;
     ipAddress:     string | null;
   }> = {};
 
@@ -83,13 +85,14 @@ export async function GET(req: NextRequest) {
     runtimeStatus[w.id] = {
       online,
       lastHeartbeat: w.lastHeartbeat?.toISOString() ?? null,
-      pinggyUrl:     w.pinggyUrl ?? null,
+      tunnelUrl:     w.tunnelUrl ?? null,
+      tunnelHeaders: w.tunnelUrl ? getTunnelBypassHeaders(w.tunnelUrl) : {},
       ipAddress:     w.ipAddress ?? null,
     };
   }
 
   // Strip sensitive fields before sending to client
-  const safeRows = deltaRows.map(({ megaSession: _ms, authToken: _tok, pinggyToken: _pt, sessionToken: _st, ...rest }) => rest);
+  const safeRows = deltaRows.map(({ megaSession: _ms, authToken: _tok, tunnelConfig: _tc, sessionToken: _st, ...rest }) => rest);
 
   return NextResponse.json({
     success: true,

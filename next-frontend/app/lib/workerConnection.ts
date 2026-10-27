@@ -1,8 +1,12 @@
 /**
- * Client-side helper for direct worker API calls.
+ * Client-side helper for worker API calls.
+ *
+ * `tunnelUrl` is normally the worker's HTTPS tunnel, but for tunnl.gg free
+ * tunnels the backend returns a same-origin proxy base instead (see
+ * `requiresSameOriginProxy`) so the browser never sends a CORS preflight.
  *
  * Handles:
- * - Fetching + caching { pinggyUrl, sessionToken } per worker
+ * - Fetching + caching { tunnelUrl, sessionToken } per worker
  * - Auto-refresh on 401 (token expired mid-session)
  * - Typed wrappers for trigger-download and cancel
  */
@@ -290,8 +294,9 @@ async function writeResponseStream(
 }
 
 export interface WorkerConnection {
-  pinggyUrl:    string;
-  sessionToken: string;
+  tunnelUrl:     string;
+  sessionToken:  string;
+  tunnelHeaders: Record<string, string>;
 }
 
 export interface TriggerDownloadParams {
@@ -332,8 +337,9 @@ async function getConnection(workerId: string): Promise<WorkerConnection> {
     }
     const data = await res.json();
     const conn: WorkerConnection = {
-      pinggyUrl:    data.pinggyUrl,
-      sessionToken: data.sessionToken,
+      tunnelUrl:     data.tunnelUrl,
+      sessionToken:  data.sessionToken,
+      tunnelHeaders: data.tunnelHeaders ?? {},
     };
     _cache.set(workerId, conn);
     return conn;
@@ -382,13 +388,14 @@ async function doRefreshToken(workerId: string): Promise<WorkerConnection> {
   }
   const data = await res.json();
 
-  // We need the pinggyUrl too — re-fetch the full connection
+  // We need the tunnelUrl too — re-fetch the full connection
   const connRes = await fetch(`/api/worker/${workerId}/connection`);
   if (!connRes.ok) throw new Error("Failed to reload connection after token refresh");
   const connData = await connRes.json();
   const conn: WorkerConnection = {
-    pinggyUrl:    connData.pinggyUrl,
-    sessionToken: data.sessionToken,
+    tunnelUrl:     connData.tunnelUrl,
+    sessionToken:  data.sessionToken,
+    tunnelHeaders: connData.tunnelHeaders ?? {},
   };
   _cache.set(workerId, conn);
   return conn;
@@ -409,13 +416,12 @@ async function callWorker(
   let conn = await getConnection(workerId);
 
   const doFetch = (c: WorkerConnection) =>
-    fetch(`${c.pinggyUrl}${path}`, {
+    fetch(`${c.tunnelUrl}${path}`, {
       method,
       headers: {
         "Content-Type":    "application/json",
         "X-Session-Token": c.sessionToken,
-        // Required for Pinggy Free: bypasses its browser screening page.
-        "X-Pinggy-No-Screen": "1",
+        ...c.tunnelHeaders,
         ...extraHeaders,
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
@@ -774,12 +780,14 @@ export interface WorkerPlaybackUrls {
 }
 
 /**
- * Build playback URLs that point at the worker tunnel directly.
+ * Build playback URLs from the cached worker base — the direct tunnel, or the
+ * same-origin proxy for tunnl.gg (whose free tier rejects browser preflights).
  *
- * The app server only hands the browser a ticket; every media byte is
- * transferred between the browser and the worker (no Next.js bandwidth).
- * Playback endpoints are tokenless — the tunnel URL is the secret — so the
- * download token is only attached to the raw-file URL below.
+ * The app server only hands the browser a base URL and a ticket; media bytes
+ * flow browser→worker directly except on tunnl.gg, where they pass through
+ * Next.js to avoid the provider's preflight redirect. Playback endpoints are
+ * tokenless — the tunnel URL is the secret — so the download token is only
+ * attached to the raw-file URL below.
  */
 export async function getWorkerPlaybackUrls(
   workerId: string,
@@ -790,7 +798,7 @@ export async function getWorkerPlaybackUrls(
 ): Promise<WorkerPlaybackUrls> {
   // Read after the ticket call in case it refreshed the cached connection.
   const conn = await getConnection(workerId);
-  const base = conn.pinggyUrl.replace(/\/$/, "");
+  const base = conn.tunnelUrl.replace(/\/$/, "");
   const dl = encodeURIComponent(downloadId);
   const capsQuery = mediaCapsQuery(caps);
 
@@ -805,23 +813,15 @@ export async function getWorkerPlaybackUrls(
 }
 
 /**
- * Free Pinggy tunnels show a browser screening page unless the request carries
- * `X-Pinggy-No-Screen`. hls.js can add that header; a plain <video> element
- * cannot, so direct and progressive playback are unreliable on free tunnels,
- * while HLS works. Pro/self-hosted URLs are not affected.
+ * Returns true when the URL requires tunnel bypass headers for browser requests.
+ * Delegates to ``tunnelHeaders.ts`` — the single source of truth.
+ *
+ * Used by media-player components (hls.js xhrSetup, subtitle fetch, thumbnail
+ * fetch) to decide whether extra headers are needed. Kept here so callers
+ * don't need a second import.
  */
-export function isFreePinggyPlaybackUrl(url: string): boolean {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return (
-      host.endsWith(".pinggy-free.link") ||
-      host.endsWith(".free.pinggy.net") ||
-      host.endsWith(".free.pinggy.online")
-    );
-  } catch {
-    return false;
-  }
-}
+export { isTunnelInterstitialUrl as isFreePinggyPlaybackUrl } from "@/app/lib/tunnelHeaders";
+export { getTunnelBypassHeaders } from "@/app/lib/tunnelHeaders";
 
 /**
  * Download a completed local worker file directly to the user's device.
@@ -1406,8 +1406,9 @@ if (controller.signal.aborted) throw error; // real cancel
 /**
  * Open an SSE connection to the worker's /stream endpoint.
  * Returns an object with a .close() method.
- * Uses fetch rather than EventSource so Pinggy's screening-bypass header can
- * be sent from a browser. Automatically retries after transient errors.
+ * Uses fetch rather than EventSource so tunnel screening-bypass headers can be
+ * sent by the browser (direct providers) or injected by the same-origin proxy
+ * (tunnl.gg). Automatically retries after transient errors.
  */
 export async function openWorkerStream(
   workerId: string,
@@ -1444,11 +1445,11 @@ export async function openWorkerStream(
     abortController = controller;
 
     try {
-      const response = await fetch(`${conn.pinggyUrl}/stream`, {
+      const response = await fetch(`${conn.tunnelUrl}/stream`, {
         headers: {
-          "Accept":              "text/event-stream",
-          "X-Session-Token":     conn.sessionToken,
-          "X-Pinggy-No-Screen": "1",
+          "Accept":          "text/event-stream",
+          "X-Session-Token": conn.sessionToken,
+          ...conn.tunnelHeaders,
         },
         signal: controller.signal,
       });
@@ -1552,9 +1553,12 @@ export async function openWorkerLocalFileInBrowser(
 
     // Read after callWorker in case it refreshed the cached worker session.
     const conn = await getConnection(workerId);
-    // browserTab.location.replace(`${"http"+conn.pinggyUrl.slice(5)}${data.startPath}`);
-    browserTab.location.href = `${"http"+conn.pinggyUrl.slice(5)}${data.startPath}`
-    // window.location.href = `${"http"+conn.pinggyUrl.slice(5)}${data.startPath}`
+    // A same-origin proxy base starts with "/" — navigate to it directly. For
+    // direct providers keep the existing HTTP hand-off that the worker's
+    // native-download endpoint was designed around.
+    browserTab.location.href = conn.tunnelUrl.startsWith("/")
+      ? new URL(`${conn.tunnelUrl}${data.startPath}`, window.location.origin).toString()
+      : `${"http"+conn.tunnelUrl.slice(5)}${data.startPath}`;
   } catch (error) {
     browserTab.close();
     throw error;

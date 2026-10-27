@@ -1,7 +1,10 @@
 /**
  * GET /api/worker/[workerId]/connection
  *
- * Returns { pinggyUrl, sessionToken } so the client can call the worker API directly.
+ * Returns { tunnelUrl, sessionToken } so the client can call the worker API.
+ * `tunnelUrl` is the direct HTTPS tunnel for most providers, or the
+ * same-origin proxy base for tunnl.gg (whose free tier redirects browser
+ * preflights). Token rotation always uses the real tunnel URL.
  * Auto-rotates the session token if it's expired or missing.
  */
 
@@ -12,6 +15,10 @@ import { eq } from "drizzle-orm";
 import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
 import { isSessionTokenExpired, rotateSessionToken } from "@/app/lib/sessionToken";
 import { clearStaleWorkerConnections, isWorkerOnline } from "@/app/lib/workerPresence";
+import {
+  getTunnelBypassHeaders,
+  requiresSameOriginProxy,
+} from "@/app/lib/tunnelHeaders";
 
 export const dynamic = "force-dynamic";
 
@@ -43,16 +50,16 @@ export async function GET(
     return NextResponse.json({ success: false, message: "Worker not found" }, { status: 404 });
   }
 
-  if (!worker.pinggyUrl) {
+  if (!worker.tunnelUrl) {
     return NextResponse.json(
       { success: false, message: "Worker is offline — no tunnel URL available" },
       { status: 503 },
     );
   }
 
-  if (!worker.pinggyUrl.startsWith("https://")) {
+  if (!worker.tunnelUrl.startsWith("https://")) {
     return NextResponse.json(
-      { success: false, message: "Worker tunnel is not HTTPS. Restart the worker to obtain a secure Pinggy URL." },
+      { success: false, message: "Worker tunnel is not HTTPS. Restart the worker to obtain a secure tunnel URL." },
       { status: 503 },
     );
   }
@@ -71,7 +78,7 @@ export async function GET(
   let sessionToken = worker.sessionToken;
   if (isSessionTokenExpired(worker.sessionTokenExpiry)) {
     try {
-      sessionToken = await rotateSessionToken(workerId, worker.pinggyUrl, worker.authToken);
+      sessionToken = await rotateSessionToken(workerId, worker.tunnelUrl, worker.authToken);
     } catch (e: any) {
       return NextResponse.json(
         { success: false, message: `Failed to refresh session token: ${e.message}` },
@@ -80,9 +87,15 @@ export async function GET(
     }
   }
 
+  // tunnl.gg free tunnels cannot answer a browser CORS preflight, so route the
+  // web client through the same-origin proxy. Every other provider stays
+  // direct (no Next.js bandwidth for media).
+  const useProxy = requiresSameOriginProxy(worker.tunnelUrl);
+
   return NextResponse.json({
-    success:      true,
-    pinggyUrl:    worker.pinggyUrl,
+    success:       true,
+    tunnelUrl:     useProxy ? `/api/worker/${workerId}/proxy` : worker.tunnelUrl,
     sessionToken,
+    tunnelHeaders: useProxy ? {} : getTunnelBypassHeaders(worker.tunnelUrl),
   });
 }

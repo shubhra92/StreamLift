@@ -46,7 +46,7 @@ export async function GET(req: NextRequest) {
               status: {
                 online,
                 lastHeartbeat: w.lastHeartbeat?.toISOString() ?? null,
-                pinggyUrl:     w.pinggyUrl ?? null,
+                tunnelUrl:     w.tunnelUrl ?? null,
                 version:       w.version,
               },
             };

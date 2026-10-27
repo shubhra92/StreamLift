@@ -429,7 +429,7 @@ class SyncManager {
         runtimeStatus: Record<string, {
           online:        boolean;
           lastHeartbeat: string | null;
-          pinggyUrl:     string | null;
+          tunnelUrl:     string | null;
           ipAddress:     string | null;
         }>;
       } = await res.json();

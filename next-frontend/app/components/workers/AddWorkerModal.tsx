@@ -9,37 +9,48 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogDescription
+  DialogDescription,
 } from "@/components/ui/dialog";
 import type { AddWorkerModalProps } from "./types";
 import type { CreateWorkerData } from "@/app/service/workerService";
 import { megaLogin } from "@/app/lib/megaLogin";
+import {
+  TUNNEL_PROVIDERS,
+  TUNNEL_PROVIDER_META,
+  type TunnelProvider,
+} from "@/app/lib/tunnelConfig";
 
 export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorkerModalProps) {
-  const [name, setName] = useState("");
+  const [name, setName]                         = useState("");
   const [downloadLocation, setDownloadLocation] = useState<"local" | "mega">("local");
-  const [computeType, setComputeType] = useState<"low" | "medium" | "high">("medium");
-  const [pinggyToken, setPinggyToken] = useState("");
-  const [megaEmail, setMegaEmail] = useState("");
-  const [megaPassword, setMegaPassword] = useState("");
-  const [megaSession, setMegaSession] = useState<object | null>(null);
-  const [loggingIn, setLoggingIn] = useState(false);
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [computeType, setComputeType]           = useState<"low" | "medium" | "high">("medium");
+  const [tunnelProvider, setTunnelProvider]     = useState<TunnelProvider>("pinggy");
+  // Primary token (Pinggy token / zrok token)
+  const [tokenValue, setTokenValue]             = useState("");
+  // Optional secondary field (tunnl.gg SSH key path)
+  const [optionalValue, setOptionalValue]       = useState("");
+  const [megaEmail, setMegaEmail]               = useState("");
+  const [megaPassword, setMegaPassword]         = useState("");
+  const [megaSession, setMegaSession]           = useState<object | null>(null);
+  const [loggingIn, setLoggingIn]               = useState(false);
+  const [errors, setErrors]                     = useState<Record<string, string>>({});
+
+  const meta = TUNNEL_PROVIDER_META[tunnelProvider];
 
   const validateForm = (): boolean => {
     const e: Record<string, string> = {};
     if (!name.trim()) e.name = "Worker name is required";
-    if (!pinggyToken.trim()) e.pinggyToken = "Pinggy token is required";
-    if (downloadLocation === "mega" && !megaSession) {
+    if (meta.needsToken && !tokenValue.trim())
+      e.token = `${meta.tokenLabel} is required`;
+    if (downloadLocation === "mega" && !megaSession)
       e.megaLogin = "Log in to Mega to continue";
-    }
     setErrors(e);
     return Object.keys(e).length === 0;
   };
 
   const handleMegaLogin = async () => {
     if (!megaEmail.trim() || !megaPassword) {
-      setErrors((prev) => ({ ...prev, megaLogin: "Enter the Mega email and password." }));
+      setErrors((prev) => ({ ...prev, megaLogin: "Enter your Mega email and password." }));
       return;
     }
     setLoggingIn(true);
@@ -66,16 +77,17 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
     if (!validateForm()) return;
 
     const base: CreateWorkerData = {
-      name: name.trim(),
+      name:                 name.trim(),
       downloadLocation,
       computeType,
-      pinggyToken: pinggyToken.trim(),
+      activeTunnelProvider: tunnelProvider,
+      pinggyToken:          tunnelProvider === "pinggy"  ? tokenValue.trim()    : undefined,
+      zrokToken:            tunnelProvider === "zrok"    ? tokenValue.trim()    : undefined,
+      tunnlggSshKeyPath:    tunnelProvider === "tunnlgg" ? optionalValue.trim() : undefined,
     };
 
     if (downloadLocation === "mega" && megaSession) {
-      // The password never leaves the client — only the session minted above
-      // is sent to (and stored by) the backend.
-      base.megaEmail = megaEmail.trim().toLowerCase();
+      base.megaEmail   = megaEmail.trim().toLowerCase();
       base.megaSession = JSON.stringify(megaSession);
     }
 
@@ -86,12 +98,21 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
     setName("");
     setDownloadLocation("local");
     setComputeType("medium");
-    setPinggyToken("");
+    setTunnelProvider("pinggy");
+    setTokenValue("");
+    setOptionalValue("");
     setMegaEmail("");
     setMegaPassword("");
     setMegaSession(null);
     setErrors({});
     onClose();
+  };
+
+  const handleProviderChange = (p: TunnelProvider) => {
+    setTunnelProvider(p);
+    setTokenValue("");
+    setOptionalValue("");
+    setErrors((prev) => ({ ...prev, token: "" }));
   };
 
   const handleLocationChange = (value: "local" | "mega") => {
@@ -108,7 +129,7 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
         <DialogHeader>
           <DialogTitle>Create Worker</DialogTitle>
           <DialogDescription>
-            Configure your worker's name, storage, compute resources, and connection settings.
+            Configure your worker's name, storage, compute resources, and tunnel connection.
           </DialogDescription>
         </DialogHeader>
         <AnimatePresence>
@@ -157,35 +178,89 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
               </select>
             </div>
 
-            {/* Pinggy Token */}
+            {/* Tunnel Provider */}
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">
-                Pinggy Token
-                <a
-                  href="https://pinggy.io"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="ml-1 text-blue-500 hover:underline"
-                >
-                  (get one at pinggy.io)
-                </a>
-              </label>
-              <input
-                type="text"
-                placeholder="Paste your Pinggy token"
-                value={pinggyToken}
-                onChange={(e) => setPinggyToken(e.target.value)}
-                className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring font-mono text-sm"
-              />
-              {errors.pinggyToken && (
-                <p className="text-xs text-destructive mt-1">{errors.pinggyToken}</p>
-              )}
-              <p className="text-xs text-muted-foreground mt-1">
-                Used to expose the worker's API via a public HTTPS tunnel.
-              </p>
+              <label className="text-xs text-muted-foreground mb-1 block">Tunnel Provider</label>
+              <select
+                value={tunnelProvider}
+                onChange={(e) => handleProviderChange(e.target.value as TunnelProvider)}
+                className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                {TUNNEL_PROVIDERS.map((p) => (
+                  <option key={p} value={p}>
+                    {TUNNEL_PROVIDER_META[p].label}
+                    {!TUNNEL_PROVIDER_META[p].needsToken ? " (no token needed)" : ""}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground mt-1">{meta.description}</p>
             </div>
 
-            {/* Mega (conditional): login step → session-ready view */}
+            {/* Primary token field (Pinggy / zrok) */}
+            <AnimatePresence>
+              {meta.needsToken && (
+                <motion.div
+                  key={`token-${tunnelProvider}`}
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="overflow-hidden"
+                >
+                  <label className="text-xs text-muted-foreground mb-1 block">
+                    {meta.tokenLabel}
+                    {meta.docsUrl && (
+                      <a
+                        href={meta.docsUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="ml-1 text-blue-500 hover:underline"
+                      >
+                        ({meta.tokenHint})
+                      </a>
+                    )}
+                  </label>
+                  <input
+                    type="text"
+                    placeholder={meta.tokenPlaceholder}
+                    value={tokenValue}
+                    onChange={(e) => setTokenValue(e.target.value)}
+                    className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring font-mono text-sm"
+                  />
+                  {errors.token && (
+                    <p className="text-xs text-destructive mt-1">{errors.token}</p>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Optional secondary field (tunnl.gg SSH key path) */}
+            <AnimatePresence>
+              {meta.hasOptionalField && (
+                <motion.div
+                  key={`optional-${tunnelProvider}`}
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="overflow-hidden"
+                >
+                  <label className="text-xs text-muted-foreground mb-1 block">
+                    {meta.optionalFieldLabel}
+                  </label>
+                  <input
+                    type="text"
+                    placeholder={meta.optionalFieldPlaceholder}
+                    value={optionalValue}
+                    onChange={(e) => setOptionalValue(e.target.value)}
+                    className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring font-mono text-sm"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {meta.optionalFieldHint}
+                  </p>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Mega login (conditional) */}
             <AnimatePresence>
               {downloadLocation === "mega" && (
                 <motion.div
@@ -196,24 +271,20 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
                 >
                   {!megaReady ? (
                     <>
-                      <div>
-                        <input
-                          type="email"
-                          placeholder="Mega email"
-                          value={megaEmail}
-                          onChange={(e) => setMegaEmail(e.target.value)}
-                          className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                        />
-                      </div>
-                      <div>
-                        <input
-                          type="password"
-                          placeholder="Mega password"
-                          value={megaPassword}
-                          onChange={(e) => setMegaPassword(e.target.value)}
-                          className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                        />
-                      </div>
+                      <input
+                        type="email"
+                        placeholder="Mega email"
+                        value={megaEmail}
+                        onChange={(e) => setMegaEmail(e.target.value)}
+                        className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                      <input
+                        type="password"
+                        placeholder="Mega password"
+                        value={megaPassword}
+                        onChange={(e) => setMegaPassword(e.target.value)}
+                        className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
                       <Button
                         onClick={handleMegaLogin}
                         disabled={loggingIn}
@@ -240,7 +311,9 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
                           <p className="text-sm font-medium text-green-800 dark:text-green-200">
                             Mega session ready
                           </p>
-                          <p className="text-xs text-green-700 dark:text-green-300 truncate">{megaEmail}</p>
+                          <p className="text-xs text-green-700 dark:text-green-300 truncate">
+                            {megaEmail}
+                          </p>
                         </div>
                       </div>
                       <Button

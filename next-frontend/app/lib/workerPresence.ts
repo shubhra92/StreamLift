@@ -9,7 +9,7 @@ export function isWorkerOnline(lastHeartbeat: Date | null | undefined, now = Dat
 }
 
 /**
- * A Pinggy URL and its IP are both session-specific. Once a worker misses its
+ * A tunnel URL and its IP are both session-specific. Once a worker misses its
  * heartbeat window, remove those stale connection details together. This is
  * intentionally safe to call from every status read; only stale rows that
  * still contain connection data are updated.
@@ -19,7 +19,7 @@ export async function clearStaleWorkerConnections(guestId?: string): Promise<voi
   const conditions = [
     lt(workers.lastHeartbeat, cutoff),
     or(
-      isNotNull(workers.pinggyUrl),
+      isNotNull(workers.tunnelUrl),
       isNotNull(workers.ipAddress),
       isNotNull(workers.countryCode),
       isNotNull(workers.sessionToken),
@@ -30,7 +30,7 @@ export async function clearStaleWorkerConnections(guestId?: string): Promise<voi
   await db
     .update(workers)
     .set({
-      pinggyUrl: null,
+      tunnelUrl: null,
       ipAddress: null,
       countryCode: null,
       sessionToken: null,

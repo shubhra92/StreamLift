@@ -12,6 +12,10 @@ import { fileDownloads, workers } from "@/app/db/schema";
 import { and, eq, inArray, asc } from "drizzle-orm";
 import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
 import { isSessionTokenExpired, rotateSessionToken } from "@/app/lib/sessionToken";
+import {
+  getTunnelBypassHeaders,
+  requiresSameOriginProxy,
+} from "@/app/lib/tunnelHeaders";
 
 export const dynamic = "force-dynamic";
 
@@ -162,12 +166,12 @@ export async function POST(req: NextRequest) {
       }
 
       const worker = onlineWorkerMap.get(workerId);
-      if (!worker || !worker.pinggyUrl) continue;
+      if (!worker || !worker.tunnelUrl) continue;
 
       let sessionToken = worker.sessionToken;
       if (isSessionTokenExpired(worker.sessionTokenExpiry)) {
         try {
-          sessionToken = await rotateSessionToken(workerId, worker.pinggyUrl, worker.authToken);
+          sessionToken = await rotateSessionToken(workerId, worker.tunnelUrl, worker.authToken);
         } catch {
           continue;
         }
@@ -175,7 +179,7 @@ export async function POST(req: NextRequest) {
 
       // Browser-dispatched worker jobs must use HTTPS when the dashboard is
       // deployed on Vercel. Older TCP workers are skipped until restarted.
-      if (!worker.pinggyUrl.startsWith("https://")) continue;
+      if (!worker.tunnelUrl.startsWith("https://")) continue;
 
       // NOTE: we deliberately do NOT claim the row here (pending → downloading).
       // The worker turns the status to "downloading"/"uploading" itself via its
@@ -185,6 +189,11 @@ export async function POST(req: NextRequest) {
       // otherwise be stuck forever. Double-dispatch (two concurrent threads on
       // the same download) is prevented on the worker side by its alreadyRunning
       // guard and in-flight id dedupe.
+      //
+      // tunnl.gg free tunnels redirect browser preflights, so the SharedWorker
+      // is pointed at the same-origin proxy; every other provider stays direct.
+      const useProxy = requiresSameOriginProxy(worker.tunnelUrl);
+
       return NextResponse.json({
         action:      "trigger",
         download: {
@@ -196,9 +205,10 @@ export async function POST(req: NextRequest) {
           selectedFileIndices: download.selectedFileIndices,
           workerId,
         },
-        destination: "worker",
-        pinggyUrl:   worker.pinggyUrl,
+        destination:   "worker",
+        tunnelUrl:     useProxy ? `/api/worker/${workerId}/proxy` : worker.tunnelUrl,
         sessionToken,
+        tunnelHeaders: useProxy ? {} : getTunnelBypassHeaders(worker.tunnelUrl),
       });
     }
   }

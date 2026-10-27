@@ -38,7 +38,7 @@ export async function GET(
         try {
           await clearStaleWorkerConnections(guest.id);
           const [worker] = await db
-            .select({ id: workers.id, guestId: workers.guestId, lastHeartbeat: workers.lastHeartbeat, pinggyUrl: workers.pinggyUrl, version: workers.version })
+            .select({ id: workers.id, guestId: workers.guestId, lastHeartbeat: workers.lastHeartbeat, tunnelUrl: workers.tunnelUrl, version: workers.version })
             .from(workers)
             .where(eq(workers.id, workerId))
             .limit(1);
@@ -55,7 +55,7 @@ export async function GET(
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({
             online,
             lastHeartbeat: worker.lastHeartbeat?.toISOString() ?? null,
-            pinggyUrl:     worker.pinggyUrl ?? null,
+            tunnelUrl:     worker.tunnelUrl ?? null,
             version:       worker.version,
           })}\n\n`));
         } catch {

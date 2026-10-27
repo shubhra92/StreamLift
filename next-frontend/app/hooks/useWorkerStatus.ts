@@ -17,7 +17,7 @@ import type { WorkerStatusPayload } from "@/app/lib/sync-worker/workerClient";
 export interface WorkerStatus {
   online:        boolean;
   lastHeartbeat: string | null;
-  pinggyUrl:     string | null;
+  tunnelUrl:     string | null;
   version:       string;
 }
 
@@ -38,7 +38,7 @@ export function useWorkerStatus(workerId: string | null) {
       setStatus({
         online:        payload.online,
         lastHeartbeat: payload.lastHeartbeat ?? null,
-        pinggyUrl:     payload.pinggyUrl     ?? null,
+        tunnelUrl:     payload.tunnelUrl     ?? null,
         version:       payload.version       ?? "1.0.0",
       });
     };

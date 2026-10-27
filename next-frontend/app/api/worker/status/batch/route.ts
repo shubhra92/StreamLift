@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
     result[w.id] = {
       online,
       lastHeartbeat: w.lastHeartbeat?.toISOString() ?? null,
-      pinggyUrl:     w.pinggyUrl ?? null,
+      tunnelUrl:     w.tunnelUrl ?? null,
       ipAddress:     w.ipAddress ?? null,
       version:       w.version,
     };

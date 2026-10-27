@@ -6,6 +6,7 @@ import { isWorkerOnline } from "./workerPresence";
 import { getMediaKind } from "./media";
 import { isSessionTokenExpired, rotateSessionToken } from "./sessionToken";
 import type { TvCatalogFile, TvCatalogGroup, TvCatalogPayload } from "./tvTypes";
+import { getTunnelBypassHeaders } from "./tunnelHeaders";
 
 const ID_BATCH_SIZE = 100;
 const WORKER_FETCH_TIMEOUT_MS = 5_000;
@@ -46,9 +47,9 @@ class WorkerHttpError extends Error {
 }
 
 async function getWorkerConnection(worker: Worker): Promise<WorkerConnection> {
-  if (!worker.pinggyUrl) throw new Error("Worker tunnel is offline");
+  if (!worker.tunnelUrl) throw new Error("Worker tunnel is offline");
 
-  const baseUrl = worker.pinggyUrl.replace(/\/+$/, "");
+  const baseUrl = worker.tunnelUrl.replace(/\/+$/, "");
   let sessionToken = worker.sessionToken;
 
   if (!sessionToken || isSessionTokenExpired(worker.sessionTokenExpiry)) {
@@ -71,8 +72,7 @@ async function readWorkerFiles(
       headers: {
         "Content-Type": "application/json",
         "X-Session-Token": connection.sessionToken,
-        // Free Pinggy tunnels serve a browser screening page without this.
-        "X-Pinggy-No-Screen": "1",
+        ...getTunnelBypassHeaders(connection.baseUrl),
       },
       body: JSON.stringify({ downloadIds: batch }),
       cache: "no-store",
@@ -145,7 +145,7 @@ export async function buildTvCatalog(
 
   const onlineWorkers = workerRows.filter(
     (worker) =>
-      Boolean(worker.pinggyUrl?.startsWith("https://")) &&
+      Boolean(worker.tunnelUrl?.startsWith("https://")) &&
       isWorkerOnline(worker.lastHeartbeat, now),
   );
 
@@ -201,7 +201,7 @@ export async function buildTvCatalog(
                 download.createdAt?.toISOString() ??
                 null,
               thumbnailUrl: buildThumbnailUrl(
-                worker.pinggyUrl!.replace(/\/+$/, ""),
+                worker.tunnelUrl!.replace(/\/+$/, ""),
                 download.id,
                 file.index,
               ),

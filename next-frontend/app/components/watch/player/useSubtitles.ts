@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import {
   isFreePinggyPlaybackUrl,
+  getTunnelBypassHeaders,
   type WorkerPlaybackUrls,
   type WorkerSubtitleTrack,
 } from "@/app/lib/workerConnection";
@@ -150,7 +151,7 @@ export function useSubtitles({
         const response = await fetch(url, {
           signal: controller.signal,
           ...(needsPinggyBypass
-            ? { headers: { "X-Pinggy-No-Screen": "1" } }
+            ? { headers: getTunnelBypassHeaders(urls.hlsUrl) }
             : {}),
         });
         if (!response.ok) {

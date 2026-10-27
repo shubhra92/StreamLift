@@ -1,24 +1,53 @@
 "use client";
 
+import type { TunnelProvider } from "@/app/lib/tunnelConfig";
+
 export interface CreateWorkerData {
-  name: string;
-  downloadLocation: "local" | "mega";
-  computeType: "low" | "medium" | "high";
-  pinggyToken: string;
-  megaEmail?: string;
-  megaSession?: string; // session JSON minted by the browser — password never sent
+  name:                 string;
+  downloadLocation:     "local" | "mega";
+  computeType:          "low" | "medium" | "high";
+  activeTunnelProvider: TunnelProvider;
+  pinggyToken?:         string;
+  zrokToken?:           string;
+  tunnlggSshKeyPath?:   string;
+  megaEmail?:           string;
+  megaSession?:         string;
+}
+
+export interface UpdateWorkerData {
+  name?:                 string;
+  downloadLocation?:     "local" | "mega";
+  computeType?:          "low" | "medium" | "high";
+  activeTunnelProvider?: TunnelProvider;
+  pinggyToken?:          string;
+  zrokToken?:            string;
+  tunnlggSshKeyPath?:    string;
+  megaEmail?:            string;
+  megaSession?:          string;
 }
 
 export default function useWorkerService() {
   const createWorker = async (data: CreateWorkerData) => {
     try {
       const res = await fetch("/api/worker/create", {
-        method: "POST",
+        method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
+        body:    JSON.stringify(data),
       });
-      const result = await res.json();
-      return result;
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, message: err?.message ?? "Network error" };
+    }
+  };
+
+  const updateWorker = async (workerId: string, data: UpdateWorkerData) => {
+    try {
+      const res = await fetch(`/api/worker/${workerId}`, {
+        method:  "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify(data),
+      });
+      return await res.json();
     } catch (err: any) {
       return { success: false, message: err?.message ?? "Network error" };
     }
@@ -63,5 +92,5 @@ export default function useWorkerService() {
     }
   };
 
-  return { createWorker, getWorkers, getWorkerById, deleteWorker, getWorkerScript };
+  return { createWorker, updateWorker, getWorkers, getWorkerById, deleteWorker, getWorkerScript };
 }

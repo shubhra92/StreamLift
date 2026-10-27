@@ -6,13 +6,14 @@ import { Button } from "@/components/ui/button";
 import { WorkerList } from "../components/workers/WorkerList";
 import { WorkerDetails } from "../components/workers/WorkerDetails";
 import { AddWorkerModal } from "../components/workers/AddWorkerModal";
+import { EditWorkerModal } from "../components/workers/EditWorkerModal";
 import { useWorkerStatus } from "../hooks/useWorkerStatus";
 import { useWorkers } from "../hooks/useWorkers";
 import { createWorker, deleteWorker } from "../actions/workers";
 import { OfflineBanner } from "../components/OfflineBanner";
 import WorkerClient from "../lib/sync-worker/workerClient";
 import type { WorkerWithStatus } from "../components/workers/types";
-import type { CreateWorkerData } from "../service/workerService";
+import type { CreateWorkerData, UpdateWorkerData } from "../service/workerService";
 import useWorkerService from "../service/workerService";
 import type { IDBWorker } from "../lib/idb/schema";
 
@@ -23,25 +24,25 @@ function toWorkerWithStatus(w: IDBWorker): WorkerWithStatus {
     createdAt:          w.createdAt ? new Date(w.createdAt) : null,
     updatedAt:          w.updatedAt ? new Date(w.updatedAt) : null,
     lastHeartbeat:      w.lastHeartbeat ?? null,
-    sessionTokenExpiry: null,  // not needed on client — only used server-side
-    totalUptime:        0,     // DB column removed — fallback to SSE uptime
+    sessionTokenExpiry: null,
+    totalUptime:        0,
   };
 }
 
 export default function WorkersPage() {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+  const [selectedId, setSelectedId]       = useState<string | null>(null);
+  const [isModalOpen, setIsModalOpen]     = useState(false);
+  const [editingWorker, setEditingWorker] = useState<WorkerWithStatus | null>(null);
+  const [loading, setLoading]             = useState(false);
+  const [editLoading, setEditLoading]     = useState(false);
+  const [deletingIds, setDeletingIds]     = useState<Set<string>>(new Set());
 
   const contentRef = useRef<HTMLDivElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
+  const panelRef   = useRef<HTMLDivElement>(null);
 
-  // ── IDB-backed data + sync ────────────────────────────────────────────────
   const { workers: idbWorkers, networkStatus, syncNow } = useWorkers();
   const [workers, setWorkers] = useState<WorkerWithStatus[]>([]);
 
-  // Keep workers list in sync with IDB data
   useEffect(() => {
     setWorkers(idbWorkers.map(toWorkerWithStatus));
   }, [idbWorkers]);
@@ -55,13 +56,9 @@ export default function WorkersPage() {
     setWorkers((prev) =>
       prev.map((w) =>
         w.id === selectedId
-          ? {
-              ...w,
-              online:        workerStatus.online,
-              lastHeartbeat: workerStatus.lastHeartbeat,
-            }
-          : w
-      )
+          ? { ...w, online: workerStatus.online, lastHeartbeat: workerStatus.lastHeartbeat }
+          : w,
+      ),
     );
   }, [selectedId, workerStatus]);
 
@@ -71,7 +68,6 @@ export default function WorkersPage() {
       const result = await createWorker(data);
       if (result.success) {
         setIsModalOpen(false);
-        // Invalidate location label cache so new worker name appears immediately
         const { invalidateWorkerNameCache } = await import("../lib/resolveLocationLabel");
         invalidateWorkerNameCache();
         syncNow();
@@ -80,6 +76,24 @@ export default function WorkersPage() {
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleEditWorker = async (data: UpdateWorkerData) => {
+    if (!editingWorker) return;
+    setEditLoading(true);
+    try {
+      const result = await workerService.updateWorker(editingWorker.id, data);
+      if (result.success) {
+        setEditingWorker(null);
+        const { invalidateWorkerNameCache } = await import("../lib/resolveLocationLabel");
+        invalidateWorkerNameCache();
+        syncNow();
+      } else {
+        alert(result.message ?? "Failed to update worker");
+      }
+    } finally {
+      setEditLoading(false);
     }
   };
 
@@ -114,7 +128,7 @@ export default function WorkersPage() {
     try {
       await navigator.clipboard.writeText(result.script);
       alert(
-        "Worker script copied to clipboard.\n\n⚠️  Keep this script private — it contains your worker credentials."
+        "Worker script copied to clipboard.\n\n⚠️  Keep this script private — it contains your worker credentials.",
       );
     } catch {
       alert("Could not copy to clipboard. Please copy the script manually.");
@@ -128,7 +142,6 @@ export default function WorkersPage() {
     if (!selectedId) return;
     const handler = (e: MouseEvent) => {
       const target = e.target as Element | null;
-      // Don't dismiss the detail panel while a dialog (e.g. Re-link Mega) is open.
       if (document.querySelector('[role="dialog"][data-state="open"]')) return;
       if (target?.closest('[role="dialog"]')) return;
       if (!contentRef.current?.contains(target) && !panelRef.current?.contains(target)) {
@@ -141,7 +154,6 @@ export default function WorkersPage() {
 
   return (
     <main className="flex h-full flex-col bg-background">
-      {/* Row 2 (mid, scrollable): page header + banner + worker list — scroll together */}
       <div className="flex-1 min-h-0 overflow-y-auto w-full">
         <div ref={contentRef} className="max-w-5xl mx-auto px-4 md:px-6 pt-4 md:pt-6">
           <motion.div
@@ -174,12 +186,16 @@ export default function WorkersPage() {
             onSelect={(id) => setSelectedId((prev) => (prev === id ? null : id))}
             onDelete={handleDeleteWorker}
             onCopyScript={handleCopyScript}
+            onEdit={(id) => {
+              const w = workers.find((x) => x.id === id) ?? null;
+              setEditingWorker(w);
+            }}
           />
           <div className="h-4 md:h-6" />
         </div>
       </div>
 
-      {/* Row 3 (bottom, dynamic): worker detail — only when a worker is selected */}
+      {/* Worker detail panel */}
       <div className="shrink-0">
         <AnimatePresence>
           {selectedWorker && (
@@ -208,6 +224,14 @@ export default function WorkersPage() {
         onClose={() => setIsModalOpen(false)}
         onSubmit={handleCreateWorker}
         loading={loading}
+      />
+
+      <EditWorkerModal
+        isOpen={editingWorker !== null}
+        worker={editingWorker}
+        onClose={() => setEditingWorker(null)}
+        onSubmit={handleEditWorker}
+        loading={editLoading}
       />
     </main>
   );

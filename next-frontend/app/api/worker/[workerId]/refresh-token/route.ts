@@ -39,7 +39,7 @@ export async function GET(
     return NextResponse.json({ success: false, message: "Worker not found" }, { status: 404 });
   }
 
-  if (!worker.pinggyUrl) {
+  if (!worker.tunnelUrl) {
     return NextResponse.json(
       { success: false, message: "Worker has no tunnel URL — is it online?" },
       { status: 503 },
@@ -47,7 +47,7 @@ export async function GET(
   }
 
   try {
-    const newToken = await rotateSessionToken(workerId, worker.pinggyUrl, worker.authToken);
+    const newToken = await rotateSessionToken(workerId, worker.tunnelUrl, worker.authToken);
     return NextResponse.json({ success: true, sessionToken: newToken });
   } catch (e: any) {
     return NextResponse.json(

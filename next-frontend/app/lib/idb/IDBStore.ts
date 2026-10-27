@@ -27,7 +27,7 @@ export function fileDownloadToIDB(row: FileDownload): IDBFileDownload {
 
 export function workerToIDB(
   row: Worker,
-  runtime?: { online: boolean; lastHeartbeat: string | null; pinggyUrl?: string | null; ipAddress?: string | null }
+  runtime?: { online: boolean; lastHeartbeat: string | null; tunnelUrl?: string | null; ipAddress?: string | null }
 ): IDBWorker {
   return {
     ...(row as any),
@@ -101,7 +101,7 @@ export async function getAllWorkers(): Promise<IDBWorker[]> {
 
 export async function upsertWorkers(
   rows: Worker[],
-  runtimeStatus?: Record<string, { online: boolean; lastHeartbeat: string | null; pinggyUrl?: string | null; ipAddress?: string | null }>
+  runtimeStatus?: Record<string, { online: boolean; lastHeartbeat: string | null; tunnelUrl?: string | null; ipAddress?: string | null }>
 ): Promise<void> {
   if (!rows.length) return;
   try {
@@ -120,7 +120,7 @@ export async function upsertWorkers(
  * DB rows changed. ipAddress is no longer tracked server-side.
  */
 export async function patchWorkersRuntime(
-  runtimeStatus: Record<string, { online: boolean; lastHeartbeat: string | null; pinggyUrl?: string | null; ipAddress?: string | null }>
+  runtimeStatus: Record<string, { online: boolean; lastHeartbeat: string | null; tunnelUrl?: string | null; ipAddress?: string | null }>
 ): Promise<void> {
   const ids = Object.keys(runtimeStatus);
   if (!ids.length) return;

@@ -7,6 +7,7 @@ import crypto from "crypto";
 import { db } from "../db";
 import { workers } from "../db/schema";
 import { eq } from "drizzle-orm";
+import { getTunnelBypassHeaders } from "./tunnelHeaders";
 
 const SESSION_TOKEN_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
@@ -32,22 +33,26 @@ export function isSessionTokenExpired(expiry: Date | null): boolean {
  */
 export async function rotateSessionToken(
   workerId: string,
-  workerPinggyUrl: string,
+  workerTunnelUrl: string,
   workerAuthToken: string,
 ): Promise<string> {
   const newToken  = generateSessionToken();
   const newExpiry = sessionTokenExpiry();
 
-  if (!workerPinggyUrl.startsWith("https://")) {
+  if (!workerTunnelUrl.startsWith("https://")) {
     throw new Error("Worker tunnel must use HTTPS");
   }
 
   // Tell the worker about the new token first — if this fails, don't save to DB
-  const res = await fetch(`${workerPinggyUrl}/internal/rotate-token`, {
+  const res = await fetch(`${workerTunnelUrl}/internal/rotate-token`, {
     method:  "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Auth-Token": workerAuthToken,
+      // Tunnel interstitials (e.g. zrok free tier) must not swallow this
+      // server-side call; the map is empty for tunnel providers that don't
+      // need a bypass header.
+      ...getTunnelBypassHeaders(workerTunnelUrl),
     },
     body: JSON.stringify({ newSessionToken: newToken }),
     // A dead tunnel must not hang catalog/connection requests forever.

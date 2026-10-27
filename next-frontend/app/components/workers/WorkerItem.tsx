@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Copy, Trash2, Loader2, Check } from "lucide-react";
+import { Copy, Trash2, Loader2, Check, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -21,7 +21,7 @@ const locationLabel: Record<string, string> = {
   mega: "Mega",
 };
 
-export function WorkerItem({ worker, isSelected, isDeleting, onSelect, onDelete, onCopyScript }: WorkerItemProps) {
+export function WorkerItem({ worker, isSelected, isDeleting, onSelect, onDelete, onCopyScript, onEdit }: WorkerItemProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [copied, setCopied] = useState(false);
   const workerCountryFlag = countryFlag(worker.countryCode);
@@ -52,7 +52,7 @@ export function WorkerItem({ worker, isSelected, isDeleting, onSelect, onDelete,
       exit={{ opacity: 0, y: -10 }}
       transition={{ duration: 0.2 }}
       onClick={onSelect}
-      className={`hover:bg-muted/50 cursor-pointer border-b transition-colors ${
+      className={`hover:bg-muted/50 cursor-pointer border-b last:border-b-0 transition-colors ${
         isSelected ? "bg-blue-50/50 dark:bg-blue-950/20" : ""
       }`}
     >
@@ -77,6 +77,16 @@ export function WorkerItem({ worker, isSelected, isDeleting, onSelect, onDelete,
               )}
             </div>
             <div className="flex items-center gap-1 shrink-0">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 cursor-pointer"
+                title="Edit worker"
+                disabled={isDeleting}
+                onClick={(e) => { e.stopPropagation(); onEdit(); }}
+              >
+                <Pencil className="h-4 w-4 text-muted-foreground" />
+              </Button>
               <Button
                 variant="ghost"
                 size="icon"
@@ -171,7 +181,7 @@ export function WorkerItem({ worker, isSelected, isDeleting, onSelect, onDelete,
       </TableCell>
 
       {/* Status */}
-      <TableCell className="hidden md:table-cell px-4 py-3">
+      <TableCell className="hidden md:table-cell px-1 py-3 pr-4">
         <Badge
           className={
             worker.online
@@ -184,14 +194,14 @@ export function WorkerItem({ worker, isSelected, isDeleting, onSelect, onDelete,
       </TableCell>
 
       {/* Compute */}
-      <TableCell className="hidden md:table-cell px-4 py-3">
+      <TableCell className="hidden md:table-cell px-1 py-3 pr-4">
         <Badge className="bg-blue-100 text-blue-800 text-xs">
           {computeLabel[worker.computeType] ?? worker.computeType}
         </Badge>
       </TableCell>
 
       {/* Location */}
-      <TableCell className="hidden md:table-cell px-4 py-3">
+      <TableCell className="hidden md:table-cell px-1 py-3 pr-4">
         <Badge className="bg-purple-100 text-purple-800 text-xs">
           {locationLabel[worker.downloadLocation] ?? worker.downloadLocation}
         </Badge>
@@ -213,8 +223,18 @@ export function WorkerItem({ worker, isSelected, isDeleting, onSelect, onDelete,
       </TableCell>
 
       {/* Actions */}
-      <TableCell className="hidden md:table-cell px-4 py-3">
-        <div className="flex items-center gap-1">
+      <TableCell className="hidden md:table-cell px-1 py-3 pr-4">
+        <div className="flex items-center gap-1 justify-end">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 cursor-pointer"
+            title="Edit worker"
+            disabled={isDeleting}
+            onClick={(e) => { e.stopPropagation(); onEdit(); }}
+          >
+            <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+          </Button>
           <Button
             variant="ghost"
             size="icon"

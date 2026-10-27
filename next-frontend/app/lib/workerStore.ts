@@ -32,6 +32,6 @@ export interface WorkerState {
   workerId:      string;
   online:        boolean;
   lastHeartbeat: string | null;
-  pinggyUrl:     string | null;
+  tunnelUrl:     string | null;
   version:       string;
 }
