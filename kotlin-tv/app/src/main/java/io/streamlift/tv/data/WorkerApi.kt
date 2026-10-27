@@ -24,6 +24,7 @@ class WorkerApi(
         downloadId: String,
         fileIndex: Int,
         caps: String,
+        tunnelHeaders: Map<String, String> = emptyMap(),
     ): MediaTicket {
         val url = buildString {
             append(baseUrl.trimEnd('/'))
@@ -39,7 +40,7 @@ class WorkerApi(
             .url(url)
             .header("Accept", "application/json")
             .header("X-Session-Token", sessionToken)
-            .header("X-Pinggy-No-Screen", "1")
+            .apply { tunnelHeaders.forEach { (k, v) -> header(k, v) } }
             .header("User-Agent", "StreamLiftTV")
             .post(ByteArray(0).toRequestBody(null))
             .build()

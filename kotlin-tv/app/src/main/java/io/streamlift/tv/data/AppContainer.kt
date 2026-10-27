@@ -4,6 +4,7 @@ import android.content.Context
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
+import okhttp3.Request
 
 class AppContainer(context: Context) {
     val settings = SettingsStore(context)
@@ -22,15 +23,17 @@ class AppContainer(context: Context) {
         .writeTimeout(20, TimeUnit.SECONDS)
         .build()
 
-    /** Coil's client. Pinggy serves a screening page without this header. */
+    /** Coil's image client. Reads tunnelHeaders at request time so updating
+     *  the stored connection is enough — no client rebuild needed. */
+    @Volatile var workerTunnelHeaders: Map<String, String> = emptyMap()
+
     val imageClient: OkHttpClient = okHttpClient.newBuilder()
         .addInterceptor { chain ->
-            chain.proceed(
-                chain.request().newBuilder()
-                    .header("X-Pinggy-No-Screen", "1")
-                    .header("User-Agent", "StreamLiftTV")
-                    .build(),
-            )
+            val req = chain.request().newBuilder()
+                .apply { workerTunnelHeaders.forEach { (k, v) -> header(k, v) } }
+                .header("User-Agent", "StreamLiftTV")
+                .build()
+            chain.proceed(req)
         }
         .build()
 

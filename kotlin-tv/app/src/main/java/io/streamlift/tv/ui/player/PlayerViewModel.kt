@@ -113,10 +113,7 @@ class PlayerViewModel(
         .setReadTimeoutMs(30_000)
         .setUserAgent("StreamLiftTV/${BuildConfig.VERSION_NAME}")
         .setDefaultRequestProperties(
-            mapOf(
-                "X-Pinggy-No-Screen" to "1",
-                "User-Agent" to "StreamLiftTV/${BuildConfig.VERSION_NAME}",
-            ),
+            mapOf("User-Agent" to "StreamLiftTV/${BuildConfig.VERSION_NAME}"),
         )
 
     val player: ExoPlayer = ExoPlayer.Builder(application)
@@ -409,7 +406,7 @@ class PlayerViewModel(
 
             val subtitleConfigurations = subtitleConfigurations(item, connection, ticket)
             val hlsUrl = PlaybackUrls.hls(
-                baseUrl = connection.pinggyUrl,
+                baseUrl = connection.tunnelUrl,
                 downloadId = item.downloadId,
                 fileIndex = item.fileIndex,
             )
@@ -449,23 +446,31 @@ class PlayerViewModel(
 
     private suspend fun fetchTicket(item: PlayerItem): Pair<WorkerConnection, MediaTicket> {
         var connection = api.getWorkerConnection(item.workerId)
+        // Push tunnel bypass headers to ExoPlayer's data source and Coil image
+        // client so all subsequent requests use the right provider headers.
+        httpDataSourceFactory.setDefaultRequestProperties(connection.tunnelHeaders)
+        container.workerTunnelHeaders = connection.tunnelHeaders
         return try {
             connection to workerApi.mediaTicket(
-                baseUrl = connection.pinggyUrl,
+                baseUrl = connection.tunnelUrl,
                 sessionToken = connection.sessionToken,
                 downloadId = item.downloadId,
                 fileIndex = item.fileIndex,
                 caps = PlaybackUrls.CAPS,
+                tunnelHeaders = connection.tunnelHeaders,
             )
         } catch (error: ApiException) {
             if (error.statusCode != 401) throw error
             connection = api.getWorkerConnection(item.workerId, refresh = true)
+            httpDataSourceFactory.setDefaultRequestProperties(connection.tunnelHeaders)
+            container.workerTunnelHeaders = connection.tunnelHeaders
             connection to workerApi.mediaTicket(
-                baseUrl = connection.pinggyUrl,
+                baseUrl = connection.tunnelUrl,
                 sessionToken = connection.sessionToken,
                 downloadId = item.downloadId,
                 fileIndex = item.fileIndex,
                 caps = PlaybackUrls.CAPS,
+                tunnelHeaders = connection.tunnelHeaders,
             )
         }
     }
@@ -485,7 +490,7 @@ class PlayerViewModel(
                 MediaItem.SubtitleConfiguration.Builder(
                     Uri.parse(
                         PlaybackUrls.subtitle(
-                            baseUrl = connection.pinggyUrl,
+                            baseUrl = connection.tunnelUrl,
                             downloadId = item.downloadId,
                             fileIndex = item.fileIndex,
                             trackIndex = track.index,

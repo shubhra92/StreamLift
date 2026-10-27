@@ -118,8 +118,11 @@ data class WorkerConnection(
     val success: Boolean = false,
     val workerId: String = "",
     val workerName: String = "",
-    val pinggyUrl: String = "",
+    val tunnelUrl: String = "",
     val sessionToken: String = "",
+    /** Headers required to bypass this tunnel provider's browser interstitial.
+     *  Populated server-side — Kotlin never needs to know which provider is in use. */
+    val tunnelHeaders: Map<String, String> = emptyMap(),
 )
 
 @Serializable

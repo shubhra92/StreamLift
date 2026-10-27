@@ -16,9 +16,9 @@ class StreamLiftTvApp : Application(), ImageLoaderFactory {
 
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
-            // Thumbnails live behind the worker's Pinggy tunnel. The image
-            // client adds X-Pinggy-No-Screen so Coil doesn't download the
-            // tunnel's browser screening page instead of the JPEG.
+            // Thumbnails live behind the worker tunnel. The image client reads
+            // workerTunnelHeaders at request time (set on WorkerConnection fetch)
+            // so no rebuild is needed when the tunnel provider changes.
             .okHttpClient { container.imageClient }
             .crossfade(true)
             .build()
