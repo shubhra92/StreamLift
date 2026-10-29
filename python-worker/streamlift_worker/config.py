@@ -6,7 +6,7 @@ runs the one-liner from the UI.
 
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 # Process start time — used for uptime calculation in heartbeat and SSE stream
@@ -69,6 +69,9 @@ class WorkerConfig:
     tunnlgg_ssh_key_path: str = ""
     # zrok: account token from myzrok.io
     zrok_token:        str = ""
+    # Set when the user clicks "Restart tunnel" in the dashboard. The worker
+    # compares it on every heartbeat and hot-swaps the tunnel when it changes.
+    tunnel_restart_nonce: str = ""
     mega_email:        str = ""
     mega_password:     str = ""
     worker_version:    str = "1.1.0"

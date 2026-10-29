@@ -13,6 +13,7 @@ can surface the real Pinggy error when startup fails.
 
 import json
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -21,7 +22,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from streamlift_worker import logger
-from streamlift_worker.tunnel._base import BaseTunnel, _MAX_CAPTURED_OUTPUT, _RESTART_DELAY
+from streamlift_worker.tunnel._base import BaseTunnel, _RESTART_DELAY
 
 # ── Pinggy-specific constants ─────────────────────────────────────────────────
 
@@ -39,9 +40,17 @@ _POLL_INTERVAL              = 0.5   # seconds between output polls
 _URL_TIMEOUT                = 45    # seconds to wait for the tunnel URL
 _HTTP_URL_DISCOVERY_TIMEOUT = 8     # seconds to confirm the matching HTTP URL
 # Pinggy exposes tunnel metadata on remote debugger port 4300. We bind it to a
-# local port so URL discovery still works when the SSH banner is absent (Colab).
-_LOCAL_DEBUGGER_PORT  = 4301
+# free local port so URL discovery still works when the SSH banner is absent
+# (Colab). The port must be per-instance: a hot-swap starts the new tunnel while
+# the old one is still running, and both cannot bind the same local port.
 _REMOTE_DEBUGGER_PORT = 4300
+
+
+def _pick_local_debugger_port() -> int:
+    """Return an unused localhost port for the Pinggy debugger forward."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def _strip_ansi_pinggy(text: str) -> str:
@@ -97,6 +106,7 @@ class PinggyTunnel(BaseTunnel):
     def __init__(self, token: str, port: int = 8000):
         super().__init__(port)
         self._token                                  = token
+        self._local_debugger_port                    = _pick_local_debugger_port()
         self._http_url: Optional[str]                = None
         self._last_debugger_error: Optional[str]     = None
         self._last_debugger_payload: Optional[str]   = None
@@ -122,7 +132,7 @@ class PinggyTunnel(BaseTunnel):
         ssh_args = [
             "ssh", "-tt", "-p", "443",
             "-R", f"0:localhost:{self._port}",
-            "-L", f"{_LOCAL_DEBUGGER_PORT}:localhost:{_REMOTE_DEBUGGER_PORT}",
+            "-L", f"{self._local_debugger_port}:localhost:{_REMOTE_DEBUGGER_PORT}",
             "-o", "StrictHostKeyChecking=no",
             "-o", "ServerAliveInterval=30",
             "-o", "ExitOnForwardFailure=yes",
@@ -271,7 +281,7 @@ class PinggyTunnel(BaseTunnel):
     def _get_debugger_urls(self) -> Optional[tuple[str, str]]:
         try:
             with urlopen(
-                f"http://127.0.0.1:{_LOCAL_DEBUGGER_PORT}/urls", timeout=1
+                f"http://127.0.0.1:{self._local_debugger_port}/urls", timeout=1
             ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             urls = payload.get("urls", []) if isinstance(payload, dict) else []

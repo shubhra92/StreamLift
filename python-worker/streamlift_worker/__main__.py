@@ -96,6 +96,11 @@ def _bootstrap_config(args: argparse.Namespace) -> WorkerConfig:
         tunnel_provider = remote.get("tunnelProvider")
     if tunnel_provider not in TUNNEL_PROVIDERS:
         tunnel_provider = "pinggy"  # default for backwards compat
+
+    tunnel_restart_nonce = ""
+    if remote:
+        tunnel_restart_nonce = remote.get("tunnelRestartNonce") or ""
+
     # Session-only workers omit --mega-email/--mega-password and fetch their
     # Mega session from the backend at startup.
     if download_location == "mega" and not (args.mega_email and args.mega_password):
@@ -113,6 +118,7 @@ def _bootstrap_config(args: argparse.Namespace) -> WorkerConfig:
         tunnel_provider=      tunnel_provider,
         tunnlgg_ssh_key_path= tunnlgg_ssh_key_path,
         zrok_token=           zrok_token,
+        tunnel_restart_nonce= tunnel_restart_nonce,
         mega_email=           args.mega_email,
         mega_password=        args.mega_password,
         server_port=          args.port,

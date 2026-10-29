@@ -76,12 +76,17 @@ def register(config: WorkerConfig, ip_address: str, tunnel_url: str) -> Optional
     return None
 
 
-def heartbeat(config: WorkerConfig, metrics: dict, tunnel_url: str, uptime_seconds: int = 0) -> None:
+def heartbeat(
+    config: WorkerConfig, metrics: dict, tunnel_url: str, uptime_seconds: int = 0
+) -> Optional[dict]:
     """
     Send heartbeat — updates last_heartbeat + tunnel_url in DB.
-    No longer returns newTasks — task dispatch is triggered by client directly.
+
+    Returns the backend response so the worker can detect a queued
+    tunnel-only restart (``tunnelRestartNonce``). No newTasks are returned;
+    task dispatch is triggered by the client directly.
     """
-    _post(config, "/api/worker/heartbeat", {
+    return _post(config, "/api/worker/heartbeat", {
         "workerId":  config.worker_id,
         "authToken": config.auth_token,
         "tunnelUrl": tunnel_url,
