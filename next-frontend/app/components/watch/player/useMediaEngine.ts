@@ -386,8 +386,10 @@ export function useMediaEngine({
         setEngineLabel("hls.js");
         const needsPinggyBypass = isFreePinggyPlaybackUrl(source.url);
         const hls = new Hls({
-          maxBufferLength: 60,
-          maxMaxBufferLength: 120,
+          // 20 × 6 s segments. The worker pre-rolls/prefetches ahead, so this
+          // buffer can ride out tunnel jitter instead of stalling at once.
+          maxBufferLength: 120,
+          maxMaxBufferLength: 240,
           backBufferLength: 90,
           fragLoadingMaxRetry: 12,
           fragLoadingRetryDelay: 1000,
