@@ -29,7 +29,7 @@ from streamlift_worker.config import COMPUTE_CONFIG, WorkerConfig
 
 COMPUTE_TYPES      = tuple(COMPUTE_CONFIG.keys())   # ("low", "medium", "high")
 DOWNLOAD_LOCATIONS = ("local", "mega")
-TUNNEL_PROVIDERS   = ("pinggy", "serveo", "tunnlgg", "zrok")
+TUNNEL_PROVIDERS   = ("pinggy", "serveo", "zrok")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -46,10 +46,8 @@ def _parse_args() -> argparse.Namespace:
                    dest="download_location", help="Fallback download location (fetched from backend by default)")
     p.add_argument("--tunnel-provider", choices=list(TUNNEL_PROVIDERS), default=None,
                    dest="tunnel_provider",
-                   help="Tunnel provider: 'pinggy' (default), 'serveo', 'tunnlgg', or 'zrok'")
+                   help="Tunnel provider: 'pinggy' (default), 'serveo', or 'zrok'")
     p.add_argument("--pinggy-token",        help="Pinggy tunnel token (required for pinggy provider)")
-    p.add_argument("--tunnlgg-ssh-key-path", default="", dest="tunnlgg_ssh_key_path",
-                   help="Path to SSH private key for tunnl.gg stable URLs (optional; leave blank for anonymous/random URL)")
     p.add_argument("--zrok-token",          help="zrok account token from myzrok.io (required for zrok provider)")
     p.add_argument("--mega-email",      default="",   help="Legacy: required for mega location when using credentials")
     p.add_argument("--mega-password",   default="",   help="Legacy: required for mega location when using credentials")
@@ -84,10 +82,6 @@ def _bootstrap_config(args: argparse.Namespace) -> WorkerConfig:
     if not pinggy_token and remote:
         pinggy_token = remote.get("pinggyToken") or ""
 
-    tunnlgg_ssh_key_path = args.tunnlgg_ssh_key_path
-    if not tunnlgg_ssh_key_path and remote:
-        tunnlgg_ssh_key_path = remote.get("tunnlggSshKeyPath") or ""
-
     zrok_token = getattr(args, "zrok_token", None) or ""
     if not zrok_token and remote:
         zrok_token = remote.get("zrokToken") or ""
@@ -95,7 +89,7 @@ def _bootstrap_config(args: argparse.Namespace) -> WorkerConfig:
     if tunnel_provider is None and remote:
         tunnel_provider = remote.get("tunnelProvider")
     if tunnel_provider not in TUNNEL_PROVIDERS:
-        tunnel_provider = "pinggy"  # default for backwards compat
+        tunnel_provider = "serveo"  # default for backwards compat (no token needed)
 
     tunnel_restart_nonce = ""
     if remote:
@@ -116,7 +110,6 @@ def _bootstrap_config(args: argparse.Namespace) -> WorkerConfig:
         download_location=    download_location,
         pinggy_token=         pinggy_token,
         tunnel_provider=      tunnel_provider,
-        tunnlgg_ssh_key_path= tunnlgg_ssh_key_path,
         zrok_token=           zrok_token,
         tunnel_restart_nonce= tunnel_restart_nonce,
         mega_email=           args.mega_email,

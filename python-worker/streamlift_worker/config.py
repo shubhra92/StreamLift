@@ -14,7 +14,7 @@ START_TIME = time.time()
 
 ComputeType      = Literal["low", "medium", "high"]
 DownloadLocation = Literal["local", "mega"]
-TunnelProvider   = Literal["pinggy", "serveo", "tunnlgg", "zrok"]
+TunnelProvider   = Literal["pinggy", "serveo", "zrok"]
 
 COMPUTE_CONFIG = {
     "low":    {"max_cpu_pct": 25,  "chunk_size": 512  * 1024},   # 512 KB
@@ -65,8 +65,6 @@ class WorkerConfig:
     download_location: DownloadLocation
     pinggy_token:      str = ""
     tunnel_provider:   TunnelProvider = "pinggy"
-    # tunnl.gg stable mode: path to SSH key file on the worker's machine (optional)
-    tunnlgg_ssh_key_path: str = ""
     # zrok: account token from myzrok.io
     zrok_token:        str = ""
     # Set when the user clicks "Restart tunnel" in the dashboard. The worker

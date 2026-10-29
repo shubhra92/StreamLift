@@ -14,7 +14,6 @@ Adding a new provider:
 
 from streamlift_worker.tunnel._pinggy  import PinggyTunnel
 from streamlift_worker.tunnel._serveo  import ServeoTunnel
-from streamlift_worker.tunnel._tunnlgg import TunnlGgTunnel
 from streamlift_worker.tunnel._zrok    import ZrokTunnel
 
-__all__ = ["PinggyTunnel", "ServeoTunnel", "TunnlGgTunnel", "ZrokTunnel"]
+__all__ = ["PinggyTunnel", "ServeoTunnel", "ZrokTunnel"]

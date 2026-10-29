@@ -4,7 +4,7 @@ Worker startup orchestration.
 Boot sequence:
   1. Validate Mega credentials (if location=mega)
   2. Start FastAPI server in a background thread
-  3. Start tunnel (Pinggy/Serveo/tunnl.gg/zrok) — get public URL
+  3. Start tunnel (Pinggy/Serveo/zrok) — get public URL
   4. Register with Next.js backend — get session token
   5. Initialise FastAPI server state with session token
   6. Start heartbeat background thread
@@ -34,9 +34,9 @@ from streamlift_worker.server import (
     update_public_http_url,
     update_session_token,
 )
-from streamlift_worker.tunnel import PinggyTunnel, ServeoTunnel, TunnlGgTunnel, ZrokTunnel
+from streamlift_worker.tunnel import PinggyTunnel, ServeoTunnel, ZrokTunnel
 
-Tunnel = PinggyTunnel | ServeoTunnel | TunnlGgTunnel | ZrokTunnel
+Tunnel = PinggyTunnel | ServeoTunnel | ZrokTunnel
 
 # After a failed hot-swap, don't hammer the provider on every heartbeat. A new
 # nonce (user clicks "Restart tunnel" again) retries immediately.
@@ -56,14 +56,6 @@ def _create_tunnel(config: WorkerConfig) -> Tunnel:
     if config.tunnel_provider == "serveo":
         logger.log("info", "Tunnel provider: Serveo (HTTPS only, no token required)")
         return ServeoTunnel(port=config.server_port)
-
-    if config.tunnel_provider == "tunnlgg":
-        mode = "stable" if config.tunnlgg_ssh_key_path else "anonymous"
-        logger.log("info", f"Tunnel provider: tunnl.gg ({mode} mode)")
-        return TunnlGgTunnel(
-            ssh_key_path=config.tunnlgg_ssh_key_path,
-            port=config.server_port,
-        )
 
     if config.tunnel_provider == "zrok":
         if not config.zrok_token:
@@ -199,22 +191,19 @@ class TunnelManager:
     def _apply_remote_tunnel_config(self, config: WorkerConfig, remote: dict) -> None:
         """Copy only tunnel-related fields — compute/location require a restart."""
         provider = remote.get("tunnelProvider")
-        if provider in ("pinggy", "serveo", "tunnlgg", "zrok"):
+        if provider in ("pinggy", "serveo", "zrok"):
             config.tunnel_provider = provider
 
         if "pinggyToken" in remote:
             config.pinggy_token = remote.get("pinggyToken") or ""
         if "zrokToken" in remote:
             config.zrok_token = remote.get("zrokToken") or ""
-        if "tunnlggSshKeyPath" in remote:
-            config.tunnlgg_ssh_key_path = remote.get("tunnlggSshKeyPath") or ""
 
     def _adopt_tunnel_config(self, new_config: WorkerConfig) -> None:
         """Apply a successfully-started tunnel config to the shared WorkerConfig."""
-        self._config.tunnel_provider      = new_config.tunnel_provider
-        self._config.pinggy_token         = new_config.pinggy_token
-        self._config.zrok_token           = new_config.zrok_token
-        self._config.tunnlgg_ssh_key_path = new_config.tunnlgg_ssh_key_path
+        self._config.tunnel_provider = new_config.tunnel_provider
+        self._config.pinggy_token    = new_config.pinggy_token
+        self._config.zrok_token      = new_config.zrok_token
 
     def _make_url_change_handler(self, tunnel: Tunnel):
         """Re-register when a tunnel's watchdog reconnects it."""
