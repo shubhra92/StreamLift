@@ -42,6 +42,14 @@ HLS_MAX_RATE         = "5M"   # cap the transcode bitrate so playback never star
 HLS_MAX_BUFSIZE      = "10M"
 PLAYBACK_DIR_NAME    = ".playback"  # worker-side playback workspace
 
+# Playback pre-roll / prefetch. The first batch is started as soon as a video
+# rendition playlist is requested (not when the first segment is requested),
+# and the next batch starts when the previous one finishes so the encoder
+# stays ahead of the player instead of being driven request-by-request.
+HLS_PREROLL_SEGMENTS = HLS_BATCH_SEGMENTS       # 20 segments = 120 s
+HLS_PREFETCH_AHEAD   = HLS_BATCH_SEGMENTS       # keep up to 240 s ahead
+HLS_PREFETCH_IDLE    = 60                       # stop prefetching after 60 s idle
+
 # Re-encoded HLS renditions never upscale and are capped here so 4K sources
 # stay watchable on small CPUs. The original-quality rendition is stream-copied
 # and is not subject to this cap. Override with

@@ -115,6 +115,7 @@ def media_env(tmp_path, monkeypatch):
     monkeypatch.setattr(streaming, "downloads_dir", lambda: str(root))
     streaming._sessions.clear()
     streaming._probe_cache.clear()
+    streaming._active_quality.clear()
 
     yield root
 
@@ -940,6 +941,7 @@ def test_real_ffmpeg_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(streaming, "downloads_dir", lambda: str(root))
     streaming._sessions.clear()
     streaming._probe_cache.clear()
+    streaming._active_quality.clear()
 
     source = root / "clip.mkv"
     make = subprocess.run(

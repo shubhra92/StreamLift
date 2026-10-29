@@ -52,6 +52,9 @@ from streamlift_worker.config import (
     HLS_MAX_CONCURRENT,
     HLS_MAX_HEIGHT,
     HLS_MAX_RATE,
+    HLS_PREFETCH_AHEAD,
+    HLS_PREFETCH_IDLE,
+    HLS_PREROLL_SEGMENTS,
     HLS_SEGMENT_SECONDS,
     HLS_SEGMENT_TIMEOUT,
     HLS_SEGMENT_WAIT,
@@ -313,6 +316,9 @@ class _Session:
     process: Optional[subprocess.Popen] = None
     batch: Optional[_Batch] = None
     completed: set[int] = field(default_factory=set)
+    # Highest segment index the player has requested; bounds prefetch so an
+    # idle or paused viewer does not make the worker encode the whole file.
+    playhead: int = 0
     # Original-quality segments that failed stream-copy validation. They are
     # regenerated with a one-off video transcode when a player asks for them.
     fallback_segments: set[int] = field(default_factory=set)
@@ -336,6 +342,12 @@ class _Session:
 _sessions: dict[tuple[str, int, str, str], _Session] = {}
 _sessions_lock = threading.Lock()
 _reaper_started = False
+
+# The quality rendition the player is currently watching, per
+# (download_id, file_index, caps.key). Used to stop batches for levels that
+# ABR has abandoned so they cannot occupy the two playback job slots.
+_active_quality: dict[tuple[str, int, str], str] = {}
+_active_quality_lock = threading.Lock()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1545,16 +1557,32 @@ def _watch_batch(session: _Session, batch: _Batch, list_path: str) -> None:
                 f"({failure}): {_tail(batch.log_path)}",
             )
         _segment_jobs.release()
+        if failure is None and not batch.stopped:
+            _schedule_prefetch(session, batch)
 
 
-def _start_batch(session: _Session, first_index: int, end_index: int) -> Optional[_Batch]:
-    """Spawn a background batch. Caller must hold ``session.batch_lock``."""
+def _start_batch(
+    session: _Session,
+    first_index: int,
+    end_index: int,
+    *,
+    wait: float = HLS_SEGMENT_WAIT,
+) -> Optional[_Batch]:
+    """Spawn a background batch. Caller must hold ``session.batch_lock``.
+
+    ``wait`` bounds how long to wait for a playback job slot. On-demand
+    requests wait (up to ``HLS_SEGMENT_WAIT``) so a player is never silently
+    starved; pre-roll/prefetch pass ``0`` and skip when both slots are busy.
+    """
     if session.info.has_video and not session.copy_video and not session.encoder_args:
         # A session created for the progressive path (or a test) never probed
         # for an encoder; pick one now so the batch has a real video encoder.
         session.encoder_name, session.encoder_args = _video_encoder()
 
-    if not _segment_jobs.acquire(timeout=HLS_SEGMENT_WAIT):
+    if wait <= 0:
+        if not _segment_jobs.acquire(blocking=False):
+            return None
+    elif not _segment_jobs.acquire(timeout=wait):
         return None
 
     list_path = os.path.join(session.output_dir, "segments.csv")
@@ -1627,6 +1655,110 @@ def _stop_batch(session: _Session) -> None:
             if session.batch is batch:
                 session.batch = None
             session.condition.notify_all()
+
+
+def _group_key(session: _Session) -> tuple[str, int, str]:
+    """Key shared by every quality rendition of one file + capability set."""
+    return (session.key[0], session.key[1], session.key[2])
+
+
+def _session_alive(session: _Session) -> bool:
+    """True while this exact session is still registered (not reaped)."""
+    with _sessions_lock:
+        return _sessions.get(session.key) is session
+
+
+def _note_active_quality(session: _Session) -> bool:
+    """Record the level the player is watching and stop abandoned batches.
+
+    Returns True when this is the first level selected for the file, which is
+    the only time a pre-roll at segment 0 is useful (a level switch starts at
+    the player's current position instead).
+
+    hls.js requests the media playlist of the level it is switching to before
+    it requests any segment from it, so this is the earliest reliable signal.
+    Stopping the old batch matters because only ``HLS_MAX_CONCURRENT`` playback
+    ffmpeg jobs may run at once: an abandoned 120 s batch would otherwise hold
+    a slot and make the new level's first segment time out.
+    """
+    group = _group_key(session)
+    with _active_quality_lock:
+        previous = _active_quality.get(group)
+        _active_quality[group] = session.quality
+
+    if previous and previous != session.quality and previous != QUALITY_AUTO:
+        with _sessions_lock:
+            stale = _sessions.get((group[0], group[1], group[2], previous))
+        if stale is not None and stale is not session:
+            # _stop_batch kills ffmpeg and joins the watcher; never block a
+            # request.
+            threading.Thread(
+                target=_stop_batch,
+                args=(stale,),
+                daemon=True,
+                name="playback-preempt",
+            ).start()
+
+    return previous is None
+
+
+def _preroll(session: _Session) -> None:
+    """Produce the first batch before the player asks for segment 0."""
+    if session.mode != MODE_HLS or not session.info.has_video:
+        return
+    if session.playhead > 0 or not _session_alive(session):
+        return
+    # _ensure_batch handles already-completed segments, failure backoff and
+    # partial-file cleanup; wait=0 keeps this from queueing behind real work.
+    _ensure_batch(session, 0, wait=0.0, limit=HLS_PREROLL_SEGMENTS)
+
+
+def _schedule_prefetch(session: _Session, batch: _Batch) -> None:
+    """Continue encoding ahead of the player once a batch completes."""
+    if batch.stopped or session.batch_failures:
+        return
+    threading.Thread(
+        target=_prefetch_next,
+        args=(session, batch),
+        daemon=True,
+        name="playback-prefetch",
+    ).start()
+
+
+def _prefetch_next(session: _Session, batch: _Batch) -> None:
+    """Start the next batch as soon as the previous one finishes.
+
+    This removes the per-batch cold start: the encoder is already producing
+    while the player is still consuming the previous 120 s, instead of waiting
+    for a segment request to wake it up.
+    """
+    # Check liveness before taking batch_lock: _ensure_session holds
+    # _sessions_lock while stopping a batch, so the reverse order would deadlock.
+    if not _session_alive(session):
+        return
+    with session.batch_lock:
+        if session.batch is not None or batch.stopped or session.batch_failures:
+            return
+        with _active_quality_lock:
+            if _active_quality.get(_group_key(session)) != session.quality:
+                return
+        if time.time() - session.last_access > HLS_PREFETCH_IDLE:
+            return
+        # Resume at the first segment the finished batch did not publish. This
+        # fills short batches (and any gap) instead of blindly jumping to
+        # batch.end_index.
+        start = batch.first_index
+        while start < batch.end_index and _segment_ok(session, start):
+            start += 1
+        if start == batch.first_index:
+            # The batch published nothing; do not spin on an empty run. The
+            # player's next request will retry through _ensure_batch.
+            return
+        if start >= session.segment_count:
+            return
+        if start > session.playhead + HLS_PREFETCH_AHEAD:
+            return
+        _ensure_batch(session, start, wait=0.0)
 
 
 def _clean_partial_segments(session: _Session) -> None:
@@ -1922,7 +2054,13 @@ def _batch_covers(batch: _Batch, index: int) -> bool:
     return batch.first_index <= index < batch.end_index + HLS_BATCH_SEGMENTS
 
 
-def _ensure_batch(session: _Session, index: int) -> bool:
+def _ensure_batch(
+    session: _Session,
+    index: int,
+    *,
+    wait: float = HLS_SEGMENT_WAIT,
+    limit: Optional[int] = None,
+) -> bool:
     """Guarantee that a batch producing ``index`` is (being) started."""
     with session.batch_lock:
         if _segment_ok(session, index):
@@ -1951,7 +2089,10 @@ def _ensure_batch(session: _Session, index: int) -> bool:
                 return False
             session.batch_failures = 0
 
-        end_index = min(index + HLS_BATCH_SEGMENTS, session.segment_count)
+        end_index = min(
+            index + (HLS_BATCH_SEGMENTS if limit is None else max(1, int(limit))),
+            session.segment_count,
+        )
         with session.condition:
             for candidate in range(index + 1, end_index):
                 if candidate in session.completed:
@@ -1962,7 +2103,7 @@ def _ensure_batch(session: _Session, index: int) -> bool:
                         session.completed.discard(candidate)
                     break
 
-        batch = _start_batch(session, index, end_index)
+        batch = _start_batch(session, index, end_index, wait=wait)
         return batch is not None
 
 
@@ -2006,6 +2147,8 @@ def get_segment_path(
     if index >= session.segment_count:
         return None
     session.last_access = time.time()
+    session.playhead = index
+    _note_active_quality(session)
 
     if _segment_ok(session, index):
         return _segment_path(session, index)
@@ -2054,6 +2197,10 @@ def _terminate(session: _Session) -> None:
         _kill_process(process)
     session.process = None
     _stop_batch(session)
+    group = _group_key(session)
+    with _active_quality_lock:
+        if _active_quality.get(group) == session.quality:
+            _active_quality.pop(group, None)
     shutil.rmtree(session.output_dir, ignore_errors=True)
 
 
@@ -2324,7 +2471,16 @@ def get_playlist(
     if kind == "video":
         if not session.info.has_video:
             return None
-        return _build_vod_playlist(session)
+        first_activation = _note_active_quality(session)
+        playlist = _build_vod_playlist(session)
+        if first_activation:
+            threading.Thread(
+                target=_preroll,
+                args=(session,),
+                daemon=True,
+                name="playback-preroll",
+            ).start()
+        return playlist
     if kind == "audio":
         if not session.info.audio_streams:
             return None
