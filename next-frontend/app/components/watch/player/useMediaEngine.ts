@@ -124,9 +124,30 @@ interface Options {
   mediaRef: RefObject<HTMLMediaElement | null>;
   source: PlaybackSource | null;
   fileKey: string;
+  /** Variant height to lock onto, or null/undefined to let ABR choose. */
+  preferredQualityHeight?: number | null;
   onReady: () => void;
   onSourceError: (kind: SourceKind) => void;
   onPlaybackError: (message: string) => void;
+}
+
+/** Index of the level matching an exact height, preferring the highest bitrate. */
+function findLevelIndexForHeight(
+  levels: Array<{ height?: number; bitrate?: number }>,
+  height: number,
+): number | null {
+  let bestIndex: number | null = null;
+  let bestBitrate = -1;
+  for (let index = 0; index < levels.length; index += 1) {
+    const level = levels[index];
+    if (!level || level.height !== height) continue;
+    const bitrate = level.bitrate ?? 0;
+    if (bitrate > bestBitrate) {
+      bestBitrate = bitrate;
+      bestIndex = index;
+    }
+  }
+  return bestIndex;
 }
 
 interface MediaEngine {
@@ -177,6 +198,7 @@ export function useMediaEngine({
   mediaRef,
   source,
   fileKey,
+  preferredQualityHeight,
   onReady,
   onSourceError,
   onPlaybackError,
@@ -188,6 +210,12 @@ export function useMediaEngine({
   onReadyRef.current = onReady;
   onSourceErrorRef.current = onSourceError;
   onPlaybackErrorRef.current = onPlaybackError;
+
+  const preferredQualityRef = useRef<number | null>(
+    preferredQualityHeight ?? null,
+  );
+  preferredQualityRef.current = preferredQualityHeight ?? null;
+  const lastQualityReapplyRef = useRef(0);
 
   const [audioTracks, setAudioTracks] = useState<EngineAudioTrack[]>([]);
   const [selectedAudio, setSelectedAudio] = useState<number | null>(null);
@@ -247,6 +275,14 @@ export function useMediaEngine({
     hls.currentLevel = level === "auto" ? -1 : level;
     setAutoLevel(level === "auto");
     setCurrentLevel(level === "auto" ? -1 : level);
+    // Keep the drift guard in sync immediately, before the parent's state
+    // update lands, so a fast hls.js level reset cannot re-lock the old level.
+    if (level === "auto") {
+      preferredQualityRef.current = null;
+    } else {
+      const height = hls.levels[level]?.height;
+      preferredQualityRef.current = height && height > 0 ? height : null;
+    }
   }, []);
 
   useEffect(() => {
@@ -266,6 +302,7 @@ export function useMediaEngine({
     nativeTracksRef.current = [];
     videoBufferedRangesRef.current = [];
     usingHlsJsRef.current = false;
+    lastQualityReapplyRef.current = Number.NEGATIVE_INFINITY;
 
     const destroyHls = () => {
       const hls = hlsRef.current;
@@ -437,10 +474,30 @@ export function useMediaEngine({
           setBandwidthEstimate((current) => hls.bandwidthEstimate || current);
         };
 
+        // Lock onto the worker's saved height. If the stream has no variant
+        // at that exact height, leave ABR in charge.
+        //
+        // `immediate` is used before playback starts; afterwards `nextLevel`
+        // is preferred because it avoids flushing the buffer just to restore
+        // a preference that hls.js dropped.
+        const applyPreferredQuality = (immediate: boolean) => {
+          const height = preferredQualityRef.current;
+          if (!height) return;
+          const index = findLevelIndexForHeight(hls.levels, height);
+          if (index === null) return;
+          if (!hls.autoLevelEnabled && hls.currentLevel === index) return;
+          if (immediate) {
+            hls.currentLevel = index;
+          } else {
+            hls.nextLevel = index;
+          }
+        };
+
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           if (disposed) return;
           syncHlsAudio();
           syncLevels();
+          applyPreferredQuality(true);
           void media.play().catch(() => undefined);
         });
         hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, syncHlsAudio);
@@ -456,6 +513,24 @@ export function useMediaEngine({
           setCurrentLevel(data.level);
           setAutoLevel(hls.autoLevelEnabled);
           setBandwidthEstimate(hls.bandwidthEstimate || null);
+
+          // hls.js can drop a manually pinned level back to ABR when it
+          // reloads or updates its level list (notably during the first
+          // playlist load, a retry, or a rebuffer). Re-assert the worker's
+          // saved height so buffering never silently turns it into Auto.
+          const height = preferredQualityRef.current;
+          if (!height || !hls.autoLevelEnabled) return;
+          const now = performance.now();
+          if (now - lastQualityReapplyRef.current < 1000) return;
+          const index = findLevelIndexForHeight(hls.levels, height);
+          if (index === null) return;
+          lastQualityReapplyRef.current = now;
+          hls.nextLevel = index;
+        });
+        hls.on(Hls.Events.LEVELS_UPDATED, () => {
+          if (disposed) return;
+          syncLevels();
+          applyPreferredQuality(false);
         });
         hls.on(Hls.Events.LEVEL_UPDATED, () => {
           if (disposed) return;

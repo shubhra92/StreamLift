@@ -54,9 +54,11 @@ import {
   clearResume,
   loadAudioPreference,
   loadPlayerPrefs,
+  loadQualityPreference,
   loadResume,
   saveAudioPreference,
   savePlayerPrefs,
+  saveQualityPreference,
   saveResume,
 } from "./storage";
 import {
@@ -237,6 +239,14 @@ export function MediaPlayer({
   const [hideControlsOnSpacebarPause, setHideControlsOnSpacebarPause] = useState(
     initialPrefs.hideControlsOnSpacebarPause,
   );
+  // Quality is remembered per worker, as a height (1080) rather than a
+  // level index, so every file from that worker can reuse it.
+  const [preferredQualityHeight, setPreferredQualityHeight] = useState<
+    number | null
+  >(() => {
+    const saved = loadQualityPreference(workerId);
+    return typeof saved === "number" ? saved : null;
+  });
   // Set when the spacebar pauses the media so the paused surface can stay
   // overlay-free. Any pointer interaction clears it again.
   const [suppressPausedControls, setSuppressPausedControls] = useState(false);
@@ -261,6 +271,7 @@ export function MediaPlayer({
     mediaRef,
     source,
     fileKey,
+    preferredQualityHeight,
     onReady,
     onSourceError,
     onPlaybackError,
@@ -443,6 +454,22 @@ export function MediaPlayer({
       setOpenMenu(null);
     },
     [engine, fileKey],
+  );
+
+  const handleQualityChange = useCallback(
+    (level: number | "auto") => {
+      engine.selectQuality(level);
+      if (level === "auto") {
+        setPreferredQualityHeight(null);
+        saveQualityPreference(workerId, "auto");
+        return;
+      }
+      const selected = engine.levels.find((candidate) => candidate.id === level);
+      const height = selected?.height && selected.height > 0 ? selected.height : null;
+      setPreferredQualityHeight(height);
+      saveQualityPreference(workerId, height ?? "auto");
+    },
+    [engine, workerId],
   );
 
   const cycleAudio = useCallback(() => {
@@ -1950,7 +1977,7 @@ export function MediaPlayer({
             levels={engine.levels}
             currentLevel={engine.currentLevel}
             autoLevel={engine.autoLevel}
-            onQualityChange={engine.selectQuality}
+            onQualityChange={handleQualityChange}
             loop={loop}
             onLoopChange={setLoop}
             autoplayNext={autoplayNext}

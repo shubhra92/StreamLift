@@ -169,6 +169,46 @@ export function saveSubtitleDelay(fileKey: string, delay: number): void {
   }
 }
 
+/**
+ * Quality preference for one worker, stored as the variant height (for
+ * example 1080) so it survives level-index changes between files.
+ */
+export type QualityPreference = number | "auto";
+
+function qualityPreferenceKey(workerId: string): string {
+  return `streamlift:player:quality:${workerId}`;
+}
+
+export function loadQualityPreference(
+  workerId: string,
+): QualityPreference | undefined {
+  if (typeof window === "undefined" || !workerId) return undefined;
+  try {
+    const raw = window.localStorage.getItem(qualityPreferenceKey(workerId));
+    if (raw === null) return undefined;
+    if (raw === "auto") return "auto";
+    const value = Number(raw);
+    return Number.isInteger(value) && value > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function saveQualityPreference(
+  workerId: string,
+  preference: QualityPreference,
+): void {
+  if (typeof window === "undefined" || !workerId) return;
+  try {
+    window.localStorage.setItem(
+      qualityPreferenceKey(workerId),
+      String(preference),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
 function audioPreferenceKey(fileKey: string): string {
   return `streamlift:player:audio:${fileKey}`;
 }
