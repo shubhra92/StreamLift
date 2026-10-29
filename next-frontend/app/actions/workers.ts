@@ -14,7 +14,7 @@ import {
   serialiseTunnelConfig,
   getPinggyToken,
   getZrokToken,
-  getTunnlGgSshKeyPath,
+  normaliseTunnelProvider,
 } from "../lib/tunnelConfig";
 
 const ONLINE_THRESHOLD_MS = 20_000;
@@ -27,8 +27,6 @@ export interface WorkerTunnelInput {
   pinggyToken?:         string;
   /** zrok account token — required when provider is 'zrok' */
   zrokToken?:           string;
-  /** tunnl.gg SSH key path on the worker machine — optional, enables stable URL */
-  tunnlggSshKeyPath?:   string;
 }
 
 export interface CreateWorkerData extends WorkerTunnelInput {
@@ -65,12 +63,6 @@ function buildTunnelConfig(
     next.pinggy = { token: input.pinggyToken.trim() };
 
   if (!next.serveo) next.serveo = {};
-
-  // tunnlgg: only update if explicitly passed (even empty string = clear the key path)
-  if (input.tunnlggSshKeyPath !== undefined)
-    next.tunnlgg = { sshKeyPath: input.tunnlggSshKeyPath.trim() || undefined };
-  else if (!next.tunnlgg)
-    next.tunnlgg = {};
 
   if (input.zrokToken?.trim())
     next.zrok = { token: input.zrokToken.trim() };
@@ -196,16 +188,15 @@ export async function updateWorker(
 
   const encryptedTunnelConfig = buildTunnelConfig(
     {
-      activeTunnelProvider: data.activeTunnelProvider ?? (worker.activeTunnelProvider as TunnelProvider) ?? "pinggy",
+      activeTunnelProvider: data.activeTunnelProvider ?? normaliseTunnelProvider(worker.activeTunnelProvider),
       pinggyToken:          data.pinggyToken,
       zrokToken:            data.zrokToken,
-      tunnlggSshKeyPath:    data.tunnlggSshKeyPath,
     },
     existingCfg,
   );
 
   const updates: Record<string, unknown> = {
-    activeTunnelProvider: data.activeTunnelProvider ?? worker.activeTunnelProvider,
+    activeTunnelProvider: data.activeTunnelProvider ?? normaliseTunnelProvider(worker.activeTunnelProvider),
     tunnelConfig:         encryptedTunnelConfig,
     updatedAt:            new Date(),
   };

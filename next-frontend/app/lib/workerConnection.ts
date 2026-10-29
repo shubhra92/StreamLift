@@ -1,9 +1,8 @@
 /**
  * Client-side helper for worker API calls.
  *
- * `tunnelUrl` is normally the worker's HTTPS tunnel, but for tunnl.gg free
- * tunnels the backend returns a same-origin proxy base instead (see
- * `requiresSameOriginProxy`) so the browser never sends a CORS preflight.
+ * `tunnelUrl` is always the worker's direct HTTPS tunnel. Every provider is
+ * called directly; no worker traffic is proxied through Next.js.
  *
  * Handles:
  * - Fetching + caching { tunnelUrl, sessionToken } per worker
@@ -780,14 +779,12 @@ export interface WorkerPlaybackUrls {
 }
 
 /**
- * Build playback URLs from the cached worker base — the direct tunnel, or the
- * same-origin proxy for tunnl.gg (whose free tier rejects browser preflights).
+ * Build playback URLs from the cached worker base — the direct tunnel.
  *
  * The app server only hands the browser a base URL and a ticket; media bytes
- * flow browser→worker directly except on tunnl.gg, where they pass through
- * Next.js to avoid the provider's preflight redirect. Playback endpoints are
- * tokenless — the tunnel URL is the secret — so the download token is only
- * attached to the raw-file URL below.
+ * flow browser→worker directly. Playback endpoints are tokenless — the tunnel
+ * URL is the secret — so the download token is only attached to the raw-file
+ * URL below.
  */
 export async function getWorkerPlaybackUrls(
   workerId: string,
@@ -1407,8 +1404,7 @@ if (controller.signal.aborted) throw error; // real cancel
  * Open an SSE connection to the worker's /stream endpoint.
  * Returns an object with a .close() method.
  * Uses fetch rather than EventSource so tunnel screening-bypass headers can be
- * sent by the browser (direct providers) or injected by the same-origin proxy
- * (tunnl.gg). Automatically retries after transient errors.
+ * sent by the browser. Automatically retries after transient errors.
  */
 export async function openWorkerStream(
   workerId: string,
@@ -1553,12 +1549,7 @@ export async function openWorkerLocalFileInBrowser(
 
     // Read after callWorker in case it refreshed the cached worker session.
     const conn = await getConnection(workerId);
-    // A same-origin proxy base starts with "/" — navigate to it directly. For
-    // direct providers keep the existing HTTP hand-off that the worker's
-    // native-download endpoint was designed around.
-    browserTab.location.href = conn.tunnelUrl.startsWith("/")
-      ? new URL(`${conn.tunnelUrl}${data.startPath}`, window.location.origin).toString()
-      : `${"http"+conn.tunnelUrl.slice(5)}${data.startPath}`;
+    browserTab.location.href = `${"http"+conn.tunnelUrl.slice(5)}${data.startPath}`;
   } catch (error) {
     browserTab.close();
     throw error;

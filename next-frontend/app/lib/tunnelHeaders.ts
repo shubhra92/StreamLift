@@ -8,8 +8,6 @@
  *
  * Adding a new provider:
  *   Add one `host.endsWith(...)` branch in ``getTunnelBypassHeaders`` below.
- *   If the provider also redirects browser CORS preflights (so a bypass header
- *   cannot be sent), add it to ``requiresSameOriginProxy`` as well.
  *   Nothing else needs to change — the backend returns the headers to all clients
  *   (web frontend, sync-worker, Kotlin TV) dynamically.
  */
@@ -48,14 +46,6 @@ export function getTunnelBypassHeaders(
     return { "Bypass-Tunnel-Reminder": "true" };
   }
 
-  if (host.endsWith(".tunnl.gg")) {
-    // Free tunnl.gg tunnels redirect browser CORS preflights (OPTIONS) to
-    // their warning page, and a preflight cannot carry this header. The web
-    // client therefore uses the same-origin proxy (requiresSameOriginProxy
-    // below); non-browser callers can still call the tunnel directly.
-    return { "tunnl-skip-browser-warning": "1" };
-  }
-
   if (
     host.endsWith(".share.zrok.io") ||
     host.endsWith(".shares.zrok.io")
@@ -79,24 +69,4 @@ export function getTunnelBypassHeaders(
  */
 export function isTunnelInterstitialUrl(url: string): boolean {
   return Object.keys(getTunnelBypassHeaders(url)).length > 0;
-}
-
-/**
- * Returns true when the web client must route worker traffic through the
- * same-origin Next.js proxy instead of calling the tunnel directly.
- *
- * Free tunnl.gg tunnels redirect every browser-user-agent OPTIONS request to
- * their warning page before the worker's CORS layer sees it. Browsers cannot
- * attach ``tunnl-skip-browser-warning`` to a preflight, so the only free-tier
- * fix is to proxy the request server-side (see
- * ``app/api/worker/[workerId]/proxy/[...path]/route.ts``). tunnl.gg Pro's
- * ``cors=*`` option answers preflights at the edge and removes the need for
- * this proxy.
- */
-export function requiresSameOriginProxy(tunnelUrl: string): boolean {
-  try {
-    return new URL(tunnelUrl).hostname.toLowerCase().endsWith(".tunnl.gg");
-  } catch {
-    return false;
-  }
 }

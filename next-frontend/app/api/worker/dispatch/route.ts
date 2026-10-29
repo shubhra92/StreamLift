@@ -12,10 +12,7 @@ import { fileDownloads, workers } from "@/app/db/schema";
 import { and, eq, inArray, asc } from "drizzle-orm";
 import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
 import { isSessionTokenExpired, rotateSessionToken } from "@/app/lib/sessionToken";
-import {
-  getTunnelBypassHeaders,
-  requiresSameOriginProxy,
-} from "@/app/lib/tunnelHeaders";
+import { getTunnelBypassHeaders } from "@/app/lib/tunnelHeaders";
 
 export const dynamic = "force-dynamic";
 
@@ -190,10 +187,7 @@ export async function POST(req: NextRequest) {
       // the same download) is prevented on the worker side by its alreadyRunning
       // guard and in-flight id dedupe.
       //
-      // tunnl.gg free tunnels redirect browser preflights, so the SharedWorker
-      // is pointed at the same-origin proxy; every other provider stays direct.
-      const useProxy = requiresSameOriginProxy(worker.tunnelUrl);
-
+      // Every provider is called directly by the SharedWorker.
       return NextResponse.json({
         action:      "trigger",
         download: {
@@ -206,9 +200,9 @@ export async function POST(req: NextRequest) {
           workerId,
         },
         destination:   "worker",
-        tunnelUrl:     useProxy ? `/api/worker/${workerId}/proxy` : worker.tunnelUrl,
+        tunnelUrl:     worker.tunnelUrl,
         sessionToken,
-        tunnelHeaders: useProxy ? {} : getTunnelBypassHeaders(worker.tunnelUrl),
+        tunnelHeaders: getTunnelBypassHeaders(worker.tunnelUrl),
       });
     }
   }

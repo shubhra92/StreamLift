@@ -41,8 +41,8 @@ export const workers = pgTable('workers', {
   // ── v2: direct connection fields ─────────────────────────────────────────
   tunnelUrl: text('tunnel_url'),                         // current public tunnel URL
   // ── v3: multi-provider tunnel config ─────────────────────────────────────
-  activeTunnelProvider: text('active_tunnel_provider').default('pinggy'), // 'pinggy' | 'serveo' | 'tunnlgg' | 'zrok'
-  tunnelConfig: text('tunnel_config'),                   // AES-256-GCM encrypted JSON: { pinggy?, serveo?, tunnlgg?, zrok? }
+  activeTunnelProvider: text('active_tunnel_provider').default('pinggy'), // 'pinggy' | 'serveo' | 'zrok'
+  tunnelConfig: text('tunnel_config'),                   // AES-256-GCM encrypted JSON: { pinggy?, serveo?, zrok? }
   lastHeartbeat: timestamp('last_heartbeat'),            // updated every 8s by worker
   ipAddress: text('ip_address'),                         // worker's public IP (set on register)
   countryCode: text('country_code'),                     // ISO 3166-1 alpha-2 country for the current public IP

@@ -8,8 +8,7 @@ import {
   parseTunnelConfig,
   getPinggyToken,
   getZrokToken,
-  getTunnlGgSshKeyPath,
-  type TunnelProvider,
+  normaliseTunnelProvider,
 } from "@/app/lib/tunnelConfig";
 
 export const dynamic = "force-dynamic";
@@ -48,22 +47,20 @@ export async function GET(req: NextRequest) {
   }
 
   // ── Resolve tunnel credentials ────────────────────────────────────────────
-  const provider: TunnelProvider =
-    (worker.activeTunnelProvider as TunnelProvider | null) ?? "pinggy";
+  // Stale rows that reference a removed provider fall back to serveo.
+  const provider = normaliseTunnelProvider(worker.activeTunnelProvider);
 
   let pinggyToken: string | null = null;
   let zrokToken: string | null = null;
-  let tunnlggSshKeyPath: string | null = null;
   let restartNonce: string | null = null;
 
   if (worker.tunnelConfig) {
     try {
       const raw = decryptCredentials(worker.tunnelConfig);
       const cfg = parseTunnelConfig(raw);
-      pinggyToken       = getPinggyToken(cfg) || null;
-      zrokToken         = getZrokToken(cfg) || null;
-      tunnlggSshKeyPath = getTunnlGgSshKeyPath(cfg) || null;
-      restartNonce      = cfg.restartNonce ?? null;
+      pinggyToken  = getPinggyToken(cfg) || null;
+      zrokToken    = getZrokToken(cfg) || null;
+      restartNonce = cfg.restartNonce ?? null;
     } catch {
       // decryption failed — credentials will be null
     }
@@ -88,7 +85,6 @@ export async function GET(req: NextRequest) {
       tunnelProvider:       provider,
       pinggyToken,
       zrokToken,
-      tunnlggSshKeyPath,
       tunnelRestartNonce: restartNonce,
       megaSession,
     },

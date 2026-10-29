@@ -9,7 +9,6 @@ export interface CreateWorkerData {
   activeTunnelProvider: TunnelProvider;
   pinggyToken?:         string;
   zrokToken?:           string;
-  tunnlggSshKeyPath?:   string;
   megaEmail?:           string;
   megaSession?:         string;
 }
@@ -21,7 +20,6 @@ export interface UpdateWorkerData {
   activeTunnelProvider?: TunnelProvider;
   pinggyToken?:          string;
   zrokToken?:            string;
-  tunnlggSshKeyPath?:    string;
   megaEmail?:            string;
   megaSession?:          string;
 }

@@ -9,7 +9,6 @@
  *   {
  *     pinggy?:  { token: string },
  *     serveo?:  {},
- *     tunnlgg?: { sshKeyPath?: string },   // path on the worker machine, NOT the key itself
  *     zrok?:    { token: string },
  *   }
  *
@@ -20,18 +19,19 @@
  *   Nothing else needs to change.
  */
 
-export const TUNNEL_PROVIDERS = ["pinggy", "serveo", "tunnlgg", "zrok"] as const;
+export const TUNNEL_PROVIDERS = ["pinggy", "serveo", "zrok"] as const;
 export type TunnelProvider = (typeof TUNNEL_PROVIDERS)[number];
+
+/** Used when a stored provider is no longer supported (e.g. a removed provider). */
+const FALLBACK_TUNNEL_PROVIDER: TunnelProvider = "serveo";
 
 export interface PinggyConfig  { token: string }
 export interface ServeoConfig  {}
-export interface TunnlGgConfig { sshKeyPath?: string }  // optional stable-URL key path
 export interface ZrokConfig    { token: string }
 
 export interface TunnelConfigMap {
   pinggy?:  PinggyConfig;
   serveo?:  ServeoConfig;
-  tunnlgg?: TunnlGgConfig;
   zrok?:    ZrokConfig;
   /**
    * Monotonic signal written when the user clicks "Restart tunnel".
@@ -67,8 +67,14 @@ export function getZrokToken(cfg: TunnelConfigMap): string {
   return cfg.zrok?.token ?? "";
 }
 
-export function getTunnlGgSshKeyPath(cfg: TunnelConfigMap): string {
-  return cfg.tunnlgg?.sshKeyPath ?? "";
+/**
+ * Coerce a stored provider value into a supported provider. Stale rows that
+ * still reference a removed provider fall back to serveo (no token required).
+ */
+export function normaliseTunnelProvider(value: unknown): TunnelProvider {
+  return (TUNNEL_PROVIDERS as readonly string[]).includes(value as string)
+    ? (value as TunnelProvider)
+    : FALLBACK_TUNNEL_PROVIDER;
 }
 
 // ── Provider display metadata (used by UI) ───────────────────────────────────
@@ -82,11 +88,6 @@ export interface TunnelProviderMeta {
   tokenHint?:       string;
   tokenPlaceholder?: string;
   docsUrl?:         string;
-  /** Secondary optional credential (e.g. SSH key path for tunnl.gg) */
-  hasOptionalField?:      boolean;
-  optionalFieldLabel?:    string;
-  optionalFieldHint?:     string;
-  optionalFieldPlaceholder?: string;
 }
 
 export const TUNNEL_PROVIDER_META: Record<TunnelProvider, TunnelProviderMeta> = {
@@ -103,15 +104,6 @@ export const TUNNEL_PROVIDER_META: Record<TunnelProvider, TunnelProviderMeta> = 
     label:       "Serveo",
     description: "Free SSH tunnel via serveo.net — no account or token needed. HTTPS only. Uses SSH port 443.",
     needsToken:  false,
-  },
-  tunnlgg: {
-    label:       "tunnl.gg",
-    description: "Free SSH tunnel via tunnl.gg — no account needed for a random URL. Provide an SSH key path for a stable URL that stays the same on reconnect. HTTPS only. Uses SSH port 22.",
-    needsToken:  false,
-    hasOptionalField:       true,
-    optionalFieldLabel:     "SSH key path (optional — for stable URL)",
-    optionalFieldHint:      "Leave blank for a random URL each restart. Enter the path to your SSH key for a stable URL.",
-    optionalFieldPlaceholder: "e.g. ~/.ssh/id_ed25519",
   },
   zrok: {
     label:       "zrok",

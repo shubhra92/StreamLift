@@ -27,8 +27,6 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
   const [tunnelProvider, setTunnelProvider]     = useState<TunnelProvider>("pinggy");
   // Primary token (Pinggy token / zrok token)
   const [tokenValue, setTokenValue]             = useState("");
-  // Optional secondary field (tunnl.gg SSH key path)
-  const [optionalValue, setOptionalValue]       = useState("");
   const [megaEmail, setMegaEmail]               = useState("");
   const [megaPassword, setMegaPassword]         = useState("");
   const [megaSession, setMegaSession]           = useState<object | null>(null);
@@ -83,7 +81,6 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
       activeTunnelProvider: tunnelProvider,
       pinggyToken:          tunnelProvider === "pinggy"  ? tokenValue.trim()    : undefined,
       zrokToken:            tunnelProvider === "zrok"    ? tokenValue.trim()    : undefined,
-      tunnlggSshKeyPath:    tunnelProvider === "tunnlgg" ? optionalValue.trim() : undefined,
     };
 
     if (downloadLocation === "mega" && megaSession) {
@@ -100,7 +97,6 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
     setComputeType("medium");
     setTunnelProvider("pinggy");
     setTokenValue("");
-    setOptionalValue("");
     setMegaEmail("");
     setMegaPassword("");
     setMegaSession(null);
@@ -111,7 +107,6 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
   const handleProviderChange = (p: TunnelProvider) => {
     setTunnelProvider(p);
     setTokenValue("");
-    setOptionalValue("");
     setErrors((prev) => ({ ...prev, token: "" }));
   };
 
@@ -229,33 +224,6 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
                   {errors.token && (
                     <p className="text-xs text-destructive mt-1">{errors.token}</p>
                   )}
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Optional secondary field (tunnl.gg SSH key path) */}
-            <AnimatePresence>
-              {meta.hasOptionalField && (
-                <motion.div
-                  key={`optional-${tunnelProvider}`}
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="overflow-hidden"
-                >
-                  <label className="text-xs text-muted-foreground mb-1 block">
-                    {meta.optionalFieldLabel}
-                  </label>
-                  <input
-                    type="text"
-                    placeholder={meta.optionalFieldPlaceholder}
-                    value={optionalValue}
-                    onChange={(e) => setOptionalValue(e.target.value)}
-                    className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring font-mono text-sm"
-                  />
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {meta.optionalFieldHint}
-                  </p>
                 </motion.div>
               )}
             </AnimatePresence>

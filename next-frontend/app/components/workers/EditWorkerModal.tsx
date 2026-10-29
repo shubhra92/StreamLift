@@ -17,6 +17,7 @@ import { megaLogin } from "@/app/lib/megaLogin";
 import {
   TUNNEL_PROVIDERS,
   TUNNEL_PROVIDER_META,
+  normaliseTunnelProvider,
   type TunnelProvider,
 } from "@/app/lib/tunnelConfig";
 
@@ -33,8 +34,6 @@ export function EditWorkerModal({
   const [tunnelProvider, setTunnelProvider]     = useState<TunnelProvider>("pinggy");
   // Primary token — blank = keep existing
   const [tokenValue, setTokenValue]             = useState("");
-  // Optional secondary field (e.g. tunnl.gg SSH key path)
-  const [optionalValue, setOptionalValue]       = useState("");
   const [megaEmail, setMegaEmail]               = useState("");
   const [megaPassword, setMegaPassword]         = useState("");
   const [megaSession, setMegaSession]           = useState<object | null>(null);
@@ -47,10 +46,9 @@ export function EditWorkerModal({
     setName(worker.name ?? "");
     setDownloadLocation((worker.downloadLocation as "local" | "mega") ?? "local");
     setComputeType((worker.computeType as "low" | "medium" | "high") ?? "medium");
-    setTunnelProvider((worker.activeTunnelProvider as TunnelProvider | null) ?? "pinggy");
+    setTunnelProvider(normaliseTunnelProvider(worker.activeTunnelProvider));
     // Credentials are never sent back to the client — leave blank to keep existing
     setTokenValue("");
-    setOptionalValue("");
     setMegaEmail(worker.megaEmail ?? "");
     setMegaPassword("");
     setMegaSession(null);
@@ -108,8 +106,6 @@ export function EditWorkerModal({
       if (tunnelProvider === "pinggy") update.pinggyToken = tokenValue.trim();
       if (tunnelProvider === "zrok")   update.zrokToken   = tokenValue.trim();
     }
-    if (tunnelProvider === "tunnlgg")
-      update.tunnlggSshKeyPath = optionalValue.trim();
 
     if (downloadLocation === "mega") {
       update.megaEmail = megaEmail.trim().toLowerCase();
@@ -122,7 +118,6 @@ export function EditWorkerModal({
   const handleProviderChange = (p: TunnelProvider) => {
     setTunnelProvider(p);
     setTokenValue("");
-    setOptionalValue("");
     setErrors((prev) => ({ ...prev, token: "" }));
   };
 
@@ -261,33 +256,6 @@ export function EditWorkerModal({
                   )}
                   <p className="text-xs text-muted-foreground mt-1">
                     Leave blank to keep the current token.
-                  </p>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Optional secondary field (tunnl.gg SSH key path) */}
-            <AnimatePresence>
-              {meta.hasOptionalField && (
-                <motion.div
-                  key={`optional-${tunnelProvider}`}
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="overflow-hidden"
-                >
-                  <label className="text-xs text-muted-foreground mb-1 block">
-                    {meta.optionalFieldLabel}
-                  </label>
-                  <input
-                    type="text"
-                    placeholder={meta.optionalFieldPlaceholder}
-                    value={optionalValue}
-                    onChange={(e) => setOptionalValue(e.target.value)}
-                    className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring font-mono text-sm"
-                  />
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {meta.optionalFieldHint}
                   </p>
                 </motion.div>
               )}
