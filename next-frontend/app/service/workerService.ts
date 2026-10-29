@@ -53,6 +53,17 @@ export default function useWorkerService() {
     }
   };
 
+  const restartTunnel = async (workerId: string) => {
+    try {
+      const res = await fetch(`/api/worker/${workerId}/restart-tunnel`, {
+        method:  "POST",
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, message: err?.message ?? "Network error" };
+    }
+  };
+
   const getWorkers = async () => {
     try {
       const res = await fetch("/api/worker/list");
@@ -92,5 +103,5 @@ export default function useWorkerService() {
     }
   };
 
-  return { createWorker, updateWorker, getWorkers, getWorkerById, deleteWorker, getWorkerScript };
+  return { createWorker, updateWorker, getWorkers, getWorkerById, deleteWorker, getWorkerScript, restartTunnel };
 }

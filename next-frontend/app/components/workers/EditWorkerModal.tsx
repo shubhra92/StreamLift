@@ -156,7 +156,11 @@ export function EditWorkerModal({
               <div className="flex items-start gap-2.5 rounded-lg border border-amber-300/60 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5">
                 <span className="text-amber-500 mt-0.5 shrink-0">⚠</span>
                 <p className="text-xs text-amber-800 dark:text-amber-200 leading-relaxed">
-                  This worker is currently running. Changes will take effect after you restart it in your environment.
+                  This worker is currently running. Tunnel provider/token changes are saved now
+                  but take effect only after you click <span className="font-semibold">Restart
+                  tunnel</span> in the worker details panel — that reconnects only the tunnel and
+                  keeps the worker running. Compute, download location and Mega changes still
+                  require a full worker restart.
                 </p>
               </div>
             )}
@@ -216,6 +220,10 @@ export function EditWorkerModal({
                 ))}
               </select>
               <p className="text-xs text-muted-foreground mt-1">{meta.description}</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                After saving, use <span className="font-medium">Restart tunnel</span> in the
+                worker details to apply this without restarting the worker.
+              </p>
             </div>
 
             {/* Primary token field */}

@@ -54,6 +54,7 @@ export async function GET(req: NextRequest) {
   let pinggyToken: string | null = null;
   let zrokToken: string | null = null;
   let tunnlggSshKeyPath: string | null = null;
+  let restartNonce: string | null = null;
 
   if (worker.tunnelConfig) {
     try {
@@ -62,6 +63,7 @@ export async function GET(req: NextRequest) {
       pinggyToken       = getPinggyToken(cfg) || null;
       zrokToken         = getZrokToken(cfg) || null;
       tunnlggSshKeyPath = getTunnlGgSshKeyPath(cfg) || null;
+      restartNonce      = cfg.restartNonce ?? null;
     } catch {
       // decryption failed — credentials will be null
     }
@@ -87,6 +89,7 @@ export async function GET(req: NextRequest) {
       pinggyToken,
       zrokToken,
       tunnlggSshKeyPath,
+      tunnelRestartNonce: restartNonce,
       megaSession,
     },
   });

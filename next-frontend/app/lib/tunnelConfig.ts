@@ -33,6 +33,13 @@ export interface TunnelConfigMap {
   serveo?:  ServeoConfig;
   tunnlgg?: TunnlGgConfig;
   zrok?:    ZrokConfig;
+  /**
+   * Monotonic signal written when the user clicks "Restart tunnel".
+   * The worker compares this value on each heartbeat and hot-swaps its
+   * tunnel process when it changes. It lives inside the encrypted config
+   * blob so no schema migration is required.
+   */
+  restartNonce?: string;
 }
 
 // ── Serialisation ─────────────────────────────────────────────────────────────

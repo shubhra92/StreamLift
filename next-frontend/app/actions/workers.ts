@@ -226,6 +226,43 @@ export async function updateWorker(
   return { success: true, data: updated };
 }
 
+/**
+ * Ask a running worker to restart only its tunnel process.
+ *
+ * The request is persisted inside the encrypted tunnel config (no schema
+ * change). The worker sees the new nonce on its next heartbeat, fetches the
+ * latest tunnel config and swaps the tunnel without restarting Python.
+ */
+export async function requestTunnelRestart(
+  workerId: string,
+): Promise<{ success: boolean; message?: string }> {
+  const guestId = await getGuestId();
+  if (!guestId) return { success: false, message: "Unauthorized" };
+
+  const [worker] = await db
+    .select({ id: workers.id, tunnelConfig: workers.tunnelConfig })
+    .from(workers)
+    .where(and(eq(workers.id, workerId), eq(workers.guestId, guestId)))
+    .limit(1);
+  if (!worker) return { success: false, message: "Worker not found" };
+
+  const cfg: TunnelConfigMap = worker.tunnelConfig
+    ? parseTunnelConfig(decryptSafe(worker.tunnelConfig))
+    : {};
+
+  await db
+    .update(workers)
+    .set({
+      tunnelConfig: encryptCredentials(
+        serialiseTunnelConfig({ ...cfg, restartNonce: String(Date.now()) }),
+      ),
+      updatedAt: new Date(),
+    })
+    .where(eq(workers.id, workerId));
+
+  return { success: true };
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function decryptSafe(encrypted: string): string {

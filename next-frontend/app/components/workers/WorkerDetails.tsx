@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { X, Copy, Check, AlertTriangle, Wifi, WifiOff, RefreshCw } from "lucide-react";
+import { X, Copy, Check, AlertTriangle, Wifi, WifiOff, RefreshCw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -19,6 +19,7 @@ import type { WorkerDetailsProps } from "./types";
 import { ReLinkMegaDialog } from "./ReLinkMegaDialog";
 import type { WorkerLog } from "@/app/lib/workerStore";
 import { openWorkerStream, invalidateWorkerConnection } from "@/app/lib/workerConnection";
+import useWorkerService from "@/app/service/workerService";
 
 // ── Progress log parser ───────────────────────────────────────────────────────
 const PROGRESS_RE = /📊\s+([\d.]+)%\s*\|(.+)/;
@@ -140,6 +141,38 @@ export function WorkerDetails({ worker, status, onClose, onRelinked }: WorkerDet
   const [liveData, setLiveData] = useState<LiveData>({});
   const [streamError, setStreamError] = useState<string | null>(null);
   const [relinkOpen, setRelinkOpen] = useState(false);
+  const [restartingTunnel, setRestartingTunnel] = useState(false);
+  const [restartMessage, setRestartMessage] = useState<string | null>(null);
+  const [restartError, setRestartError] = useState<string | null>(null);
+  const workerService = useWorkerService();
+
+  const handleRestartTunnel = async () => {
+    if (!worker) return;
+    const confirmed = window.confirm(
+      "Restart only this worker's tunnel?\n\n" +
+      "Active downloads or playback through the current tunnel will disconnect briefly " +
+      "and reconnect automatically through the new URL.",
+    );
+    if (!confirmed) return;
+
+    setRestartingTunnel(true);
+    setRestartMessage(null);
+    setRestartError(null);
+    const result = await workerService.restartTunnel(worker.id);
+    if (result.success) {
+      // Drop the cached tunnel URL so the next request fetches the new one.
+      invalidateWorkerConnection(worker.id);
+      const isOnline = status?.online ?? worker.online;
+      setRestartMessage(
+        isOnline
+          ? "Restart requested — the worker will swap its tunnel on its next heartbeat (usually within a minute)."
+          : "Restart queued — it will apply when the worker reconnects.",
+      );
+    } else {
+      setRestartError(result.message ?? "Failed to request a tunnel restart");
+    }
+    setRestartingTunnel(false);
+  };
 
   const online   = worker ? (status?.online ?? worker.online) : false;
   const version  = worker ? (status?.version ?? "1.0.0") : "1.0.0";
@@ -228,9 +261,26 @@ export function WorkerDetails({ worker, status, onClose, onRelinked }: WorkerDet
                 </span>
               )}
             </div>
-            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
-              <X className="h-3 w-3" />
-            </Button>
+            <div className="flex items-center gap-1 shrink-0">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs cursor-pointer"
+                disabled={restartingTunnel}
+                onClick={handleRestartTunnel}
+                title="Restart only the tunnel, keeping the worker process running"
+              >
+                {restartingTunnel ? (
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3 w-3 mr-1" />
+                )}
+                Restart tunnel
+              </Button>
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
+                <X className="h-3 w-3" />
+              </Button>
+            </div>
           </div>
 
           {/* Scrollable body */}
@@ -240,6 +290,18 @@ export function WorkerDetails({ worker, status, onClose, onRelinked }: WorkerDet
             {streamError && (
               <div className="text-xs text-yellow-600 bg-yellow-50 dark:bg-yellow-900/20 rounded px-3 py-2">
                 ⚠ {streamError}
+              </div>
+            )}
+
+            {restartMessage && (
+              <div className="text-xs text-blue-700 bg-blue-50 dark:bg-blue-900/20 rounded px-3 py-2">
+                {restartMessage}
+              </div>
+            )}
+
+            {restartError && (
+              <div className="text-xs text-destructive bg-destructive/10 rounded px-3 py-2">
+                {restartError}
               </div>
             )}
 
