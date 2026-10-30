@@ -21,6 +21,12 @@ export interface EngineLevel {
   bitrate: number;
 }
 
+export interface EngineError {
+  detail: string;
+  url: string | null;
+  at: number;
+}
+
 interface VideoBufferedRange {
   start: number;
   end: number;
@@ -162,6 +168,14 @@ interface MediaEngine {
   bandwidthEstimate: number | null;
   engineLabel: "hls.js" | "native" | "direct" | null;
   videoBufferAhead: () => number;
+  /** Last hls.js error, including non-fatal ones a freeze is made of. */
+  lastError: EngineError | null;
+  /**
+   * Move the playhead past the fragment at the current position. Used when the
+   * stall watchdog keeps re-entering at the same spot: that fragment is not
+   * decodable, and a seek is the only thing that gets the decoder going again.
+   */
+  skipStalledFragment: () => boolean;
 }
 
 interface NativeAudioTrackLike {
@@ -224,6 +238,7 @@ export function useMediaEngine({
   const [autoLevel, setAutoLevel] = useState(true);
   const [bandwidthEstimate, setBandwidthEstimate] = useState<number | null>(null);
   const [engineLabel, setEngineLabel] = useState<MediaEngine["engineLabel"]>(null);
+  const [lastError, setLastError] = useState<EngineError | null>(null);
   const nativeTracksRef = useRef<EngineAudioTrack[]>([]);
   const videoBufferedRangesRef = useRef<VideoBufferedRange[]>([]);
   const usingHlsJsRef = useRef(false);
@@ -285,6 +300,52 @@ export function useMediaEngine({
     }
   }, []);
 
+  const skipStalledFragment = useCallback(() => {
+    const media = mediaRef.current;
+    if (!media) return false;
+
+    // Prefer the next HLS fragment boundary: the playlist already tells us
+    // exactly where the damaged data ends, so one skip is enough instead of a
+    // blind jump that might land inside the same fragment.
+    const hls = hlsRef.current;
+    if (hls) {
+      const level = hls.levels[hls.loadLevel] ?? hls.levels[hls.currentLevel];
+      const fragments = level?.details?.fragments;
+      if (fragments && fragments.length > 0) {
+        const time = media.currentTime;
+        const current =
+          fragments.find(
+            (frag) => time >= frag.start - 0.01 && time < frag.start + frag.duration,
+          ) ?? fragments.find((frag) => frag.start > time);
+        if (current) {
+          const limit =
+            Number.isFinite(media.duration) && media.duration > 0
+              ? media.duration - 0.1
+              : Number.POSITIVE_INFINITY;
+          try {
+            media.currentTime = Math.min(current.start + current.duration + 0.05, limit);
+            return true;
+          } catch {
+            /* the element can be torn down between ticks */
+          }
+        }
+      }
+    }
+
+    // Progressive/direct playback has no fragment list; nudge forward and let
+    // the watchdog repeat if the damage is wider than a second.
+    try {
+      const limit =
+        Number.isFinite(media.duration) && media.duration > 0
+          ? media.duration - 0.1
+          : Number.POSITIVE_INFINITY;
+      media.currentTime = Math.min(media.currentTime + 1, limit);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [mediaRef]);
+
   useEffect(() => {
     if (!source || !fileKey) return;
     const media = mediaRef.current;
@@ -299,6 +360,7 @@ export function useMediaEngine({
     setAutoLevel(true);
     setBandwidthEstimate(null);
     setEngineLabel(null);
+    setLastError(null);
     nativeTracksRef.current = [];
     videoBufferedRangesRef.current = [];
     usingHlsJsRef.current = false;
@@ -395,6 +457,28 @@ export function useMediaEngine({
           fragLoadingRetryDelay: 1000,
           fragLoadingMaxRetryTimeout: 8000,
           manifestLoadingMaxRetry: 4,
+          // hls.js refuses to retry 4xx responses. The worker answers 404
+          // while a segment is still being encoded (its request wait expired),
+          // which would make hls.js abandon the level on the first slow
+          // request. Retry those a few times instead.
+          fragLoadPolicy: {
+            default: {
+              maxTimeToFirstByteMs: 30000,
+              maxLoadTimeMs: 60000,
+              timeoutRetry: {
+                maxNumRetry: 6,
+                retryDelayMs: 1000,
+                maxRetryDelayMs: 8000,
+              },
+              errorRetry: {
+                maxNumRetry: 6,
+                retryDelayMs: 1000,
+                maxRetryDelayMs: 8000,
+                shouldRetry: (_config, retryCount, isTimeout, response, retry) =>
+                  retry || (response?.code === 404 && retryCount < 4),
+              },
+            },
+          },
           startPosition: 0,
           enableWorker: true,
           // Pinggy Free and Serveo free tier both screen browser requests
@@ -540,8 +624,20 @@ export function useMediaEngine({
         });
 
         hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (disposed || !data?.fatal) return;
+          if (disposed || !data) return;
           const statusCode = (data as { response?: { code?: number } }).response?.code;
+          const detail = statusCode
+            ? `${data.details} (HTTP ${statusCode})`
+            : String(data.details);
+          const url = (data as { url?: string }).url ?? null;
+          // Non-fatal errors are the only trace of a fragment the browser can
+          // download but not use (a parse/append failure, a stalled buffer).
+          // Keeping the latest one turns a silent freeze into a visible cause.
+          setLastError({ detail, url, at: Date.now() });
+          if (!data.fatal) {
+            console.warn("[playback] hls.js error", detail, url ?? "");
+            return;
+          }
           onPlaybackErrorRef.current(
             statusCode === 503
               ? "The worker could not prepare this file for playback."
@@ -598,5 +694,7 @@ export function useMediaEngine({
     bandwidthEstimate,
     engineLabel,
     videoBufferAhead,
+    lastError,
+    skipStalledFragment,
   };
 }

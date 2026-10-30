@@ -84,6 +84,7 @@ export interface PlayerStats {
   bandwidth: number | null;
   level: string | null;
   fps: number | null;
+  lastError: string | null;
 }
 
 export function audioLabel(track: WorkerAudioTrack, position: number): string {

@@ -221,6 +221,8 @@ export function MediaPlayer({
   const guardStartedAtRef = useRef(0);
   const guardStallCountRef = useRef(0);
   const guardLastStableAtRef = useRef(0);
+  const guardRepeatRef = useRef(0);
+  const guardFrameBaselineRef = useRef(0);
   const freezeCountRef = useRef(0);
   const lastFreezeMsRef = useRef(0);
 
@@ -679,6 +681,17 @@ export function MediaPlayer({
         return;
       }
 
+      // Count guards that re-enter without a single new frame. One short stall
+      // (a network hiccup) resolves on its own; a run of them means the
+      // fragment is buffered but not decodable, and the player must skip it.
+      const presented = readFrameQuality(video ?? media)?.totalVideoFrames ?? 0;
+      if (presented > guardFrameBaselineRef.current) {
+        guardRepeatRef.current = 0;
+      } else {
+        guardRepeatRef.current += 1;
+      }
+      guardFrameBaselineRef.current = presented;
+
       guardPausedRef.current = true;
       // Include the time since the last presented frame in the reported
       // freeze duration, not just the watchdog's reaction time.
@@ -714,6 +727,37 @@ export function MediaPlayer({
       ) {
         return;
       }
+
+      if (guardRepeatRef.current >= 2) {
+        // The guard has already paused and resumed once and still no frame
+        // arrives. The fragment is buffered (so the buffer check below would
+        // happily resume) but the decoder cannot produce a picture from it — a
+        // damaged or open-GOP segment. Do what a manual seek does: skip past
+        // it instead of cycling pause/play forever.
+        guardPausedRef.current = false;
+        guardWakeAtRef.current = 0;
+        guardRepeatRef.current = 0;
+        lastFreezeMsRef.current = Math.round(now - guardStartedAtRef.current);
+        lastVideoFrameAtRef.current = now;
+        const quality = readFrameQuality(video ?? media);
+        frameCountTotalRef.current = quality?.totalVideoFrames ?? 0;
+        guardFrameBaselineRef.current = frameCountTotalRef.current;
+        setWaiting(false);
+        if (engineRef.current.skipStalledFragment()) {
+          void media.play().catch(() => {
+            if (disposed) return;
+            guardPausedRef.current = true;
+            guardWakeAtRef.current = performance.now() + 1000;
+            setWaiting(true);
+          });
+        } else {
+          guardPausedRef.current = true;
+          guardWakeAtRef.current = now + VIDEO_GUARD_MAX_DELAY_MS;
+          setWaiting(true);
+        }
+        return;
+      }
+
       if (media.readyState < 2) return;
 
       const ahead = engineRef.current.videoBufferAhead();
@@ -725,6 +769,7 @@ export function MediaPlayer({
       lastVideoFrameAtRef.current = now;
       const quality = readFrameQuality(video ?? media);
       frameCountTotalRef.current = quality?.totalVideoFrames ?? 0;
+      guardFrameBaselineRef.current = frameCountTotalRef.current;
       armFrameCallback();
       void media.play().catch(() => {
         if (disposed) return;
@@ -827,6 +872,9 @@ export function MediaPlayer({
       lastVideoFrameAtRef.current = performance.now();
       const quality = readFrameQuality(video ?? media);
       frameCountTotalRef.current = quality?.totalVideoFrames ?? 0;
+      // A seek is a fresh decoder start: forget any stalled-fragment run.
+      guardRepeatRef.current = 0;
+      guardFrameBaselineRef.current = frameCountTotalRef.current;
       if (guardPausedRef.current) {
         // A seek is a deliberate user action; resume automatically once the
         // new position has a frame rather than leaving the player stuck on the
@@ -860,6 +908,10 @@ export function MediaPlayer({
       }
       const quality = readFrameQuality(video ?? media);
       frameCountTotalRef.current = quality?.totalVideoFrames ?? 0;
+      // Baseline for the "no new frame since the last guard" test. The repeat
+      // counter is deliberately NOT reset here: the watchdog resumes through
+      // this same event, and resetting it would hide a persistent stall.
+      guardFrameBaselineRef.current = frameCountTotalRef.current;
       lastVideoFrameAtRef.current = performance.now();
       armFrameCallback();
       setSuppressPausedControls(false);
@@ -878,6 +930,9 @@ export function MediaPlayer({
       setPlaying(false);
       setWaiting(false);
       guardWakeAtRef.current = 0;
+      // A viewer pause ends any stalled-fragment run.
+      guardRepeatRef.current = 0;
+      guardFrameBaselineRef.current = frameCountTotalRef.current;
       cancelFrameCallback();
       if (media.currentTime > 1 && !media.ended) {
         lastPositionRef.current = media.currentTime;
@@ -918,6 +973,8 @@ export function MediaPlayer({
       cancelFrameCallback();
       endedRef.current = true;
       lastPositionRef.current = 0;
+      guardRepeatRef.current = 0;
+      guardFrameBaselineRef.current = 0;
       setSuppressPausedControls(false);
       setPlaying(false);
       setWaiting(false);
@@ -1025,6 +1082,8 @@ export function MediaPlayer({
     guardStartedAtRef.current = 0;
     guardStallCountRef.current = 0;
     guardLastStableAtRef.current = 0;
+    guardRepeatRef.current = 0;
+    guardFrameBaselineRef.current = 0;
     lastVideoFrameAtRef.current = 0;
     frameCountTotalRef.current = 0;
     freezeCountRef.current = 0;
@@ -1189,6 +1248,13 @@ export function MediaPlayer({
         bandwidth: engine.bandwidthEstimate,
         level: label,
         fps: null,
+        lastError: engine.lastError
+          ? `${engine.lastError.detail}${
+              engine.lastError.url
+                ? ` · ${engine.lastError.url.split("/").pop() ?? ""}`
+                : ""
+            }`
+          : null,
       });
     };
     update();
@@ -1200,6 +1266,7 @@ export function MediaPlayer({
     engine.currentLevel,
     engine.engineLabel,
     engine.levels,
+    engine.lastError,
     engine.videoBufferAhead,
     statsOpen,
   ]);
@@ -1819,6 +1886,14 @@ export function MediaPlayer({
             )}
             <dt>Engine</dt>
             <dd className="text-right text-white/90">{engine.engineLabel ?? "—"}</dd>
+            {stats.lastError && (
+              <>
+                <dt className="col-span-2 mt-1 text-white/50">Last error</dt>
+                <dd className="col-span-2 break-words text-right text-amber-300/90">
+                  {stats.lastError}
+                </dd>
+              </>
+            )}
           </dl>
         </div>
       )}
