@@ -385,6 +385,140 @@ def test_failed_original_segment_is_transcoded_on_demand(media_env, monkeypatch)
     assert session.encoder_args
 
 
+def test_healthy_transcode_segment_passes_validation(media_env):
+    _add_media(media_env, "healthytx", "movie.mkv")
+    session = streaming._ensure_session(
+        "healthytx", 0, None, start=False, quality="1080"
+    )
+    assert session is not None
+    assert not session.copy_video
+
+    segment = os.path.join(session.output_dir, "seg_00002.ts")
+    with open(segment, "wb") as handle:
+        handle.write(b"healthy-segment")
+
+    valid, reason = streaming._validate_video_segment(session, 2, segment)
+    assert valid, reason
+
+
+def test_transcode_stub_segment_is_not_published(media_env, monkeypatch, tmp_path):
+    """A non-empty file with no video packets must never reach the playlist."""
+    _add_media(media_env, "stub1", "movie.mkv")
+    session = streaming._ensure_session(
+        "stub1", 0, None, start=False, quality="1080"
+    )
+    assert session is not None and not session.copy_video
+
+    bad_bin = tmp_path / "stubbin"
+    bad_bin.mkdir()
+    _write_executable(
+        bad_bin / "ffprobe",
+        "#!/usr/bin/env bash\nprintf '{\"packets\":[]}\\n'\n",
+    )
+    monkeypatch.setenv("PATH", f"{bad_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    segment = os.path.join(session.output_dir, "seg_00000.ts")
+    with open(segment, "wb") as handle:
+        handle.write(b"stub")
+    list_path = os.path.join(session.output_dir, "segments.csv")
+    with open(list_path, "w", encoding="utf-8") as handle:
+        handle.write("seg_00000.ts,0.0,6.0\n")
+
+    batch = streaming._Batch(
+        process=None, first_index=0, end_index=1, log_handle=None,
+        log_path="", started_at=0.0, last_segment_at=0.0,
+    )
+    streaming._consume_segment_list(session, batch, list_path, 0)
+
+    assert 0 not in session.completed
+    assert not os.path.isfile(segment)
+    assert session.segment_validation_failures[0] == 1
+
+
+def test_stub_segment_is_published_after_retry_limit(media_env, monkeypatch, tmp_path):
+    """Regeneration is bounded: never loop forever on a damaged source region."""
+    _add_media(media_env, "stub2", "movie.mkv")
+    session = streaming._ensure_session(
+        "stub2", 0, None, start=False, quality="1080"
+    )
+    assert session is not None and not session.copy_video
+
+    bad_bin = tmp_path / "stubbin2"
+    bad_bin.mkdir()
+    _write_executable(
+        bad_bin / "ffprobe",
+        "#!/usr/bin/env bash\nprintf '{\"packets\":[]}\\n'\n",
+    )
+    monkeypatch.setenv("PATH", f"{bad_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    segment = os.path.join(session.output_dir, "seg_00000.ts")
+    list_path = os.path.join(session.output_dir, "segments.csv")
+    with open(list_path, "w", encoding="utf-8") as handle:
+        handle.write("seg_00000.ts,0.0,6.0\n")
+    batch = streaming._Batch(
+        process=None, first_index=0, end_index=1, log_handle=None,
+        log_path="", started_at=0.0, last_segment_at=0.0,
+    )
+
+    for _ in range(streaming._SEGMENT_MAX_VALIDATION_ATTEMPTS):
+        with open(segment, "wb") as handle:
+            handle.write(b"stub")
+        streaming._consume_segment_list(session, batch, list_path, 0)
+
+    assert 0 in session.completed
+    assert os.path.isfile(segment)
+
+
+def test_copy_start_rejects_non_idr_keyframe(media_env, monkeypatch, tmp_path):
+    """Open-GOP I-frames decode to nothing in the browser; transcode instead."""
+    _add_media(media_env, "idr1", "movie-copy.mkv")
+    session = streaming._ensure_session(
+        "idr1", 0, None, start=False, quality="original"
+    )
+    assert session is not None and session.copy_video
+
+    bad_bin = tmp_path / "idrbin"
+    bad_bin.mkdir()
+    _write_executable(
+        bad_bin / "ffprobe",
+        "#!/usr/bin/env bash\n"
+        "printf '{\"frames\":[{\"key_frame\":0,\"pict_type\":\"I\"}]}\\n'\n",
+    )
+    monkeypatch.setenv("PATH", f"{bad_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    segment = os.path.join(session.output_dir, "seg_00000.ts")
+    with open(segment, "wb") as handle:
+        handle.write(b"open-gop")
+
+    valid, reason = streaming._validate_copy_start(segment)
+    assert valid is False
+    assert "non-IDR" in reason
+
+
+def test_copy_start_is_kept_when_probe_is_inconclusive(media_env, monkeypatch, tmp_path):
+    """No frame data must not turn into a needless transcode of every segment."""
+    _add_media(media_env, "idr2", "movie-copy.mkv")
+    session = streaming._ensure_session(
+        "idr2", 0, None, start=False, quality="original"
+    )
+    assert session is not None and session.copy_video
+
+    quiet_bin = tmp_path / "quietbin"
+    quiet_bin.mkdir()
+    _write_executable(
+        quiet_bin / "ffprobe",
+        "#!/usr/bin/env bash\nprintf '{\"streams\":[]}\\n'\n",
+    )
+    monkeypatch.setenv("PATH", f"{quiet_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    segment = os.path.join(session.output_dir, "seg_00000.ts")
+    with open(segment, "wb") as handle:
+        handle.write(b"maybe-idr")
+
+    valid, reason = streaming._validate_copy_start(segment)
+    assert valid, reason
+
+
 def test_audio_only_copy_file_is_served_as_audio(media_env, monkeypatch):
     monkeypatch.setattr(streaming, "_probe", lambda path: streaming.ProbeInfo(
         video_index=None, audio_index=0, video_codec=None,

@@ -88,12 +88,16 @@ _AUDIO_SEGMENT_RE = re.compile(r"^aud_(\d+)_(\d{5})\.ts$")
 # a 20ms segment is not worth its own transcode and can transcode to nothing.
 _MIN_TAIL_SECONDS = 1.0
 
-# Stream-copied original segments are cheap enough to verify before publishing.
-# The tolerance allows MPEG-TS rounding while still catching a segment that
-# starts at the wrong keyframe or has a hole in its video timeline.
-_COPY_VALIDATE_TIMEOUT = 10.0
-_COPY_START_TOLERANCE = 0.75
-_COPY_MAX_PTS_GAP = 1.0
+# Every produced video segment is verified before the playlist exposes it. The
+# tolerance allows MPEG-TS rounding while still catching a segment that starts
+# at the wrong keyframe or has a hole in its video timeline.
+_SEGMENT_VALIDATE_TIMEOUT = 10.0
+_SEGMENT_START_TOLERANCE = 0.75
+_SEGMENT_MAX_PTS_GAP = 1.0
+# A segment that fails validation is regenerated. After this many attempts the
+# worker publishes the last attempt anyway: an unplayable segment the client can
+# skip is better than an endless 404 loop.
+_SEGMENT_MAX_VALIDATION_ATTEMPTS = 3
 
 # Codecs that can be carried by MP4/MPEG-TS. Whether the *client* can decode
 # them is a separate question, answered by the capability string it sends.
@@ -323,6 +327,9 @@ class _Session:
     # regenerated with a one-off video transcode when a player asks for them.
     fallback_segments: set[int] = field(default_factory=set)
     copy_validation_failures: int = 0
+    # Per-segment validation attempts. Bounds regeneration of a segment the
+    # encoder keeps producing unplayable (a damaged source region).
+    segment_validation_failures: dict[int, int] = field(default_factory=dict)
     batch_failures: int = 0
     last_batch_failure: float = 0.0
     # Serialises "should I start/stop a batch" decisions. Reentrant because
@@ -1216,20 +1223,20 @@ def _segment_ok(session: _Session, index: int) -> bool:
         return False
 
 
-def _validate_copy_segment(
+def _validate_video_segment(
     session: _Session, index: int, path: str
 ) -> tuple[bool, str]:
-    """Check that a stream-copied segment really contains a usable video GOP.
+    """Check that a produced segment really contains a usable video GOP.
 
-    The copy path trusts the source keyframe index. If a source has a damaged
-    GOP, a bad edit, or timestamps that the segment muxer cuts badly, ffmpeg
-    still exits successfully and writes a tiny/frozen segment. Catch that
-    before marking the segment complete so the normal playlist never exposes
-    the bad file.
+    Applies to stream-copied *and* re-encoded segments. A batch that is killed
+    at the wrong moment, or a cut that lands badly, can leave a file that is
+    non-empty (so it is served with HTTP 200) but has no picture a browser can
+    decode. hls.js still reports the fragment as buffered, so the player waits
+    on it forever with a spinner. Catch it before the playlist exposes it.
 
     This reads packet headers only (no decode), and runs in the batch watcher.
     """
-    if not session.copy_video:
+    if not session.info.has_video:
         return True, ""
 
     ffprobe = shutil.which("ffprobe")
@@ -1256,7 +1263,7 @@ def _validate_copy_segment(
             cmd,
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            timeout=_COPY_VALIDATE_TIMEOUT,
+            timeout=_SEGMENT_VALIDATE_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         return False, "ffprobe timed out"
@@ -1272,16 +1279,11 @@ def _validate_copy_segment(
 
     packets = payload.get("packets") or []
     timed: list[tuple[float, str]] = []
-    video_index = session.info.video_index
+    # ffprobe was asked for v:0, so every packet here is video. Do not filter
+    # on the *source* stream index: the segment is a remux, and its video
+    # stream is 0 even when the source had audio first.
     for packet in packets:
         if not isinstance(packet, dict):
-            continue
-        packet_stream = packet.get("stream_index")
-        if (
-            video_index is not None
-            and packet_stream is not None
-            and packet_stream != video_index
-        ):
             continue
         raw = packet.get("pts_time")
         if raw in (None, "N/A"):
@@ -1302,7 +1304,7 @@ def _validate_copy_segment(
     if "K" not in first_flags:
         return False, "does not start with a keyframe"
 
-    tolerance = _COPY_START_TOLERANCE
+    tolerance = _SEGMENT_START_TOLERANCE
     if abs(first_time - expected_start) > tolerance:
         return False, (
             f"starts at {first_time:.3f}s, expected {expected_start:.3f}s"
@@ -1321,13 +1323,95 @@ def _validate_copy_segment(
         max_gap = max(max_gap, current[0] - previous[0])
     frame_rate = float(session.info.frame_rate or 0.0)
     allowed_gap = max(
-        _COPY_MAX_PTS_GAP,
+        _SEGMENT_MAX_PTS_GAP,
         4.0 / frame_rate if frame_rate > 0 else 0.0,
     )
     if max_gap > allowed_gap:
         return False, f"has a {max_gap:.3f}s timestamp gap"
 
     return True, ""
+
+
+def _validate_copy_start(path: str) -> tuple[bool, str]:
+    """Reject a copy segment that starts on an open-GOP I-frame, not an IDR.
+
+    The segment muxer cuts on the source's "K" packet flag. In an open GOP that
+    packet can be an I-frame that predicts from pictures in the *previous*
+    segment, which the browser decoder no longer has after a flush. hls.js
+    appends the segment without complaint and then presents no frames at all —
+    a permanent freeze that only a seek or a quality switch escapes. Decoding
+    the first frame tells the two apart.
+
+    Anything inconclusive keeps the segment: a needless transcode is worse than
+    the status quo, and the packet checks above already ran.
+    """
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return True, ""
+
+    cmd = [
+        ffprobe, "-v", "error",
+        "-select_streams", "v:0",
+        "-read_intervals", "%+0.5",
+        "-show_entries", "frame=key_frame,pict_type",
+        "-of", "json",
+        path,
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=_SEGMENT_VALIDATE_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True, ""
+    if result.returncode != 0:
+        return True, ""
+    try:
+        payload = json.loads(result.stdout or b"{}")
+    except (TypeError, ValueError):
+        return True, ""
+    frames = payload.get("frames") or []
+    if not frames:
+        return True, ""
+    first = frames[0]
+    if not isinstance(first, dict):
+        return True, ""
+    key = first.get("key_frame")
+    if key is None:
+        # ffprobe has renamed this field across releases; only trust an
+        # explicit flag, never a missing one.
+        flags = first.get("flags")
+        if not isinstance(flags, str):
+            return True, ""
+        is_key = "K" in flags
+    else:
+        is_key = str(key) not in ("0", "False", "false")
+    if not is_key:
+        return False, "starts on a non-IDR keyframe"
+    return True, ""
+
+
+def _validate_copy_segment(
+    session: _Session, index: int, path: str
+) -> tuple[bool, str]:
+    """Full validation for a stream-copied segment (packets + IDR start)."""
+    if not session.copy_video:
+        return True, ""
+    valid, reason = _validate_video_segment(session, index, path)
+    if not valid:
+        return False, reason
+    return _validate_copy_start(path)
+
+
+def _validate_published_segment(
+    session: _Session, index: int, path: str
+) -> tuple[bool, str]:
+    """Validation used for every segment the batch watcher publishes."""
+    if session.copy_video:
+        return _validate_copy_segment(session, index, path)
+    return _validate_video_segment(session, index, path)
 
 
 def _build_batch_command(
@@ -1445,7 +1529,7 @@ def _consume_segment_list(session: _Session, batch: _Batch, path: str, position:
                 continue
 
         if session.copy_video:
-            valid, reason = _validate_copy_segment(session, index, segment_path)
+            valid, reason = _validate_published_segment(session, index, segment_path)
             if not valid:
                 # Never advertise a broken original segment. A player request
                 # for this index will regenerate it with a one-off transcode.
@@ -1453,6 +1537,9 @@ def _consume_segment_list(session: _Session, batch: _Batch, path: str, position:
                 with session.condition:
                     session.fallback_segments.add(index)
                     session.copy_validation_failures += 1
+                    session.segment_validation_failures[index] = (
+                        session.segment_validation_failures.get(index, 0) + 1
+                    )
                 logger.log(
                     "warning",
                     f"Original segment {index} failed validation for "
@@ -1461,6 +1548,34 @@ def _consume_segment_list(session: _Session, batch: _Batch, path: str, position:
                 )
                 added = True
                 continue
+        elif session.info.has_video:
+            valid, reason = _validate_published_segment(session, index, segment_path)
+            if not valid:
+                with session.condition:
+                    attempts = (
+                        session.segment_validation_failures.get(index, 0) + 1
+                    )
+                    session.segment_validation_failures[index] = attempts
+                if attempts < _SEGMENT_MAX_VALIDATION_ATTEMPTS:
+                    # Drop it so the next request (or prefetch) regenerates it
+                    # instead of handing the player a fragment no decoder can
+                    # turn into pictures.
+                    _remove_file(segment_path)
+                    logger.log(
+                        "warning",
+                        f"Playback segment {index} failed validation for "
+                        f"{os.path.basename(session.source)} ({reason}); "
+                        "regenerating it",
+                    )
+                    continue
+                logger.log(
+                    "error",
+                    f"Playback segment {index} still fails validation after "
+                    f"{attempts} attempts for {os.path.basename(session.source)} "
+                    f"({reason}); publishing it so playback can continue",
+                )
+        with session.condition:
+            session.segment_validation_failures.pop(index, None)
 
         with session.condition:
             if index not in session.completed:
@@ -1939,6 +2054,17 @@ def _generate_video_fallback_segment(session: _Session, index: int) -> Optional[
                     f"{_tail(log_path)}",
                 )
                 return None
+
+            valid, reason = _validate_video_segment(session, index, partial)
+            if not valid:
+                # Publishing is still the better outcome: the player now skips
+                # a stalled fragment on its own, while a 404 here would only
+                # make hls.js give up on the level.
+                logger.log(
+                    "error",
+                    f"Transcoded fallback for original segment {index} is still "
+                    f"unusable ({reason}) for {os.path.basename(session.source)}",
+                )
 
             try:
                 os.replace(partial, path)
