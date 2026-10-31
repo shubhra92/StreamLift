@@ -581,6 +581,10 @@ export interface WorkerMediaStatus {
   chapters: WorkerChapter[];
   /** True when the worker serves a master playlist with alternate audio. */
   multiAudio: boolean;
+  /** True when at least one quality is fully pre-rendered for this file. */
+  rendered: boolean;
+  /** Quality ids whose pre-rendered HLS is complete and ready to serve. */
+  renderedQualities: string[];
 }
 
 export interface WorkerMediaTicket extends WorkerMediaStatus {
@@ -622,6 +626,8 @@ interface RawMediaStatus {
   audioTracks?: RawAudioTrack[];
   subtitleTracks?: RawSubtitleTrack[];
   chapters?: RawChapter[];
+  rendered?: boolean;
+  renderedQualities?: string[];
 }
 
 function toNumberOrNull(value: unknown): number | null {
@@ -694,6 +700,10 @@ function toMediaStatus(data: RawMediaStatus): WorkerMediaStatus {
     subtitleTracks: toSubtitleTracks(data.subtitleTracks),
     chapters: toChapters(data.chapters),
     multiAudio: Boolean(data.multiAudio) || audioTracks.length > 1,
+    rendered: Boolean(data.rendered),
+    renderedQualities: Array.isArray(data.renderedQualities)
+      ? data.renderedQualities.filter((value): value is string => typeof value === "string")
+      : [],
   };
 }
 
@@ -807,6 +817,227 @@ export async function getWorkerPlaybackUrls(
     thumbnailUrlBase: `${base}/downloads/${dl}/files/${fileIndex}/thumbnail`,
     mediaQuery: capsQuery,
   };
+}
+
+// ── Pre-rendered HLS ─────────────────────────────────────────────────────────
+
+export type WorkerRenderJobState =
+  | "queued"
+  | "rendering"
+  | "ready"
+  | "failed"
+  | "canceled";
+
+export interface WorkerRenderJob {
+  quality: string;
+  state: WorkerRenderJobState;
+  /** 0..1 */
+  progress: number;
+  /** Encoder throughput vs realtime while rendering. */
+  speed: number | null;
+  /** Estimated seconds remaining while rendering. */
+  etaSeconds: number | null;
+  /** Bytes written so far (or total bytes when ready). */
+  bytes: number;
+  detail: string | null;
+}
+
+export interface WorkerRenderQuality {
+  /** "original" or a height such as "1080". */
+  id: string;
+  label: string;
+  height: number | null;
+  /** True for the cheap source-copy rendition. */
+  copy: boolean;
+  bitrate: number | null;
+  estimatedBytes: number | null;
+  rendered: boolean;
+  job: WorkerRenderJob | null;
+}
+
+export interface WorkerRenderState {
+  qualities: WorkerRenderQuality[];
+  /** Total bytes used by completed renders for this file. */
+  renderedBytes: number;
+  /** Free bytes on the worker disk, when the worker can report it. */
+  freeBytes: number | null;
+  /** True when a render is queued or running. */
+  active: boolean;
+}
+
+export interface WorkerRenderSummary {
+  [downloadId: string]: { [fileIndex: number]: string[] };
+}
+
+interface RawRenderJob {
+  quality?: string;
+  state?: string;
+  progress?: number;
+  speed?: number | null;
+  etaSeconds?: number | null;
+  bytes?: number;
+  detail?: string | null;
+}
+
+interface RawRenderQuality {
+  id?: string;
+  label?: string;
+  height?: number | null;
+  copy?: boolean;
+  bitrate?: number | null;
+  estimatedBytes?: number | null;
+  rendered?: boolean;
+  job?: RawRenderJob | null;
+}
+
+interface RawRenderState {
+  qualities?: RawRenderQuality[];
+  renderedBytes?: number;
+  freeBytes?: number | null;
+  active?: boolean;
+}
+
+function toRenderJob(raw: RawRenderJob | null | undefined): WorkerRenderJob | null {
+  if (!raw || typeof raw.quality !== "string") return null;
+  const state: WorkerRenderJobState =
+    raw.state === "queued" ||
+    raw.state === "rendering" ||
+    raw.state === "ready" ||
+    raw.state === "failed" ||
+    raw.state === "canceled"
+      ? raw.state
+      : "failed";
+  const progress = toNumberOrNull(raw.progress) ?? 0;
+  return {
+    quality: raw.quality,
+    state,
+    progress: Math.min(1, Math.max(0, progress)),
+    speed: toNumberOrNull(raw.speed),
+    etaSeconds: toNumberOrNull(raw.etaSeconds),
+    bytes: Math.max(0, Math.round(toNumberOrNull(raw.bytes) ?? 0)),
+    detail: raw.detail ?? null,
+  };
+}
+
+function toRenderState(raw: RawRenderState): WorkerRenderState {
+  const qualities = Array.isArray(raw.qualities)
+    ? raw.qualities
+        .filter((item): item is RawRenderQuality => Boolean(item))
+        .map((item) => ({
+          id: typeof item.id === "string" ? item.id : "",
+          label: typeof item.label === "string" ? item.label : "",
+          height: toNumberOrNull(item.height),
+          copy: Boolean(item.copy),
+          bitrate: toNumberOrNull(item.bitrate),
+          estimatedBytes: toNumberOrNull(item.estimatedBytes),
+          rendered: Boolean(item.rendered),
+          job: toRenderJob(item.job),
+        }))
+        .filter((item) => item.id)
+    : [];
+  return {
+    qualities,
+    renderedBytes: Math.max(0, Math.round(toNumberOrNull(raw.renderedBytes) ?? 0)),
+    freeBytes: toNumberOrNull(raw.freeBytes),
+    active: Boolean(raw.active),
+  };
+}
+
+async function readRenderState(res: Response, fallback: string): Promise<WorkerRenderState> {
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}) as { detail?: string });
+    throw new Error(typeof err.detail === "string" ? err.detail : fallback);
+  }
+  return toRenderState((await res.json()) as RawRenderState);
+}
+
+/** Quality ladder + render state for one watch item. */
+export async function getWorkerRenders(
+  workerId: string,
+  downloadId: string,
+  fileIndex: number,
+): Promise<WorkerRenderState> {
+  const res = await callWorker(
+    workerId,
+    "GET",
+    `/downloads/${encodeURIComponent(downloadId)}/files/${fileIndex}/renders`,
+  );
+  return readRenderState(res, "Could not read pre-render status");
+}
+
+/** Queue one or more quality pre-renders (idempotent). */
+export async function startWorkerRenders(
+  workerId: string,
+  downloadId: string,
+  fileIndex: number,
+  qualities: string[],
+): Promise<WorkerRenderState> {
+  const res = await callWorker(
+    workerId,
+    "POST",
+    `/downloads/${encodeURIComponent(downloadId)}/files/${fileIndex}/renders`,
+    { qualities },
+  );
+  return readRenderState(res, "Could not start the pre-render");
+}
+
+/** Cancel a queued or running pre-render. */
+export async function cancelWorkerRender(
+  workerId: string,
+  downloadId: string,
+  fileIndex: number,
+  quality: string,
+): Promise<WorkerRenderState> {
+  const res = await callWorker(
+    workerId,
+    "POST",
+    `/downloads/${encodeURIComponent(downloadId)}/files/${fileIndex}/renders/${encodeURIComponent(quality)}/cancel`,
+  );
+  return readRenderState(res, "Could not cancel the pre-render");
+}
+
+/** Delete one completed pre-render from the worker disk. */
+export async function deleteWorkerRender(
+  workerId: string,
+  downloadId: string,
+  fileIndex: number,
+  quality: string,
+): Promise<WorkerRenderState> {
+  const res = await callWorker(
+    workerId,
+    "DELETE",
+    `/downloads/${encodeURIComponent(downloadId)}/files/${fileIndex}/renders/${encodeURIComponent(quality)}`,
+  );
+  return readRenderState(res, "Could not delete the pre-render");
+}
+
+/** Batch badge summary for the watch list. */
+export async function getWorkerRenderSummary(
+  workerId: string,
+  downloadIds: string[],
+): Promise<WorkerRenderSummary> {
+  if (downloadIds.length === 0) return {};
+  const res = await callWorker(
+    workerId,
+    "GET",
+    `/downloads/renders?ids=${encodeURIComponent(downloadIds.join(","))}`,
+  );
+  if (!res.ok) return {};
+  const payload = (await res.json().catch(() => ({}))) as {
+    renders?: Record<string, Record<string, string[]>>;
+  };
+  const result: WorkerRenderSummary = {};
+  for (const [downloadId, files] of Object.entries(payload.renders ?? {})) {
+    if (!files || typeof files !== "object") continue;
+    const byIndex: { [fileIndex: number]: string[] } = {};
+    for (const [index, qualities] of Object.entries(files)) {
+      const parsed = Number.parseInt(index, 10);
+      if (!Number.isFinite(parsed) || !Array.isArray(qualities)) continue;
+      byIndex[parsed] = qualities.filter((value): value is string => typeof value === "string");
+    }
+    result[downloadId] = byIndex;
+  }
+  return result;
 }
 
 /**

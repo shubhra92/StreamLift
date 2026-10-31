@@ -7,6 +7,7 @@ import { useWatchMedia } from "../hooks/useWatchMedia";
 import {
   ConnectToTvButton,
   MediaPlayerDialog,
+  RenderDialog,
   WatchWorkerSection,
 } from "../components/watch";
 import { OfflineBanner } from "../components/OfflineBanner";
@@ -21,6 +22,7 @@ interface Selection {
 export default function WatchPage() {
   const { groups, loading, networkStatus } = useWatchMedia();
   const [selection, setSelection] = useState<Selection | null>(null);
+  const [renderSelection, setRenderSelection] = useState<Selection | null>(null);
 
   return (
     <main className="flex h-full flex-col bg-background">
@@ -71,6 +73,13 @@ export default function WatchPage() {
                       file,
                     })
                   }
+                  onRender={(file) =>
+                    setRenderSelection({
+                      workerId: group.worker.id,
+                      workerName: group.worker.name,
+                      file,
+                    })
+                  }
                 />
               ))}
             </div>
@@ -92,6 +101,16 @@ export default function WatchPage() {
           setSelection({ ...selection, file });
         }}
         onClose={() => setSelection(null)}
+      />
+
+      <RenderDialog
+        open={Boolean(renderSelection)}
+        onOpenChange={(open) => {
+          if (!open) setRenderSelection(null);
+        }}
+        workerId={renderSelection?.workerId ?? null}
+        workerName={renderSelection?.workerName}
+        file={renderSelection?.file ?? null}
       />
     </main>
   );

@@ -165,8 +165,12 @@ export function MediaPlayerDialog({
       setTargetHeight(state.targetHeight);
     };
 
-    const workerPath = async (mode: WorkerMediaMode, playbackUrls: WorkerPlaybackUrls) => {
-      if (forceHlsRef.current || mode === "hls") {
+    const workerPath = async (
+      mode: WorkerMediaMode,
+      playbackUrls: WorkerPlaybackUrls,
+      rendered: boolean,
+    ) => {
+      if (forceHlsRef.current || rendered || mode === "hls") {
         setStatus("loading");
         setSource({ kind: "hls", url: playbackUrls.hlsUrl });
         return;
@@ -241,7 +245,7 @@ export function MediaPlayerDialog({
         return;
       }
 
-      await workerPath(ticket.mode, playbackUrls);
+      await workerPath(ticket.mode, playbackUrls, ticket.rendered);
     };
 
     run().catch((error: unknown) => {

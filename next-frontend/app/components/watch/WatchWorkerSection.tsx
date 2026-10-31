@@ -1,6 +1,6 @@
 "use client";
 
-import { Film, Music, Play } from "lucide-react";
+import { Clapperboard, Film, Music, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatFileSize } from "@/app/components/downloads/utils";
 import type { WatchFile, WatchGroup } from "./types";
@@ -8,9 +8,10 @@ import type { WatchFile, WatchGroup } from "./types";
 interface Props {
   group: WatchGroup;
   onPlay: (file: WatchFile) => void;
+  onRender: (file: WatchFile) => void;
 }
 
-export function WatchWorkerSection({ group, onPlay }: Props) {
+export function WatchWorkerSection({ group, onPlay, onRender }: Props) {
   const { worker, files } = group;
 
   return (
@@ -51,6 +52,19 @@ export function WatchWorkerSection({ group, onPlay }: Props) {
                 {file.kind === "audio" ? " · Audio" : " · Video"}
               </p>
             </div>
+
+            {file.kind === "video" && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onRender(file)}
+                className="shrink-0"
+                title="Render the whole file for low-CPU, buffer-free playback"
+              >
+                <Clapperboard className="h-4 w-4" />
+                <span className="hidden md:inline">Pre-render</span>
+              </Button>
+            )}
 
             <Button
               size="sm"
