@@ -262,6 +262,10 @@ class FileAvailabilityRequest(BaseModel):
     downloadIds: list[str]
 
 
+class RenderRequest(BaseModel):
+    qualities: list[str] = []
+
+
 @app.post("/downloads/files")
 async def list_completed_files(
     body: FileAvailabilityRequest,
@@ -489,6 +493,128 @@ async def media_status(
     return payload
 
 
+# ── Pre-rendered HLS ─────────────────────────────────────────────────────────
+
+
+def _render_options(download_id: str, file_index: int) -> dict:
+    from streamlift_worker import renders as render_store
+
+    payload = render_store.options(download_id, file_index)
+    if payload is None:
+        raise HTTPException(
+            status_code=404,
+            detail="This file cannot be pre-rendered on this worker",
+        )
+    return payload
+
+
+@app.get("/downloads/{download_id}/files/{file_index}/renders")
+async def list_renders(
+    download_id: str,
+    file_index: int,
+    x_session_token: Optional[str] = Header(default=None),
+):
+    """Quality ladder plus current pre-render job state for one file."""
+    _require_session_token(x_session_token)
+    _require_watchable_file(download_id, file_index)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _render_options, download_id, file_index)
+
+
+@app.post("/downloads/{download_id}/files/{file_index}/renders")
+async def start_renders(
+    download_id: str,
+    file_index: int,
+    body: RenderRequest,
+    x_session_token: Optional[str] = Header(default=None),
+):
+    """Queue one or more quality pre-renders. Existing renders are skipped."""
+    _require_session_token(x_session_token)
+    _require_watchable_file(download_id, file_index)
+
+    from streamlift_worker import renders as render_store
+
+    loop = asyncio.get_running_loop()
+
+    def _run() -> dict:
+        try:
+            return render_store.start(download_id, file_index, body.qualities)
+        except render_store.RenderError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return await loop.run_in_executor(None, _run)
+
+
+@app.post("/downloads/{download_id}/files/{file_index}/renders/{quality}/cancel")
+async def cancel_render(
+    download_id: str,
+    file_index: int,
+    quality: str,
+    x_session_token: Optional[str] = Header(default=None),
+):
+    """Cancel a queued or running pre-render."""
+    _require_session_token(x_session_token)
+    _require_watchable_file(download_id, file_index)
+
+    from streamlift_worker import renders as render_store
+
+    loop = asyncio.get_running_loop()
+
+    def _run() -> dict:
+        try:
+            return render_store.cancel(download_id, file_index, quality)
+        except render_store.RenderError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return await loop.run_in_executor(None, _run)
+
+
+@app.delete("/downloads/{download_id}/files/{file_index}/renders/{quality}")
+async def delete_render(
+    download_id: str,
+    file_index: int,
+    quality: str,
+    x_session_token: Optional[str] = Header(default=None),
+):
+    """Delete one completed pre-render."""
+    _require_session_token(x_session_token)
+    _require_watchable_file(download_id, file_index)
+
+    from streamlift_worker import renders as render_store
+
+    loop = asyncio.get_running_loop()
+
+    def _run() -> dict:
+        try:
+            return render_store.delete(download_id, file_index, quality)
+        except render_store.RenderError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return await loop.run_in_executor(None, _run)
+
+
+@app.get("/downloads/renders")
+async def render_summary(
+    ids: Optional[str] = None,
+    x_session_token: Optional[str] = Header(default=None),
+):
+    """Batch pre-render badge summary: ``{downloadId: {fileIndex: [quality]}}``."""
+    _require_session_token(x_session_token)
+    download_ids = [
+        value.strip() for value in (ids or "").split(",") if value.strip()
+    ][:100]
+
+    from streamlift_worker import renders as render_store
+
+    loop = asyncio.get_running_loop()
+    return {
+        "success": True,
+        "renders": await loop.run_in_executor(
+            None, render_store.summary, download_ids
+        ),
+    }
+
+
 @app.get("/media/{download_id}/{file_index}")
 async def stream_prepared_media(
     download_id: str,
@@ -682,11 +808,22 @@ async def watch_segment(
     )
     if not path:
         raise HTTPException(status_code=404, detail="Playback segment not found")
+    cacheable = False
+    try:
+        from streamlift_worker import renders as render_store
+
+        cacheable = render_store.is_render_path(path)
+    except Exception:
+        cacheable = False
     return FileResponse(
         path,
         media_type="video/mp2t",
         headers={
-            "Cache-Control": "no-cache, no-transform",
+            "Cache-Control": (
+                "public, max-age=31536000, immutable"
+                if cacheable
+                else "no-cache, no-transform"
+            ),
             "X-Accel-Buffering": "no",
         },
     )

@@ -40,7 +40,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import IO, Optional
+from typing import Callable, IO, Optional
 from urllib.parse import quote
 
 from streamlift_worker import logger
@@ -2246,6 +2246,18 @@ def get_segment_path(
     if not audio_match and not match:
         return None
 
+    # A completed pre-render is served directly from the render store.
+    from streamlift_worker import renders as render_store
+
+    rendered = render_store.segment_path(
+        download_id,
+        file_index,
+        segment,
+        None if audio_match else quality,
+    )
+    if rendered:
+        return rendered
+
     # Audio renditions are shared across video qualities, so they always live
     # in the auto session.
     requested_quality = QUALITY_AUTO if audio_match else quality
@@ -2488,6 +2500,109 @@ def _ensure_session(
         return session
 
 
+# ── Pre-render support ────────────────────────────────────────────────────────
+
+
+def build_render_session(
+    source: str,
+    signature: tuple[int, int],
+    info: ProbeInfo,
+    quality: str,
+    output_dir: str,
+    file_index: int,
+) -> Optional[_Session]:
+    """Build an unregistered HLS session used to render a whole file.
+
+    The session is not stored in ``_sessions``: it never serves HTTP requests
+    and must not be reaped. The render driver consumes batches from it and then
+    moves the produced segments into the durable render store.
+    """
+    target_height = _quality_target_height(info, quality)
+    if target_height is None:
+        return None
+    copy_video = quality == QUALITY_ORIGINAL
+    if copy_video and not _can_copy_hls(info):
+        return None
+    if copy_video:
+        lengths = _copy_segment_lengths(source, info)
+    else:
+        lengths = _segment_lengths(info.duration or 0.0, info.frame_rate)
+    if not lengths:
+        return None
+
+    encoder_name: Optional[str] = None
+    encoder_args: tuple[str, ...] = ()
+    if info.has_video and not copy_video:
+        encoder_name, encoder_args = _video_encoder()
+
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except OSError:
+        return None
+
+    now = time.time()
+    return _Session(
+        key=("render", int(file_index), f"{signature[0]:x}-{signature[1]:x}", quality),
+        source=source,
+        signature=signature,
+        info=info,
+        caps=DEFAULT_CAPS,
+        mode=MODE_HLS,
+        output_dir=output_dir,
+        created_at=now,
+        last_access=now,
+        segment_lengths=lengths,
+        quality=quality,
+        target_height=target_height,
+        copy_video=copy_video,
+        encoder_name=encoder_name,
+        encoder_args=encoder_args,
+        state=STATE_READY,
+    )
+
+
+def render_options(
+    info: ProbeInfo,
+) -> list[dict[str, object]]:
+    """Source-aware quality ladder offered by the pre-render dialog."""
+    return _quality_variants(info)
+
+
+def render_signature(path: str) -> Optional[tuple[int, int]]:
+    """Public wrapper around the source signature (mtime + size)."""
+    return _source_signature(path)
+
+
+def probe_source(path: str) -> Optional[ProbeInfo]:
+    """Public wrapper around the cached ffprobe result."""
+    return _probe(path)
+
+
+def video_encoder() -> tuple[str, tuple[str, ...]]:
+    """Public wrapper around the cached H.264 encoder choice."""
+    return _video_encoder()
+
+
+def playlist_for_render(
+    lengths: list[float],
+    segment_uri: Callable[[int], str],
+) -> str:
+    """Build a VOD media playlist for a completed render."""
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:6",
+        f"#EXT-X-TARGETDURATION:{math.ceil(max(lengths))}",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXT-X-PLAYLIST-TYPE:VOD",
+        "#EXT-X-INDEPENDENT-SEGMENTS",
+    ]
+    for index, length in enumerate(lengths):
+        lines.append(f"#EXTINF:{length:.3f},")
+        lines.append(segment_uri(index))
+    lines.append("#EXT-X-ENDLIST")
+    return "\n".join(lines) + "\n"
+
+
 # ── Public API (used by server.py) ────────────────────────────────────────────
 
 
@@ -2511,6 +2626,14 @@ def prepare(
 
 def status_payload(session: _Session) -> dict:
     target = session.target_height if session.mode == MODE_HLS else None
+    try:
+        from streamlift_worker import renders as render_store
+
+        rendered_qualities = render_store.ready_qualities(
+            session.key[0], session.key[1]
+        )
+    except Exception:
+        rendered_qualities = []
     return {
         "mode": session.mode,
         "state": session.state,
@@ -2521,6 +2644,8 @@ def status_payload(session: _Session) -> dict:
         "targetHeight": target,
         "encoder": session.encoder_name if session.mode == MODE_HLS else None,
         "multiAudio": session.info.has_multiple_audio,
+        "rendered": bool(rendered_qualities),
+        "renderedQualities": rendered_qualities,
         "audioTracks": [
             {
                 "index": ordinal,
@@ -2568,6 +2693,24 @@ def get_playlist(
     ``kind="audio"`` are the renditions referenced by that master. HLS is
     available for every session because it is also the client's final fallback.
     """
+    # A completed pre-render is served straight from disk: no session, no
+    # encoder, no CPU. The on-demand path below remains the fallback for every
+    # quality that has not been rendered.
+    from streamlift_worker import renders as render_store
+
+    if kind == "index":
+        rendered = render_store.master_playlist(download_id, file_index)
+        if rendered:
+            return rendered
+    elif kind == "video" and quality and quality != QUALITY_AUTO:
+        rendered = render_store.video_playlist(download_id, file_index, quality)
+        if rendered:
+            return rendered
+    elif kind == "audio" and track is not None:
+        rendered = render_store.audio_playlist(download_id, file_index, track)
+        if rendered:
+            return rendered
+
     # The master and its audio group always live in the auto session; only
     # video renditions carry an explicit quality id.
     requested_quality = QUALITY_AUTO if kind == "index" else quality
@@ -2781,6 +2924,12 @@ def get_media(
 
 def shutdown() -> None:
     """Stop every playback job and remove the playback workspace."""
+    try:
+        from streamlift_worker import renders as render_store
+
+        render_store.shutdown()
+    except Exception:
+        pass
     with _sessions_lock:
         sessions = list(_sessions.values())
         _sessions.clear()

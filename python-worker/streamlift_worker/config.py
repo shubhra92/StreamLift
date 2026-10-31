@@ -63,6 +63,16 @@ def _playback_max_height() -> int:
 
 HLS_MAX_HEIGHT = _playback_max_height()
 
+# ── Pre-rendered HLS (Watch page "Pre-render" action) ────────────────────────
+# A pre-render transcodes the whole file once and stores complete HLS segments
+# on the worker disk. Playback then only serves files: no encoder, no CPU.
+# Renders live outside the playback workspace so the idle-session reaper never
+# touches them. They survive a graceful worker restart but not the worker VM.
+RENDERS_DIR_NAME       = ".renders"
+RENDER_POLL_SECONDS    = 0.5   # job progress poll interval
+RENDER_DISK_HEADROOM   = 1.25  # require free > estimate * this before starting
+RENDER_BUSY_RETRIES    = 3     # retries when live playback holds every encoder slot
+
 
 @dataclass
 class WorkerConfig:
