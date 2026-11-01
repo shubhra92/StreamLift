@@ -3,8 +3,8 @@ FastAPI server — exposes the worker's HTTP + SSE API.
 
 Endpoints:
   GET  /health                        — unauthenticated
-  GET  /status                        — session token
-  GET  /stream                        — session token, SSE
+  GET  /status                        — session token, polled detail snapshot
+  GET  /stream                        — session token, SSE (legacy live progress)
   POST /download                      — session token
   DELETE /download/{download_id}      — session token
   POST /downloads/files               — session token, batch local-file availability
@@ -34,10 +34,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from streamlift_worker import logger
+from streamlift_worker import __version__, logger
+from streamlift_worker.logger import peek_recent
 from streamlift_worker.local_files import get_completed_files, resolve_completed_file
-from streamlift_worker.metrics import get_system_metrics
-from streamlift_worker.config import START_TIME
+from streamlift_worker.metrics import get_disk_metrics, get_system_metrics
+from streamlift_worker.config import MAX_LOG_QUEUE, START_TIME
 
 # ── Module-level state shared with worker.py ──────────────────────────────────
 
@@ -156,7 +157,6 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
-    from streamlift_worker import __version__
     return {
         "status":            "ok",
         "version":           __version__,
@@ -171,9 +171,14 @@ async def status(x_session_token: Optional[str] = Header(default=None)):
     _require_session_token(x_session_token)
     metrics = get_system_metrics()
     return {
-        "online":      True,
-        "currentTask": _current_task or None,
-        "metrics":     metrics,
+        "online":         True,
+        "version":        __version__,
+        "tunnelProvider": _config.tunnel_provider if _config else None,
+        "currentTask":    _current_task or None,
+        "metrics":        metrics,
+        "logs":           peek_recent(MAX_LOG_QUEUE),
+        "uptimeSeconds":  int(time.time() - START_TIME),
+        "disk":           get_disk_metrics(),
     }
 
 
@@ -195,7 +200,6 @@ async def stream(
         last_ping = time.time()
         try:
             while True:
-                from streamlift_worker.logger import peek_recent
                 metrics = get_system_metrics()
                 payload = {
                     "online":      True,

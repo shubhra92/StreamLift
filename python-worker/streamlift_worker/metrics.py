@@ -1,12 +1,15 @@
 """
-System metrics collection (CPU, RAM, network speed).
+System metrics collection (CPU, RAM, network speed, disk usage).
 """
 
+import shutil
 import time
 from datetime import datetime, timezone
 from typing import Optional
 
 import psutil
+
+from streamlift_worker.local_files import downloads_dir
 
 _net_snapshot: Optional[tuple[int, int, float]] = None
 
@@ -34,6 +37,27 @@ def get_system_metrics() -> dict:
         "downloadSpeed": round(dl_speed, 0),
         "uploadSpeed":   round(ul_speed, 0),
         "timestamp":     datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def get_disk_metrics() -> Optional[dict]:
+    """Filesystem usage for the worker's downloads directory.
+
+    Returns None when the filesystem cannot be inspected so callers can simply
+    omit the disk block from their payload.
+    """
+    try:
+        usage = shutil.disk_usage(downloads_dir())
+    except OSError:
+        return None
+
+    percent_used = round((usage.used / usage.total) * 100, 1) if usage.total else 0.0
+
+    return {
+        "totalBytes":  usage.total,
+        "usedBytes":   usage.used,
+        "freeBytes":   usage.free,
+        "percentUsed": percent_used,
     }
 
 

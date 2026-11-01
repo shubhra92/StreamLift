@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 import requests
 
-from streamlift_worker import logger
+from streamlift_worker import __version__, logger
 from streamlift_worker.config import MAX_RETRIES, RETRY_DELAY, WorkerConfig
 
 # Shared stop event — set by the auth-failure handler so every loop exits cleanly
@@ -65,7 +65,7 @@ def register(config: WorkerConfig, ip_address: str, tunnel_url: str) -> Optional
         "workerId":   config.worker_id,
         "authToken":  config.auth_token,
         "ipAddress":  ip_address,
-        "version":    config.worker_version,
+        "version":    __version__,
         "tunnelUrl":  tunnel_url,
     })
     if result and result.get("success"):
@@ -80,18 +80,22 @@ def heartbeat(
     config: WorkerConfig, metrics: dict, tunnel_url: str, uptime_seconds: int = 0
 ) -> Optional[dict]:
     """
-    Send heartbeat — updates last_heartbeat + tunnel_url in DB.
+    Send heartbeat — updates last_heartbeat + tunnel_url + version in DB.
 
-    Returns the backend response so the worker can detect a queued
-    tunnel-only restart (``tunnelRestartNonce``). No newTasks are returned;
-    task dispatch is triggered by the client directly.
+    ``tunnelProvider`` tells the backend which provider is actually running
+    (it can differ from the configured one after a failed hot-swap). Returns
+    the backend response so the worker can detect a queued tunnel-only restart
+    (``tunnelRestartNonce``). No newTasks are returned; task dispatch is
+    triggered by the client directly.
     """
     return _post(config, "/api/worker/heartbeat", {
-        "workerId":  config.worker_id,
-        "authToken": config.auth_token,
-        "tunnelUrl": tunnel_url,
-        "uptimeSeconds": uptime_seconds,
-        # metrics removed — delivered via SSE stream only
+        "workerId":       config.worker_id,
+        "authToken":      config.auth_token,
+        "tunnelUrl":      tunnel_url,
+        "version":        __version__,
+        "tunnelProvider": config.tunnel_provider,
+        "uptimeSeconds":  uptime_seconds,
+        # metrics removed — delivered via status polling / SSE only
     })
 
 
