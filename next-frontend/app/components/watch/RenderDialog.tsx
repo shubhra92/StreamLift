@@ -67,6 +67,16 @@ function stateLabel(quality: WorkerRenderQuality): string {
   }
 }
 
+/**
+ * A quality can be checked when it is not already rendered and has no active
+ * job. Failed and canceled jobs are still retryable, so they stay selectable.
+ */
+function isSelectableQuality(quality: WorkerRenderQuality): boolean {
+  if (quality.rendered) return false;
+  const job = quality.job;
+  return !job || job.state === "failed" || job.state === "canceled";
+}
+
 function QualityRow({
   quality,
   selected,
@@ -204,7 +214,7 @@ export function RenderDialog({
         if (current.size === 0) return current;
         const available = new Set(
           next.qualities
-            .filter((quality) => !quality.rendered && !quality.job)
+            .filter(isSelectableQuality)
             .map((quality) => quality.id),
         );
         const kept = new Set([...current].filter((id) => available.has(id)));
@@ -245,14 +255,7 @@ export function RenderDialog({
 
   const qualities = state?.qualities ?? [];
   const selectable = useMemo(
-    () =>
-      qualities.filter(
-        (quality) =>
-          !quality.rendered &&
-          (!quality.job ||
-            quality.job.state === "failed" ||
-            quality.job.state === "canceled"),
-      ),
+    () => qualities.filter(isSelectableQuality),
     [qualities],
   );
 
