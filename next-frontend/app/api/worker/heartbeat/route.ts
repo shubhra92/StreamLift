@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: "Invalid JSON" }, { status: 400 });
   }
 
-  const { workerId, authToken, tunnelUrl } = body ?? {};
+  const { workerId, authToken, tunnelUrl, version } = body ?? {};
 
   if (!workerId || !authToken) {
     return NextResponse.json({ success: false, message: "Missing credentials" }, { status: 401 });
@@ -27,13 +27,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: "Invalid credentials" }, { status: 401 });
   }
 
-  // Update last_heartbeat + tunnel_url in DB — this is the source of truth for online status.
-  // Return tunnel_config so the worker can detect a queued "Restart tunnel" request.
+  const normalizedVersion = typeof version === "string" && version.trim()
+    ? version.trim()
+    : null;
+
+  // Update last_heartbeat + tunnel_url + running version in DB — this is the
+  // source of truth for online status. Return tunnel_config so the worker can
+  // detect a queued "Restart tunnel" request.
   const [worker] = await db
     .update(workers)
     .set({
       lastHeartbeat: new Date(),
       ...(tunnelUrl ? { tunnelUrl } : {}),
+      ...(normalizedVersion ? { version: normalizedVersion } : {}),
       updatedAt: new Date(),
     })
     .where(eq(workers.id, workerId))

@@ -42,6 +42,10 @@ export async function POST(req: NextRequest) {
     ? existingWorker.countryCode
     : await resolveIpCountryCode(normalizedIpAddress);
 
+  const normalizedVersion = typeof version === "string" && version.trim()
+    ? version.trim()
+    : null;
+
   // Persist tunnel URL + session token + heartbeat to DB
   await db
     .update(workers)
@@ -52,6 +56,7 @@ export async function POST(req: NextRequest) {
       countryCode,
       sessionToken,
       sessionTokenExpiry: tokenExpiry,
+      ...(normalizedVersion ? { version: normalizedVersion } : {}),
       updatedAt:          new Date(),
     })
     .where(eq(workers.id, workerId));

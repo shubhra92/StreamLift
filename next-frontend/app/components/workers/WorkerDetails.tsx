@@ -18,7 +18,7 @@ import {
 import type { WorkerDetailsProps } from "./types";
 import { ReLinkMegaDialog } from "./ReLinkMegaDialog";
 import type { WorkerLog } from "@/app/lib/workerStore";
-import { openWorkerStream, invalidateWorkerConnection } from "@/app/lib/workerConnection";
+import { getWorkerDetails, invalidateWorkerConnection, type WorkerLiveData } from "@/app/lib/workerConnection";
 import useWorkerService from "@/app/service/workerService";
 
 // ── Progress log parser ───────────────────────────────────────────────────────
@@ -31,6 +31,11 @@ function parseProgressLog(message: string) {
     percent: parseFloat(m[1]),
     parts: m[2].split("|").map((s) => s.trim()).filter(Boolean),
   };
+}
+
+function formatTunnelProvider(provider: string | null | undefined): string {
+  if (!provider) return "--";
+  return provider === "zrok" ? "zrok" : provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
 function LogEntry({ log }: { log: WorkerLog }) {
@@ -127,19 +132,24 @@ function Field({ label, value, mono = false, copyable = false }: {
   );
 }
 
-// ── Live stream data from worker SSE ─────────────────────────────────────────
-interface LiveData {
-  metrics?:     { cpuUsage: number; ramUsage: number; downloadSpeed: number; uploadSpeed: number };
-  currentTask?: { downloadId: string; fileName: string; status: string; progress: number; startedAt: string } | null;
-  logs?:        WorkerLog[];
-  uptimeSeconds?: number;
-}
+// ── Live worker details (polled every 15s) ───────────────────────────────────
+const POLL_INTERVAL_MS = 15_000;
+const POLL_TIMEOUT_MS  = 10_000;
+
+const EMPTY_LIVE_DATA: WorkerLiveData = {
+  version:        null,
+  tunnelProvider: null,
+  metrics:        null,
+  currentTask:    null,
+  logs:           [],
+  uptimeSeconds:  null,
+  disk:           null,
+};
 
 export function WorkerDetails({ worker, status, onClose, onRelinked }: WorkerDetailsProps) {
   const logsEndRef = useRef<HTMLDivElement>(null);
-  const streamRef  = useRef<{ close: () => void } | null>(null);
-  const [liveData, setLiveData] = useState<LiveData>({});
-  const [streamError, setStreamError] = useState<string | null>(null);
+  const [liveData, setLiveData] = useState<WorkerLiveData>(EMPTY_LIVE_DATA);
+  const [pollError, setPollError] = useState<string | null>(null);
   const [relinkOpen, setRelinkOpen] = useState(false);
   const [restartingTunnel, setRestartingTunnel] = useState(false);
   const [restartMessage, setRestartMessage] = useState<string | null>(null);
@@ -175,59 +185,100 @@ export function WorkerDetails({ worker, status, onClose, onRelinked }: WorkerDet
   };
 
   const online   = worker ? (status?.online ?? worker.online) : false;
-  const version  = worker ? (status?.version ?? "1.0.0") : "1.0.0";
-  const outdated = worker ? isVersionOutdated(version) : false;
+
+  // Runtime values come from the worker's own /status poll. Fall back to the
+  // heartbeat-backed status while the first poll is in flight, but never show
+  // a stale version for an offline worker.
+  const version = online
+    ? (liveData.version ?? status?.version ?? worker?.version ?? "--")
+    : "--";
+  const outdated = online && version !== "--" ? isVersionOutdated(version) : false;
+
+  // Prefer the provider the worker reports as actually running (a failed
+  // hot-swap keeps the old tunnel); fall back to the configured provider.
+  const tunnelLabel = online
+    ? formatTunnelProvider(liveData.tunnelProvider ?? worker?.activeTunnelProvider)
+    : "--";
+
   const workerCountryFlag = countryFlag(worker?.countryCode);
   const publicIp = online && worker?.ipAddress
     ? `${workerCountryFlag ? `${workerCountryFlag} ` : ""}${worker.ipAddress}`
     : "Not connected";
 
-  // ── Connect to worker SSE when panel opens and worker is online ───────────
+  // ── Poll worker details every 15s while the panel is open and online ──────
   useEffect(() => {
-    if (!worker || !online) {
-      streamRef.current?.close();
-      streamRef.current = null;
-      setLiveData({});
-      setStreamError(null);
+    const workerId = worker?.id;
+
+    if (!workerId || !online) {
+      setLiveData(EMPTY_LIVE_DATA);
+      setPollError(null);
       return;
     }
 
-    let cancelled = false;
-    setStreamError(null);
+    // Never show the previous worker's live values while the first poll runs.
+    setLiveData(EMPTY_LIVE_DATA);
+    setPollError(null);
 
-    openWorkerStream(
-      worker.id,
-      (data: any) => {
-        if (cancelled) return;
-        setStreamError(null);
-        setLiveData({
-          metrics:     data.metrics     ?? undefined,
-          currentTask: data.currentTask ?? null,
-          logs:        Array.isArray(data.logs) ? data.logs as WorkerLog[] : undefined,
-          uptimeSeconds: data.uptimeSeconds ?? undefined,
-        });
-      },
-      (errMsg: string) => {
-        if (!cancelled) setStreamError(errMsg);
-      },
-    ).then((handle) => {
-      if (cancelled) { handle.close(); return; }
-      streamRef.current = handle;
-    }).catch((e) => {
-      if (!cancelled) setStreamError(`Failed to connect: ${e.message}`);
-    });
+    let cancelled = false;
+    let inFlight  = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    let activeController: AbortController | null = null;
+
+    const poll = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+
+      const controller = new AbortController();
+      activeController = controller;
+      const timeout = setTimeout(() => controller.abort(), POLL_TIMEOUT_MS);
+
+      try {
+        const data = await getWorkerDetails(workerId, controller.signal);
+        if (!cancelled) {
+          setLiveData(data);
+          setPollError(null);
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          // The tunnel URL may have changed (Pinggy re-tunnels on restart), so
+          // drop the cached connection and let the next poll fetch a fresh one.
+          invalidateWorkerConnection(workerId);
+          setPollError(
+            controller.signal.aborted
+              ? "Worker did not respond in time — retrying…"
+              : `Failed to refresh worker details: ${e?.message ?? "unknown error"}`,
+          );
+        }
+      } finally {
+        clearTimeout(timeout);
+        if (activeController === controller) activeController = null;
+        inFlight = false;
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void poll();
+    };
+
+    void poll();
+    timer = setInterval(() => {
+      if (document.visibilityState === "visible") void poll();
+    }, POLL_INTERVAL_MS);
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       cancelled = true;
-      streamRef.current?.close();
-      streamRef.current = null;
+      if (timer) clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      activeController?.abort();
     };
   }, [worker?.id, online]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Live SSE data takes priority; status only provides online/lastHeartbeat
-  const metrics     = liveData.metrics     ?? null;
-  const currentTask = liveData.currentTask ?? null;
-  const logs        = liveData.logs        ?? [];
+  // Live poll data takes priority; status only provides online/lastHeartbeat
+  const metrics     = liveData.metrics;
+  const currentTask = liveData.currentTask;
+  const logs        = liveData.logs;
+  const disk        = liveData.disk;
 
   // Scroll logs to bottom on new entries (must be after logs is declared)
   useEffect(() => {
@@ -286,10 +337,10 @@ export function WorkerDetails({ worker, status, onClose, onRelinked }: WorkerDet
           {/* Scrollable body */}
           <div className="overflow-y-auto flex-1 px-4 py-3 space-y-4">
 
-          {/* Stream connection error */}
-            {streamError && (
+          {/* Poll connection error */}
+            {pollError && (
               <div className="text-xs text-yellow-600 bg-yellow-50 dark:bg-yellow-900/20 rounded px-3 py-2">
-                ⚠ {streamError}
+                ⚠ {pollError}
               </div>
             )}
 
@@ -353,10 +404,11 @@ export function WorkerDetails({ worker, status, onClose, onRelinked }: WorkerDet
                 <Field label="Worker ID" value={worker.id} mono copyable />
                 <Field label="Version"   value={version} />
                 <Field label="Last Seen" value={timeAgo(status?.lastHeartbeat)} />
-                <Field label="Compute"   value={worker.computeType.charAt(0).toUpperCase() + worker.computeType.slice(1)} />
-                <Field label="Download To" value={worker.downloadLocation === "mega" ? "Mega" : "Local"} />
                 <Field label="Public IP" value={publicIp} mono={Boolean(worker?.ipAddress)} />
+                <Field label="Download To" value={worker.downloadLocation === "mega" ? "Mega" : "Local"} />
+                <Field label="Compute"   value={worker.computeType.charAt(0).toUpperCase() + worker.computeType.slice(1)} />
                 <Field label="Created"   value={formatDate(worker.createdAt?.toString())} />
+                <Field label="Tunnel"    value={tunnelLabel} />
                 {worker.megaEmail && <Field label="Mega Account" value={worker.megaEmail} />}
               </div>
 
@@ -375,11 +427,26 @@ export function WorkerDetails({ worker, status, onClose, onRelinked }: WorkerDet
                       valueLabel={`${metrics.ramUsage.toFixed(1)}%`}
                       color={metrics.ramUsage > 80 ? "bg-red-500" : "bg-purple-500"}
                     />
-                    <div className="grid grid-cols-2 gap-3">
-                      <Field label="↓ Speed" value={formatSpeed(metrics.downloadSpeed)} />
-                      <Field label="↑ Speed" value={formatSpeed(metrics.uploadSpeed)} />
-                    </div>
                   </>
+                )}
+                {disk && (
+                  <div>
+                    <MiniBar
+                      label="Disk"
+                      value={disk.percentUsed}
+                      valueLabel={`${formatBytes(disk.usedBytes)} / ${formatBytes(disk.totalBytes)}`}
+                      color={disk.percentUsed > 90 ? "bg-red-500" : "bg-emerald-500"}
+                    />
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      {formatBytes(disk.freeBytes)} free · {disk.percentUsed.toFixed(1)}% used
+                    </p>
+                  </div>
+                )}
+                {metrics && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="↓ Speed" value={formatSpeed(metrics.downloadSpeed)} />
+                    <Field label="↑ Speed" value={formatSpeed(metrics.uploadSpeed)} />
+                  </div>
                 )}
                 <div className="grid grid-cols-3 gap-3">
                   <Field label="Downloads"   value={String(worker.totalDownloads ?? 0)} />

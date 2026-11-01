@@ -3,7 +3,7 @@
  *
  * The in-memory Map and offline checker have been removed.
  * Online status is now derived from last_heartbeat in the DB.
- * Live metrics and task progress stream directly from the worker's own SSE endpoint.
+ * Live metrics and task progress are polled from the worker's own /status endpoint.
  */
 
 export interface WorkerMetrics {

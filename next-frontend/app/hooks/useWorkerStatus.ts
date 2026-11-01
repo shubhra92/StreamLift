@@ -6,8 +6,8 @@
  * Returns the online/offline status and last heartbeat for a single worker,
  * backed by the SharedWorker's SSE stream to /api/worker/[workerId]/status/stream.
  *
- * Live metrics, task progress, and logs are now streamed directly from the
- * worker's own /stream endpoint (see WorkerDetails.tsx → openWorkerStream).
+ * Live metrics, task progress, logs, uptime, and disk usage are polled from
+ * the worker's own /status endpoint (see WorkerDetails.tsx → getWorkerDetails).
  */
 
 import { useState, useEffect, useRef } from "react";

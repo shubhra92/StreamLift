@@ -11,6 +11,7 @@
  */
 
 import type { WorkerFileTransferPart } from "./sync-worker/workerProtocol";
+import type { WorkerLog } from "./workerStore";
 
 const ENV = {
   "NEXT_PUBLIC_MAX_PARALLEL_PARTS": process.env.NEXT_PUBLIC_MAX_PARALLEL_PARTS,
@@ -1629,6 +1630,125 @@ if (controller.signal.aborted) throw error; // real cancel
     promise,
     restartPart: control.restartPart,
   };
+}
+
+export interface WorkerLiveMetrics {
+  cpuUsage:      number;
+  ramUsage:      number;
+  downloadSpeed: number;
+  uploadSpeed:   number;
+}
+
+export interface WorkerCurrentTask {
+  downloadId: string;
+  fileName:   string;
+  status:     string;
+  progress:   number;
+  startedAt:  string;
+}
+
+export interface WorkerDiskMetrics {
+  totalBytes:  number;
+  usedBytes:   number;
+  freeBytes:   number;
+  percentUsed: number;
+}
+
+export interface WorkerLiveData {
+  version:        string | null;
+  tunnelProvider: string | null;
+  metrics:        WorkerLiveMetrics | null;
+  currentTask:    WorkerCurrentTask | null;
+  logs:           WorkerLog[];
+  uptimeSeconds:  number | null;
+  disk:           WorkerDiskMetrics | null;
+}
+
+function toWorkerDiskMetrics(raw: unknown): WorkerDiskMetrics | null {
+  if (!raw || typeof raw !== "object") return null;
+  const data = raw as Record<string, unknown>;
+  const totalBytes = toNumberOrNull(data.totalBytes);
+  const freeBytes = toNumberOrNull(data.freeBytes);
+  if (totalBytes == null || freeBytes == null) return null;
+
+  const usedBytes = toNumberOrNull(data.usedBytes) ?? Math.max(0, totalBytes - freeBytes);
+  return {
+    totalBytes,
+    usedBytes,
+    freeBytes,
+    percentUsed: toNumberOrNull(data.percentUsed) ??
+      (totalBytes > 0 ? Math.min(100, Math.max(0, (usedBytes / totalBytes) * 100)) : 0),
+  };
+}
+
+function toWorkerLiveData(raw: unknown): WorkerLiveData {
+  const data = (raw ?? {}) as Record<string, any>;
+  const rawMetrics = data.metrics;
+  const metrics: WorkerLiveMetrics | null =
+    rawMetrics && typeof rawMetrics === "object"
+      ? {
+          cpuUsage:      toNumberOrNull(rawMetrics.cpuUsage)      ?? 0,
+          ramUsage:      toNumberOrNull(rawMetrics.ramUsage)      ?? 0,
+          downloadSpeed: toNumberOrNull(rawMetrics.downloadSpeed) ?? 0,
+          uploadSpeed:   toNumberOrNull(rawMetrics.uploadSpeed)   ?? 0,
+        }
+      : null;
+
+  const logs: WorkerLog[] = Array.isArray(data.logs)
+    ? data.logs.filter(
+        (log: any) =>
+          log &&
+          typeof log.timestamp === "string" &&
+          typeof log.level === "string" &&
+          typeof log.message === "string",
+      )
+    : [];
+
+  const rawTask = data.currentTask;
+  const currentTask: WorkerCurrentTask | null =
+    rawTask && typeof rawTask === "object"
+      ? {
+          downloadId: String(rawTask.downloadId ?? ""),
+          fileName:   typeof rawTask.fileName === "string" ? rawTask.fileName : "Download",
+          status:     typeof rawTask.status === "string" ? rawTask.status : "downloading",
+          progress:   toNumberOrNull(rawTask.progress) ?? 0,
+          startedAt:  typeof rawTask.startedAt === "string" ? rawTask.startedAt : new Date().toISOString(),
+        }
+      : null;
+
+  const version = typeof data.version === "string" && data.version.trim()
+    ? data.version.trim()
+    : null;
+  const tunnelProvider = typeof data.tunnelProvider === "string" && data.tunnelProvider.trim()
+    ? data.tunnelProvider.trim()
+    : null;
+
+  return {
+    version,
+    tunnelProvider,
+    metrics,
+    currentTask,
+    logs,
+    uptimeSeconds: toNumberOrNull(data.uptimeSeconds),
+    disk:          toWorkerDiskMetrics(data.disk),
+  };
+}
+
+/**
+ * Fetch a one-shot worker detail snapshot (polling counterpart to /stream).
+ * Uses the cached connection + 401 token refresh, and accepts an AbortSignal
+ * so the detail panel can bound each poll request.
+ */
+export async function getWorkerDetails(
+  workerId: string,
+  signal?: AbortSignal,
+): Promise<WorkerLiveData> {
+  const res = await callWorker(workerId, "GET", "/status", undefined, undefined, signal);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? `Worker details request failed (${res.status})`);
+  }
+  return toWorkerLiveData(await res.json());
 }
 
 /**
