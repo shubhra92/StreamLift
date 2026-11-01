@@ -51,7 +51,7 @@ export function AddUnifiedModal({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
         <DialogHeader>
           <DialogTitle>Add New Download</DialogTitle>
           <DialogDescription>
@@ -59,7 +59,7 @@ export function AddUnifiedModal({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex gap-2 p-1 bg-muted rounded-md mb-4">
+        <div className="flex gap-2 p-1 bg-muted rounded-md mb-4 overflow-hidden">
           <button
             type="button"
             onClick={() => setTab("http")}

@@ -95,7 +95,7 @@ export function TorrentFileSelector({
   return (
     <div className="space-y-4">
       <div className="bg-accent/50 p-4 rounded-lg">
-        <h3 className="font-semibold text-lg mb-2 break-words">{metadata.name}</h3>
+        <h3 className="font-semibold text-lg mb-2 break-all">{metadata.name}</h3>
         <div className="text-sm text-muted-foreground space-y-1">
           <p>Total Files: {metadata.fileCount}</p>
           <p>Total Size: {metadata.totalSizeFormatted}</p>
@@ -173,7 +173,7 @@ export function TorrentFileSelector({
                     {getFileIcon(file.type)}
                   </div>
                   <div className="flex-1 min-w-0 overflow-hidden">
-                    <p className="font-medium text-sm break-words">{file.name}</p>
+                    <p className="font-medium text-sm break-all">{file.name}</p>
                     <p className="text-xs text-muted-foreground">{file.sizeFormatted}</p>
                   </div>
                   <div className="flex-shrink-0">
