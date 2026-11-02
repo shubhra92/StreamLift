@@ -177,6 +177,7 @@ async def status(x_session_token: Optional[str] = Header(default=None)):
         "currentTask":    _current_task or None,
         "metrics":        metrics,
         "logs":           peek_recent(MAX_LOG_QUEUE),
+        "consoleLogs":    logger.console_enabled(),
         "uptimeSeconds":  int(time.time() - START_TIME),
         "disk":           get_disk_metrics(),
     }
@@ -206,6 +207,7 @@ async def stream(
                     "currentTask": _current_task or None,
                     "metrics":     metrics,
                     "logs":        peek_recent(20),
+                    "consoleLogs": logger.console_enabled(),
                     "timestamp":   datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     "uptimeSeconds": int(time.time() - START_TIME),
                 }

@@ -10,6 +10,21 @@ from streamlift_worker.config import MAX_LOG_QUEUE
 # Ring buffer for SSE — always holds the latest MAX_LOG_QUEUE entries
 _ring:  list[dict[str, Any]] = []
 
+# When False, entries are still recorded in the ring buffer (so the dashboard
+# keeps working) but nothing is printed to the console.
+_console_enabled: bool = True
+
+
+def set_console_enabled(enabled: bool) -> None:
+    """Enable or disable printing log lines to stdout (the console)."""
+    global _console_enabled
+    _console_enabled = bool(enabled)
+
+
+def console_enabled() -> bool:
+    """True when log lines should be printed to stdout."""
+    return _console_enabled
+
 
 def log(level: str, message: str) -> None:
     entry = {
@@ -17,7 +32,8 @@ def log(level: str, message: str) -> None:
         "level":     level,
         "message":   message,
     }
-    print(f"[{entry['timestamp']}] [{level.upper():7s}] {message}", flush=True)
+    if _console_enabled:
+        print(f"[{entry['timestamp']}] [{level.upper():7s}] {message}", flush=True)
 
     _ring.append(entry)
     if len(_ring) > MAX_LOG_QUEUE:

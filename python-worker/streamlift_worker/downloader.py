@@ -434,7 +434,7 @@ def _process_torrent_download(config: WorkerConfig, task: dict, current_task: di
 
         for line in process.stdout:  # type: ignore[union-attr]
             line = line.rstrip()
-            if line:
+            if line and logger.console_enabled():
                 print(line, flush=True)
 
             if "Download complete:" in line:

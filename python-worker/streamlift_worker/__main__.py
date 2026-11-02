@@ -24,7 +24,7 @@ legacy workers that still store them.
 import argparse
 import sys
 
-from streamlift_worker import api
+from streamlift_worker import api, logger
 from streamlift_worker.config import COMPUTE_CONFIG, WorkerConfig
 
 COMPUTE_TYPES      = tuple(COMPUTE_CONFIG.keys())   # ("low", "medium", "high")
@@ -52,6 +52,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--mega-email",      default="",   help="Legacy: required for mega location when using credentials")
     p.add_argument("--mega-password",   default="",   help="Legacy: required for mega location when using credentials")
     p.add_argument("--port",            default=8000, type=int, help="Local server port (default 8000)")
+    p.add_argument("--no-console-logs", action="store_true",
+                   help="Do not print worker logs to the console (dashboard logs still work)")
     p.add_argument("--version",         action="version", version=f"%(prog)s {_get_version()}")
 
     return p.parse_args()
@@ -95,12 +97,20 @@ def _bootstrap_config(args: argparse.Namespace) -> WorkerConfig:
     if remote:
         tunnel_restart_nonce = remote.get("tunnelRestartNonce") or ""
 
+    # Console output toggle — the backend value wins, CLI flag is the fallback.
+    console_logs = True
+    if remote and isinstance(remote.get("consoleLogs"), bool):
+        console_logs = remote["consoleLogs"]
+    if getattr(args, "no_console_logs", False):
+        console_logs = False
+    logger.set_console_enabled(console_logs)
+
     # Session-only workers omit --mega-email/--mega-password and fetch their
     # Mega session from the backend at startup.
     if download_location == "mega" and not (args.mega_email and args.mega_password):
-        print("Mega credentials not provided — will load Mega session from backend at startup.")
+        logger.log("info", "Mega credentials not provided — will load Mega session from backend at startup.")
         if not args.mega_email and not args.mega_password:
-            print("Using session-only mode (no passwords on the command line).")
+            logger.log("info", "Using session-only mode (no passwords on the command line).")
 
     return WorkerConfig(
         worker_id=            args.worker_id,
@@ -108,6 +118,7 @@ def _bootstrap_config(args: argparse.Namespace) -> WorkerConfig:
         api_base_url=         api_base_url,
         compute_type=         compute_type,
         download_location=    download_location,
+        console_logs=         console_logs,
         pinggy_token=         pinggy_token,
         tunnel_provider=      tunnel_provider,
         zrok_token=           zrok_token,

@@ -255,6 +255,8 @@ def _start_uvicorn(config: WorkerConfig) -> None:
 
 def run(config: WorkerConfig) -> None:
     from streamlift_worker import __version__
+    # Respect the per-worker "print logs to console" toggle before the first line.
+    logger.set_console_enabled(config.console_logs)
     logger.log("info", f"StreamLift Worker v{__version__} starting")
     logger.log("info", f"Compute type     : {config.compute_type}")
     logger.log("info", f"Download location: {config.download_location}")

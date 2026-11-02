@@ -81,6 +81,9 @@ class WorkerConfig:
     api_base_url:      str
     compute_type:      ComputeType
     download_location: DownloadLocation
+    # When False, the worker records logs for the dashboard but does not print
+    # them to the console. Set from the per-worker toggle in the UI.
+    console_logs:      bool = True
     pinggy_token:      str = ""
     tunnel_provider:   TunnelProvider = "pinggy"
     # zrok: account token from myzrok.io
