@@ -139,6 +139,8 @@ data class MediaTicket(
     val audioTracks: List<AudioTrackInfo> = emptyList(),
     val subtitleTracks: List<SubtitleTrackInfo> = emptyList(),
     val chapters: List<ChapterInfo> = emptyList(),
+    val rendered: Boolean = false,
+    val renderedQualities: List<String> = emptyList(),
     val token: String? = null,
 )
 
@@ -170,6 +172,43 @@ data class ChapterInfo(
     val start: Double = 0.0,
     val end: Double? = null,
     val title: String = "",
+)
+
+@Serializable
+data class RenderStartRequest(
+    val qualities: List<String>,
+)
+
+@Serializable
+data class RenderState(
+    val success: Boolean = false,
+    val qualities: List<RenderQuality> = emptyList(),
+    val renderedBytes: Long = 0,
+    val freeBytes: Long? = null,
+    val active: Boolean = false,
+)
+
+@Serializable
+data class RenderQuality(
+    val id: String = "",
+    val label: String = "",
+    val height: Int? = null,
+    val copy: Boolean = false,
+    val bitrate: Long? = null,
+    val estimatedBytes: Long? = null,
+    val rendered: Boolean = false,
+    val job: RenderJob? = null,
+)
+
+@Serializable
+data class RenderJob(
+    val quality: String = "",
+    val state: String = "",
+    val progress: Double = 0.0,
+    val speed: Double? = null,
+    val etaSeconds: Double? = null,
+    val bytes: Long = 0,
+    val detail: String? = null,
 )
 
 @Serializable

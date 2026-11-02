@@ -108,6 +108,7 @@ fun LibraryScreen(
     val app = LocalContext.current.applicationContext as StreamLiftTvApp
     val viewModel: LibraryViewModel = viewModel(factory = LibraryViewModel.Factory(app.container))
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val renderSheet by viewModel.renderSheet.collectAsStateWithLifecycle()
 
     var selectedWorker by remember { mutableStateOf<CatalogWorker?>(null) }
     var initialFocusDone by remember { mutableStateOf(false) }
@@ -210,6 +211,9 @@ fun LibraryScreen(
                         continueFiles = continueFiles,
                         progressByKey = progressByKey,
                         onPlay = { file, worker -> play(file, worker) },
+                        onRender = { file, worker ->
+                            viewModel.openRenderSheet(worker, file)
+                        },
                         onSeeAll = { worker -> selectedWorker = worker },
                     )
                 }
@@ -227,6 +231,9 @@ fun LibraryScreen(
                     selectedWorker = null
                     play(file, worker)
                 },
+                onRender = { file, worker ->
+                    viewModel.openRenderSheet(worker, file)
+                },
                 onClose = {
                     selectedWorker = null
                     // The grid lives in its own dialog window. Returning from
@@ -236,6 +243,17 @@ fun LibraryScreen(
                         runCatching { heroFocus.requestFocus() }
                     }
                 },
+            )
+        }
+
+        renderSheet?.let { sheet ->
+            RenderSheet(
+                state = sheet,
+                onToggleQuality = viewModel::toggleRenderQuality,
+                onStart = viewModel::startSelectedRenders,
+                onCancelQuality = viewModel::cancelRender,
+                onDeleteQuality = viewModel::deleteRender,
+                onDismiss = { viewModel.closeRenderSheet() },
             )
         }
     }
@@ -303,6 +321,7 @@ private fun LibraryFeed(
     continueFiles: List<Pair<CatalogWorker, CatalogFile>>,
     progressByKey: Map<String, Float>,
     onPlay: (CatalogFile, CatalogWorker) -> Unit,
+    onRender: (CatalogFile, CatalogWorker) -> Unit,
     onSeeAll: (CatalogWorker) -> Unit,
 ) {
     TvLazyColumn(
@@ -348,6 +367,7 @@ private fun LibraryFeed(
                     items = continueFiles,
                     progressByKey = progressByKey,
                     onPlay = onPlay,
+                    onRender = onRender,
                 )
             }
         }
@@ -364,6 +384,7 @@ private fun LibraryFeed(
                 items = items,
                 progressByKey = progressByKey,
                 onPlay = onPlay,
+                onRender = onRender,
                 seeAll = if (group.files.size > ROW_LIMIT) {
                     { onSeeAll(group.worker) }
                 } else {
@@ -390,6 +411,7 @@ private fun MediaRow(
     items: List<Pair<CatalogWorker, CatalogFile>>,
     progressByKey: Map<String, Float>,
     onPlay: (CatalogFile, CatalogWorker) -> Unit,
+    onRender: (CatalogFile, CatalogWorker) -> Unit,
     seeAll: (() -> Unit)? = null,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -423,6 +445,7 @@ private fun MediaRow(
                     progress = progressByKey[file.key],
                     onClick = { onPlay(file, worker) },
                     modifier = Modifier.padding(vertical = 4.dp),
+                    onLongClick = { onRender(file, worker) },
                 )
             }
         }
@@ -890,6 +913,7 @@ private fun WorkerGridOverlay(
     group: CatalogGroup,
     progressByKey: Map<String, Float>,
     onPlay: (CatalogFile, CatalogWorker) -> Unit,
+    onRender: (CatalogFile, CatalogWorker) -> Unit,
     onClose: () -> Unit,
 ) {
     val firstFocus = remember { FocusRequester() }
@@ -962,6 +986,7 @@ private fun WorkerGridOverlay(
                                     } else {
                                         null
                                     },
+                                    onLongClick = { onRender(file, group.worker) },
                                 )
                             }
                         }

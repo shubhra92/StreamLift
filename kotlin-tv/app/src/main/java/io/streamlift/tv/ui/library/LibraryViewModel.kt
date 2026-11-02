@@ -9,9 +9,13 @@ import io.streamlift.tv.data.CatalogFile
 import io.streamlift.tv.data.CatalogGroup
 import io.streamlift.tv.data.CatalogWorker
 import io.streamlift.tv.data.ResumeStore
+import io.streamlift.tv.data.RenderQuality
 import io.streamlift.tv.data.StreamLiftApi
 import io.streamlift.tv.data.UnreachableWorker
+import io.streamlift.tv.data.WorkerApi
+import io.streamlift.tv.data.WorkerConnection
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -19,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 data class ContinueWatchingItem(
@@ -38,9 +43,24 @@ data class LibraryUiState(
     val lastUpdated: Long = 0L,
 )
 
+data class RenderSheetState(
+    val worker: CatalogWorker,
+    val file: CatalogFile,
+    val loading: Boolean = true,
+    val busy: Boolean = false,
+    val error: String? = null,
+    val qualities: List<RenderQuality> = emptyList(),
+    val renderedBytes: Long = 0,
+    val freeBytes: Long? = null,
+    val selected: Set<String> = emptySet(),
+) {
+    val renderedCount: Int get() = qualities.count { it.rendered }
+}
+
 class LibraryViewModel(
     private val api: StreamLiftApi,
     private val resumeStore: ResumeStore,
+    private val workerApi: WorkerApi,
 ) : ViewModel() {
     private val _state = MutableStateFlow(LibraryUiState())
     val state: StateFlow<LibraryUiState> = _state.asStateFlow()
@@ -48,7 +68,12 @@ class LibraryViewModel(
     private val _authExpired = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val authExpired: SharedFlow<Unit> = _authExpired.asSharedFlow()
 
+    private val _renderSheet = MutableStateFlow<RenderSheetState?>(null)
+    val renderSheet: StateFlow<RenderSheetState?> = _renderSheet.asStateFlow()
+
     private var refreshJob: Job? = null
+    private var renderPollJob: Job? = null
+    private var renderConnection: WorkerConnection? = null
 
     init {
         refresh(force = true)
@@ -129,10 +154,193 @@ class LibraryViewModel(
         }
     }
 
+    fun openRenderSheet(worker: CatalogWorker, file: CatalogFile) {
+        renderPollJob?.cancel()
+        renderConnection = null
+        _renderSheet.value = RenderSheetState(worker = worker, file = file)
+
+        renderPollJob = viewModelScope.launch {
+            try {
+                renderConnection = api.getWorkerConnection(worker.id)
+            } catch (error: Exception) {
+                _renderSheet.update {
+                    it?.copy(
+                        loading = false,
+                        error = error.message ?: "Could not reach this worker.",
+                    )
+                }
+                return@launch
+            }
+            while (isActive) {
+                refreshRenderState()
+                delay(1500)
+            }
+        }
+    }
+
+    fun closeRenderSheet() {
+        renderPollJob?.cancel()
+        renderPollJob = null
+        renderConnection = null
+        _renderSheet.value = null
+    }
+
+    fun toggleRenderQuality(id: String) {
+        _renderSheet.update { current ->
+            current ?: return@update null
+            val selection = if (id in current.selected) {
+                current.selected - id
+            } else {
+                current.selected + id
+            }
+            current.copy(selected = selection)
+        }
+    }
+
+    fun startSelectedRenders() {
+        val sheet = _renderSheet.value ?: return
+        if (sheet.selected.isEmpty() || sheet.busy) return
+        viewModelScope.launch {
+            _renderSheet.update { it?.copy(busy = true, error = null) }
+            try {
+                val connection = renderConnection
+                    ?: api.getWorkerConnection(sheet.worker.id).also {
+                        renderConnection = it
+                    }
+                val state = workerApi.startRenders(
+                    baseUrl = connection.tunnelUrl,
+                    sessionToken = connection.sessionToken,
+                    downloadId = sheet.file.downloadId,
+                    fileIndex = sheet.file.fileIndex,
+                    qualities = sheet.selected.toList(),
+                    tunnelHeaders = connection.tunnelHeaders,
+                )
+                _renderSheet.update { current ->
+                    current?.copy(
+                        busy = false,
+                        selected = emptySet(),
+                        qualities = state.qualities,
+                        renderedBytes = state.renderedBytes,
+                        freeBytes = state.freeBytes,
+                    )
+                }
+            } catch (error: Exception) {
+                _renderSheet.update {
+                    it?.copy(
+                        busy = false,
+                        error = error.message ?: "Could not start the pre-render.",
+                    )
+                }
+            }
+        }
+    }
+
+    fun cancelRender(quality: String) {
+        val sheet = _renderSheet.value ?: return
+        if (sheet.busy) return
+        viewModelScope.launch {
+            _renderSheet.update { it?.copy(busy = true, error = null) }
+            try {
+                val connection = renderConnection ?: return@launch
+                val state = workerApi.cancelRender(
+                    baseUrl = connection.tunnelUrl,
+                    sessionToken = connection.sessionToken,
+                    downloadId = sheet.file.downloadId,
+                    fileIndex = sheet.file.fileIndex,
+                    quality = quality,
+                    tunnelHeaders = connection.tunnelHeaders,
+                )
+                _renderSheet.update { current ->
+                    current?.copy(
+                        busy = false,
+                        qualities = state.qualities,
+                        renderedBytes = state.renderedBytes,
+                        freeBytes = state.freeBytes,
+                    )
+                }
+            } catch (error: Exception) {
+                _renderSheet.update {
+                    it?.copy(
+                        busy = false,
+                        error = error.message ?: "Could not cancel the pre-render.",
+                    )
+                }
+            }
+        }
+    }
+
+    fun deleteRender(quality: String) {
+        val sheet = _renderSheet.value ?: return
+        if (sheet.busy) return
+        viewModelScope.launch {
+            _renderSheet.update { it?.copy(busy = true, error = null) }
+            try {
+                val connection = renderConnection ?: return@launch
+                val state = workerApi.deleteRender(
+                    baseUrl = connection.tunnelUrl,
+                    sessionToken = connection.sessionToken,
+                    downloadId = sheet.file.downloadId,
+                    fileIndex = sheet.file.fileIndex,
+                    quality = quality,
+                    tunnelHeaders = connection.tunnelHeaders,
+                )
+                _renderSheet.update { current ->
+                    current?.copy(
+                        busy = false,
+                        qualities = state.qualities,
+                        renderedBytes = state.renderedBytes,
+                        freeBytes = state.freeBytes,
+                    )
+                }
+            } catch (error: Exception) {
+                _renderSheet.update {
+                    it?.copy(
+                        busy = false,
+                        error = error.message ?: "Could not delete the pre-render.",
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun refreshRenderState() {
+        val sheet = _renderSheet.value ?: return
+        val connection = renderConnection ?: return
+        try {
+            val state = workerApi.renderState(
+                baseUrl = connection.tunnelUrl,
+                sessionToken = connection.sessionToken,
+                downloadId = sheet.file.downloadId,
+                fileIndex = sheet.file.fileIndex,
+                tunnelHeaders = connection.tunnelHeaders,
+            )
+            _renderSheet.update { current ->
+                current?.takeIf { it.file.key == sheet.file.key }?.copy(
+                    loading = false,
+                    error = null,
+                    qualities = state.qualities,
+                    renderedBytes = state.renderedBytes,
+                    freeBytes = state.freeBytes,
+                )
+            }
+        } catch (error: Exception) {
+            _renderSheet.update { current ->
+                current?.takeIf { it.file.key == sheet.file.key }?.copy(
+                    loading = false,
+                    error = error.message ?: "Could not read pre-render status.",
+                )
+            }
+        }
+    }
+
     class Factory(private val container: AppContainer) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return LibraryViewModel(container.api, container.resumeStore) as T
+            return LibraryViewModel(
+                container.api,
+                container.resumeStore,
+                container.workerApi,
+            ) as T
         }
     }
 }

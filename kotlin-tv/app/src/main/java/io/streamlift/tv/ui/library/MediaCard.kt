@@ -2,8 +2,9 @@ package io.streamlift.tv.ui.library
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,11 +40,17 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import android.os.SystemClock
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import io.streamlift.tv.data.CatalogFile
@@ -54,6 +61,7 @@ import io.streamlift.tv.ui.theme.StreamLiftSurfaceVariant
 import io.streamlift.tv.util.cleanMediaTitle
 import io.streamlift.tv.util.formatBytes
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MediaCard(
     file: CatalogFile,
@@ -62,8 +70,10 @@ fun MediaCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
+    onLongClick: (() -> Unit)? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
+    var centerDownAt by remember { mutableStateOf(0L) }
     val scale by animateFloatAsState(
         targetValue = if (focused) 1.02f else 1f,
         animationSpec = tween(durationMillis = 120),
@@ -92,11 +102,55 @@ fun MediaCard(
                 .then(
                     if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier,
                 )
-                .onFocusChanged { focused = it.isFocused }
-                .clickable(
+                .onFocusChanged {
+                    focused = it.isFocused
+                    if (!it.isFocused) centerDownAt = 0L
+                }
+                .onPreviewKeyEvent { event ->
+                    // Compose's combinedClickable only knows about pointer long
+                    // presses. TV remotes send DPAD_CENTER (or Enter), so time
+                    // the key hold here and consume the release so the normal
+                    // click does not also start playback.
+                    when (event.key) {
+                        Key.DirectionCenter, Key.Enter -> when (event.type) {
+                            KeyEventType.KeyDown -> {
+                                if (centerDownAt == 0L) {
+                                    centerDownAt = SystemClock.uptimeMillis()
+                                }
+                                false
+                            }
+                            KeyEventType.KeyUp -> {
+                                val held = if (centerDownAt != 0L) {
+                                    SystemClock.uptimeMillis() - centerDownAt
+                                } else {
+                                    0L
+                                }
+                                centerDownAt = 0L
+                                if (held >= 550L && onLongClick != null) {
+                                    onLongClick.invoke()
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            else -> false
+                        }
+                        Key.Menu -> {
+                            if (event.type == KeyEventType.KeyUp && onLongClick != null) {
+                                onLongClick.invoke()
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        else -> false
+                    }
+                }
+                .combinedClickable(
                     interactionSource = interaction,
                     indication = null,
                     onClick = onClick,
+                    onLongClick = onLongClick,
                 ),
         ) {
             if (file.isAudio || file.thumbnailUrl.isNullOrBlank()) {
@@ -164,6 +218,22 @@ fun MediaCard(
                         tint = Color.White,
                         modifier = Modifier.size(28.dp),
                     )
+                }
+                if (onLongClick != null) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(8.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color.Black.copy(alpha = 0.7f))
+                            .padding(horizontal = 7.dp, vertical = 3.dp),
+                    ) {
+                        Text(
+                            text = "Hold OK: pre-render",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.9f),
+                        )
+                    }
                 }
             }
         }
