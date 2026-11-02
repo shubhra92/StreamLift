@@ -82,6 +82,7 @@ export async function GET(req: NextRequest) {
       workerId:             worker.id,
       downloadLocation:     worker.downloadLocation,
       computeType:          worker.computeType,
+      consoleLogs:          worker.consoleLogs ?? true,
       tunnelProvider:       provider,
       pinggyToken,
       zrokToken,

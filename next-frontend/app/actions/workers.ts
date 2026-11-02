@@ -33,6 +33,7 @@ export interface CreateWorkerData extends WorkerTunnelInput {
   name:             string;
   downloadLocation: "local" | "mega";
   computeType:      "low" | "medium" | "high";
+  consoleLogs?:     boolean;
   megaEmail?:       string;
   megaSession?:     string; // session JSON minted by the browser — password never sent
 }
@@ -41,6 +42,7 @@ export interface UpdateWorkerData extends WorkerTunnelInput {
   name?:             string;
   downloadLocation?: "local" | "mega";
   computeType?:      "low" | "medium" | "high";
+  consoleLogs?:      boolean;
   megaEmail?:        string;
   megaSession?:      string;
 }
@@ -84,6 +86,8 @@ export async function createWorker(
     return { success: false, message: "Invalid download location" };
   if (!["low", "medium", "high"].includes(data.computeType))
     return { success: false, message: "Invalid compute type" };
+  if (data.consoleLogs !== undefined && typeof data.consoleLogs !== "boolean")
+    return { success: false, message: "Invalid console logs setting" };
   if (!(TUNNEL_PROVIDERS as readonly string[]).includes(data.activeTunnelProvider))
     return { success: false, message: "Invalid tunnel provider" };
   if (data.activeTunnelProvider === "pinggy" && !data.pinggyToken?.trim())
@@ -112,6 +116,7 @@ export async function createWorker(
       name:                 data.name.trim(),
       downloadLocation:     data.downloadLocation,
       computeType:          data.computeType,
+      consoleLogs:          data.consoleLogs ?? false,
       megaEmail:            data.megaEmail ?? null,
       megaSession:          encryptedSession,
       activeTunnelProvider: data.activeTunnelProvider,
@@ -142,6 +147,9 @@ export async function updateWorker(
     data.activeTunnelProvider !== undefined &&
     !(TUNNEL_PROVIDERS as readonly string[]).includes(data.activeTunnelProvider)
   ) return { success: false, message: "Invalid tunnel provider" };
+
+  if (data.consoleLogs !== undefined && typeof data.consoleLogs !== "boolean")
+    return { success: false, message: "Invalid console logs setting" };
 
   if (
     data.activeTunnelProvider === "pinggy" &&
@@ -204,6 +212,7 @@ export async function updateWorker(
   if (data.name !== undefined)             updates.name             = data.name.trim();
   if (data.downloadLocation !== undefined) updates.downloadLocation = data.downloadLocation;
   if (data.computeType !== undefined)      updates.computeType      = data.computeType;
+  if (data.consoleLogs !== undefined)      updates.consoleLogs      = data.consoleLogs;
   if (data.megaEmail !== undefined)        updates.megaEmail        = data.megaEmail;
   if (data.megaSession !== undefined)
     updates.megaSession = data.megaSession ? encryptCredentials(data.megaSession) : null;

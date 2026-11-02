@@ -6,6 +6,7 @@ export interface CreateWorkerData {
   name:                 string;
   downloadLocation:     "local" | "mega";
   computeType:          "low" | "medium" | "high";
+  consoleLogs?:         boolean;
   activeTunnelProvider: TunnelProvider;
   pinggyToken?:         string;
   zrokToken?:           string;
@@ -17,6 +18,7 @@ export interface UpdateWorkerData {
   name?:                 string;
   downloadLocation?:     "local" | "mega";
   computeType?:          "low" | "medium" | "high";
+  consoleLogs?:          boolean;
   activeTunnelProvider?: TunnelProvider;
   pinggyToken?:          string;
   zrokToken?:            string;

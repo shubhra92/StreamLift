@@ -11,9 +11,17 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { AddWorkerModalProps } from "./types";
 import type { CreateWorkerData } from "@/app/service/workerService";
 import { megaLogin } from "@/app/lib/megaLogin";
+import { ConsoleLogsToggle } from "./ConsoleLogsToggle";
 import {
   TUNNEL_PROVIDERS,
   TUNNEL_PROVIDER_META,
@@ -24,16 +32,20 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
   const [name, setName]                         = useState("");
   const [downloadLocation, setDownloadLocation] = useState<"local" | "mega">("local");
   const [computeType, setComputeType]           = useState<"low" | "medium" | "high">("medium");
+  const [consoleLogs, setConsoleLogs]           = useState(false);
   const [tunnelProvider, setTunnelProvider]     = useState<TunnelProvider>("pinggy");
-  // Primary token (Pinggy token / zrok token)
   const [tokenValue, setTokenValue]             = useState("");
   const [megaEmail, setMegaEmail]               = useState("");
   const [megaPassword, setMegaPassword]         = useState("");
   const [megaSession, setMegaSession]           = useState<object | null>(null);
   const [loggingIn, setLoggingIn]               = useState(false);
   const [errors, setErrors]                     = useState<Record<string, string>>({});
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
 
   const meta = TUNNEL_PROVIDER_META[tunnelProvider];
+
+  // Form is "dirty" if the user has typed anything meaningful
+  const isDirty = name.trim() !== "" || tokenValue.trim() !== "" || megaEmail.trim() !== "" || megaPassword !== "";
 
   const validateForm = (): boolean => {
     const e: Record<string, string> = {};
@@ -78,6 +90,7 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
       name:                 name.trim(),
       downloadLocation,
       computeType,
+      consoleLogs,
       activeTunnelProvider: tunnelProvider,
       pinggyToken:          tunnelProvider === "pinggy"  ? tokenValue.trim()    : undefined,
       zrokToken:            tunnelProvider === "zrok"    ? tokenValue.trim()    : undefined,
@@ -91,17 +104,40 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
     await onSubmit(base);
   };
 
-  const handleClose = () => {
+  const resetForm = () => {
     setName("");
     setDownloadLocation("local");
     setComputeType("medium");
+    setConsoleLogs(false);
     setTunnelProvider("pinggy");
     setTokenValue("");
     setMegaEmail("");
     setMegaPassword("");
     setMegaSession(null);
     setErrors({});
+  };
+
+  // Called by Cancel button and X button — shows confirm if dirty
+  const handleCloseIntent = () => {
+    if (isDirty) {
+      setShowDiscardConfirm(true);
+    } else {
+      resetForm();
+      onClose();
+    }
+  };
+
+  // Confirmed discard
+  const handleDiscard = () => {
+    setShowDiscardConfirm(false);
+    resetForm();
     onClose();
+  };
+
+  // Outside-click handler — silently block when dirty
+  const handleOpenChange = (open: boolean) => {
+    if (!open && isDirty) return; // swallow the close
+    if (!open) { resetForm(); onClose(); }
   };
 
   const handleProviderChange = (p: TunnelProvider) => {
@@ -119,76 +155,185 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
   const megaReady = megaSession !== null;
 
   return (
-    <Dialog open={isOpen} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Create Worker</DialogTitle>
-          <DialogDescription>
-            Configure your worker's name, storage, compute resources, and tunnel connection.
-          </DialogDescription>
-        </DialogHeader>
-        <AnimatePresence>
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            className="space-y-4"
-          >
+    <>
+      <Dialog open={isOpen} onOpenChange={handleOpenChange}>
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Create Worker</DialogTitle>
+            <DialogDescription>
+              Configure your worker's name, storage, compute resources, and tunnel connection.
+            </DialogDescription>
+          </DialogHeader>
+          <AnimatePresence>
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-4"
+            >
             {/* Worker Name */}
-            <div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">Worker name</label>
               <input
                 type="text"
-                placeholder="Worker name"
+                placeholder="e.g. My Colab Worker"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               />
-              {errors.name && <p className="text-xs text-destructive mt-1">{errors.name}</p>}
+              {errors.name && <p className="text-xs text-destructive">{errors.name}</p>}
             </div>
 
-            {/* Download Location */}
-            <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Download Location</label>
-              <select
-                value={downloadLocation}
-                onChange={(e) => handleLocationChange(e.target.value as "local" | "mega")}
-                className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                <option value="local">Local (Colab disk)</option>
-                <option value="mega">Mega</option>
-              </select>
+            {/* Download Location + Compute Type — side by side */}
+            <div className="flex gap-3">
+              <div className="space-y-1.5 flex-1">
+                <label className="text-sm font-medium text-foreground">Download location</label>
+                <Select value={downloadLocation} onValueChange={(v) => handleLocationChange(v as "local" | "mega")}>
+                  <SelectTrigger className="w-full bg-background text-foreground">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="local">Local (Colab disk)</SelectItem>
+                    <SelectItem value="mega">Mega</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5 flex-1">
+                <label className="text-sm font-medium text-foreground">Compute type</label>
+                <Select value={computeType} onValueChange={(v) => setComputeType(v as "low" | "medium" | "high")}>
+                  <SelectTrigger className="w-full bg-background text-foreground">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">Low — 25% CPU</SelectItem>
+                    <SelectItem value="medium">Medium — 50% CPU</SelectItem>
+                    <SelectItem value="high">High — 100% CPU</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
 
-            {/* Compute Type */}
-            <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Compute Type</label>
-              <select
-                value={computeType}
-                onChange={(e) => setComputeType(e.target.value as "low" | "medium" | "high")}
-                className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                <option value="low">Low — 25% CPU, 512 KB chunks</option>
-                <option value="medium">Medium — 50% CPU, 1 MB chunks</option>
-                <option value="high">High — 100% CPU, 2 MB chunks</option>
-              </select>
+            {/* Mega login box (conditional on location = mega) */}
+            <AnimatePresence>
+              {downloadLocation === "mega" && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                >
+                  <div className="rounded-md border bg-muted/40 px-4 pt-3 pb-4 space-y-3">
+                    <p className="text-sm font-medium text-foreground">Mega account</p>
+                    {!megaReady ? (
+                      <>
+                        <div className="relative">
+                          <input
+                            id="mega-email-add"
+                            type="email"
+                            placeholder=" "
+                            value={megaEmail}
+                            onChange={(e) => setMegaEmail(e.target.value)}
+                            className="peer w-full px-3 py-1.5 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring text-sm"
+                          />
+                          <label
+                            htmlFor="mega-email-add"
+                            className="absolute left-3 top-1.5 text-xs text-muted-foreground bg-background px-1
+                              transition-all duration-150 pointer-events-none
+                              peer-placeholder-shown:top-1.5 peer-placeholder-shown:text-xs
+                              peer-focus:-top-2 peer-focus:text-[10px] peer-focus:text-foreground
+                              peer-not-placeholder-shown:-top-2 peer-not-placeholder-shown:text-[10px]"
+                          >
+                            Mega email
+                          </label>
+                        </div>
+                        <div className="relative">
+                          <input
+                            id="mega-password-add"
+                            type="password"
+                            placeholder=" "
+                            value={megaPassword}
+                            onChange={(e) => setMegaPassword(e.target.value)}
+                            className="peer w-full px-3 py-1.5 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring text-sm"
+                          />
+                          <label
+                            htmlFor="mega-password-add"
+                            className="absolute left-3 top-1.5 text-xs text-muted-foreground bg-background px-1
+                              transition-all duration-150 pointer-events-none
+                              peer-placeholder-shown:top-1.5 peer-placeholder-shown:text-xs
+                              peer-focus:-top-2 peer-focus:text-[10px] peer-focus:text-foreground
+                              peer-not-placeholder-shown:-top-2 peer-not-placeholder-shown:text-[10px]"
+                          >
+                            Mega password
+                          </label>
+                        </div>
+                        <Button
+                          onClick={handleMegaLogin}
+                          disabled={loggingIn}
+                          className="w-full bg-emerald-600 hover:bg-emerald-700 cursor-pointer"
+                        >
+                          {loggingIn ? "Logging into Mega..." : "Login to Mega"}
+                        </Button>
+                        {errors.megaLogin && (
+                          <p className="text-xs text-destructive">{errors.megaLogin}</p>
+                        )}
+                        <p className="text-xs text-muted-foreground text-center">
+                          Login happens in your browser — your password is never stored on the server.
+                        </p>
+                      </>
+                    ) : (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.96 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="flex items-center justify-between gap-2 rounded-md border border-green-300/60 bg-green-50 dark:bg-green-900/20 px-4 py-2.5"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-green-800 dark:text-green-200">
+                              Mega session ready
+                            </p>
+                            <p className="text-xs text-green-700 dark:text-green-300 truncate">
+                              {megaEmail}
+                            </p>
+                          </div>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleChangeAccount}
+                          className="h-7 text-xs shrink-0 cursor-pointer"
+                        >
+                          Change account
+                        </Button>
+                      </motion.div>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Console logs */}
+            <div className="rounded-md border bg-muted/40 px-4 py-3">
+              <ConsoleLogsToggle enabled={consoleLogs} onChange={setConsoleLogs} />
             </div>
 
             {/* Tunnel Provider */}
-            <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Tunnel Provider</label>
-              <select
-                value={tunnelProvider}
-                onChange={(e) => handleProviderChange(e.target.value as TunnelProvider)}
-                className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                {TUNNEL_PROVIDERS.map((p) => (
-                  <option key={p} value={p}>
-                    {TUNNEL_PROVIDER_META[p].label}
-                    {!TUNNEL_PROVIDER_META[p].needsToken ? " (no token needed)" : ""}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-muted-foreground mt-1">{meta.description}</p>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">Tunnel provider</label>
+              <Select value={tunnelProvider} onValueChange={(v) => handleProviderChange(v as TunnelProvider)}>
+                <SelectTrigger className="w-full bg-background text-foreground">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TUNNEL_PROVIDERS.map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {TUNNEL_PROVIDER_META[p].label}
+                      {!TUNNEL_PROVIDER_META[p].needsToken ? " (no token needed)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">{meta.description}</p>
             </div>
 
             {/* Primary token field (Pinggy / zrok) */}
@@ -199,107 +344,38 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: "auto" }}
                   exit={{ opacity: 0, height: 0 }}
-                  className="overflow-hidden"
                 >
-                  <label className="text-xs text-muted-foreground mb-1 block">
-                    {meta.tokenLabel}
-                    {meta.docsUrl && (
-                      <a
-                        href={meta.docsUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="ml-1 text-blue-500 hover:underline"
-                      >
-                        ({meta.tokenHint})
-                      </a>
-                    )}
-                  </label>
-                  <input
-                    type="text"
-                    placeholder={meta.tokenPlaceholder}
-                    value={tokenValue}
-                    onChange={(e) => setTokenValue(e.target.value)}
-                    className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring font-mono text-sm"
-                  />
-                  {errors.token && (
-                    <p className="text-xs text-destructive mt-1">{errors.token}</p>
-                  )}
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Mega login (conditional) */}
-            <AnimatePresence>
-              {downloadLocation === "mega" && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="space-y-3 overflow-hidden"
-                >
-                  {!megaReady ? (
-                    <>
-                      <input
-                        type="email"
-                        placeholder="Mega email"
-                        value={megaEmail}
-                        onChange={(e) => setMegaEmail(e.target.value)}
-                        className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                      />
-                      <input
-                        type="password"
-                        placeholder="Mega password"
-                        value={megaPassword}
-                        onChange={(e) => setMegaPassword(e.target.value)}
-                        className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                      />
-                      <Button
-                        onClick={handleMegaLogin}
-                        disabled={loggingIn}
-                        className="w-full bg-emerald-600 hover:bg-emerald-700 cursor-pointer"
-                      >
-                        {loggingIn ? "Logging into Mega..." : "Login to Mega"}
-                      </Button>
-                      {errors.megaLogin && (
-                        <p className="text-xs text-destructive">{errors.megaLogin}</p>
+                  <div className="space-y-1.5 pt-px pb-1">
+                    <label className="text-sm font-medium text-foreground">
+                      {meta.tokenLabel}
+                      {meta.docsUrl && (
+                        <a
+                          href={meta.docsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ml-1.5 text-sm font-normal text-blue-500 hover:underline"
+                        >
+                          {meta.tokenHint} ↗
+                        </a>
                       )}
-                      <p className="text-[11px] text-muted-foreground text-center">
-                        Mega login happens in your browser — the password is never stored on the server.
-                      </p>
-                    </>
-                  ) : (
-                    <motion.div
-                      initial={{ opacity: 0, scale: 0.96 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      className="flex items-center justify-between gap-2 rounded-lg border border-green-300/60 bg-green-50 dark:bg-green-900/20 px-3 py-2.5"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-green-800 dark:text-green-200">
-                            Mega session ready
-                          </p>
-                          <p className="text-xs text-green-700 dark:text-green-300 truncate">
-                            {megaEmail}
-                          </p>
-                        </div>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={handleChangeAccount}
-                        className="h-7 text-xs shrink-0 cursor-pointer"
-                      >
-                        Change account
-                      </Button>
-                    </motion.div>
-                  )}
+                    </label>
+                    <input
+                      type="text"
+                      placeholder={meta.tokenPlaceholder}
+                      value={tokenValue}
+                      onChange={(e) => setTokenValue(e.target.value)}
+                      className="w-full p-3 border rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring font-mono text-sm"
+                    />
+                    {errors.token && (
+                      <p className="text-xs text-destructive">{errors.token}</p>
+                    )}
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
 
-            <div className="flex flex-col-reverse sm:flex-row gap-3">
-              <Button variant="outline" onClick={handleClose} className="flex-1 cursor-pointer">
+            <div className="flex flex-col-reverse sm:flex-row gap-3 pt-1">
+              <Button variant="outline" onClick={handleCloseIntent} className="flex-1 cursor-pointer">
                 Cancel
               </Button>
               <Button
@@ -311,7 +387,7 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
               </Button>
             </div>
             {downloadLocation === "mega" && !megaReady && (
-              <p className="text-[11px] text-muted-foreground text-center">
+              <p className="text-xs text-muted-foreground text-center">
                 Log in to Mega to enable creating this worker.
               </p>
             )}
@@ -319,5 +395,33 @@ export function AddWorkerModal({ isOpen, onClose, onSubmit, loading }: AddWorker
         </AnimatePresence>
       </DialogContent>
     </Dialog>
+
+      {/* Discard confirmation */}
+      <Dialog open={showDiscardConfirm} onOpenChange={setShowDiscardConfirm}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Discard changes?</DialogTitle>
+            <DialogDescription>
+              You have unsaved input. If you close now, everything you typed will be lost.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col-reverse sm:flex-row gap-2 mt-2">
+            <Button
+              variant="outline"
+              onClick={() => setShowDiscardConfirm(false)}
+              className="flex-1 cursor-pointer"
+            >
+              Keep editing
+            </Button>
+            <Button
+              onClick={handleDiscard}
+              className="flex-1 bg-destructive hover:bg-destructive/90 cursor-pointer"
+            >
+              Discard
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

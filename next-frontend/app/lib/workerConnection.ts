@@ -1662,6 +1662,8 @@ export interface WorkerLiveData {
   logs:           WorkerLog[];
   uptimeSeconds:  number | null;
   disk:           WorkerDiskMetrics | null;
+  /** Effective console setting of the running worker (null = unknown). */
+  consoleLogs:    boolean | null;
 }
 
 function toWorkerDiskMetrics(raw: unknown): WorkerDiskMetrics | null {
@@ -1731,6 +1733,7 @@ function toWorkerLiveData(raw: unknown): WorkerLiveData {
     logs,
     uptimeSeconds: toNumberOrNull(data.uptimeSeconds),
     disk:          toWorkerDiskMetrics(data.disk),
+    consoleLogs:   typeof data.consoleLogs === "boolean" ? data.consoleLogs : null,
   };
 }
 

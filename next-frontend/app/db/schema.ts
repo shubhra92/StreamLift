@@ -30,6 +30,7 @@ export const workers = pgTable('workers', {
   name: text('name').notNull(),                          // unique per guest — see table constraint below
   downloadLocation: text('download_location').notNull(), // 'local' | 'mega'
   computeType: text('compute_type').notNull(),           // 'low' | 'medium' | 'high'
+  consoleLogs: boolean('console_logs').notNull().default(true), // print worker logs to the console
   megaEmail: text('mega_email'),
   megaSession: text('mega_session'),                     // AES-256-GCM encrypted session JSON (session-only mode)
   megaNeedsRelink: boolean('mega_needs_relink').default(false), // set by worker when session dies

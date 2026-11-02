@@ -144,6 +144,7 @@ const EMPTY_LIVE_DATA: WorkerLiveData = {
   logs:           [],
   uptimeSeconds:  null,
   disk:           null,
+  consoleLogs:    null,
 };
 
 export function WorkerDetails({ worker, status, onClose, onRelinked }: WorkerDetailsProps) {
@@ -199,6 +200,10 @@ export function WorkerDetails({ worker, status, onClose, onRelinked }: WorkerDet
   const tunnelLabel = online
     ? formatTunnelProvider(liveData.tunnelProvider ?? worker?.activeTunnelProvider)
     : "--";
+
+  // Only report what the running worker actually applied. The saved setting
+  // takes effect after a restart, so the DB value is not the live state.
+  const consoleLogs = online ? liveData.consoleLogs : null;
 
   const workerCountryFlag = countryFlag(worker?.countryCode);
   const publicIp = online && worker?.ipAddress
@@ -448,10 +453,13 @@ export function WorkerDetails({ worker, status, onClose, onRelinked }: WorkerDet
                     <Field label="↑ Speed" value={formatSpeed(metrics.uploadSpeed)} />
                   </div>
                 )}
-                <div className="grid grid-cols-3 gap-3">
+                <div className={`grid gap-3 ${consoleLogs != null ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3"}`}>
                   <Field label="Downloads"   value={String(worker.totalDownloads ?? 0)} />
                   <Field label="Transferred" value={formatBytes(worker.totalBytes ?? 0)} />
                   <Field label="Uptime"      value={formatUptime(liveData.uptimeSeconds ?? worker.totalUptime ?? 0)} />
+                  {consoleLogs != null && (
+                    <Field label="Console Logs" value={consoleLogs ? "On" : "Off"} />
+                  )}
                 </div>
               </div>
             </div>
