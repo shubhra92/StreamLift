@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { approveTvCode, disconnectTv } from "@/app/lib/tvClient";
-import { isValidTvCode, normalizeTvCode } from "@/app/lib/tvConstants";
+import { formatTvCode, isValidTvCode, normalizeTvCode } from "@/app/lib/tvConstants";
 import type { TvDeviceSummary } from "@/app/lib/tvTypes";
 
 interface Props {
@@ -126,21 +126,38 @@ export function ConnectToTvDialog({
             </label>
             <input
               id="tv-pairing-code"
-              value={code}
+              value={formatTvCode(code)}
               onChange={(event) => {
-                setCode(normalizeTvCode(event.target.value));
+                // Strip the hyphen separator before normalizing — the hyphen is
+                // display-only and should never count as a typed character.
+                const raw = event.target.value.replace(/-/g, "");
+                setCode(normalizeTvCode(raw));
                 setSubmitError(null);
                 setSuccess(null);
               }}
               onKeyDown={(event) => {
-                if (event.key === "Enter") void handleApprove();
+                if (event.key === "Enter") {
+                  void handleApprove();
+                  return;
+                }
+                // When the cursor is right after the hyphen (position 4) and
+                // the user presses Backspace, skip the hyphen and delete the
+                // character before it instead.
+                if (event.key === "Backspace") {
+                  const input = event.currentTarget;
+                  const pos = input.selectionStart ?? input.value.length;
+                  if (pos === 4) {
+                    event.preventDefault();
+                    setCode((prev) => prev.slice(0, 2) + prev.slice(3));
+                  }
+                }
               }}
               placeholder="ABC-DEF"
               autoComplete="one-time-code"
               autoCapitalize="characters"
               spellCheck={false}
               inputMode="text"
-              maxLength={6}
+              maxLength={7}
               autoFocus
               className="mt-2 h-14 w-full rounded-lg border bg-background px-4 text-center font-mono text-2xl font-semibold uppercase tracking-[0.35em] outline-none transition-colors focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
               aria-describedby="tv-code-hint"
