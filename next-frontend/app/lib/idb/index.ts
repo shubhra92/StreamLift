@@ -21,7 +21,7 @@ export {
   reconcileWorkers,
 } from "./IDBStore";
 
-export { runGuestGuard, resetGuestGuard } from "./guestGuard";
+export { runWorkspaceGuard, resetWorkspaceGuard } from "./workspaceGuard";
 
 export { default as SyncManager } from "./SyncManager";
 export type { SyncEntity, NetworkStatus } from "./SyncManager";

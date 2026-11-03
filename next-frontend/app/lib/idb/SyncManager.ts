@@ -34,7 +34,7 @@
  *  - Otherwise emits from IDB immediately, no network call
  */
 
-import { runGuestGuard } from "./guestGuard";
+import { runWorkspaceGuard } from "./workspaceGuard";
 import {
   getCursor,
   setCursor,
@@ -152,7 +152,7 @@ class SyncManager {
     if (this.initialized) return;
     this.initialized = true;
 
-    await runGuestGuard();
+    await runWorkspaceGuard();
 
     if (typeof window === "undefined") return;
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireWebGuest } from "@/app/lib/tvAuth";
+import { requireWebSession } from "@/app/lib/tvAuth";
 import { approvePairing } from "@/app/lib/tvPairing";
 import { checkRateLimit, requestIp } from "@/app/lib/tvRateLimit";
 
@@ -13,7 +13,7 @@ export const runtime = "nodejs";
  * its own long-lived device token; the browser cookie is never shared.
  */
 export async function POST(req: NextRequest) {
-  const auth = await requireWebGuest(req);
+  const auth = await requireWebSession(req);
   if (!auth.ok) return auth.response;
 
   const ip = requestIp(req.headers);
@@ -25,8 +25,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const guestLimit = checkRateLimit(`tv-approve-guest:${auth.guest.id}`, 20, 60 * 60 * 1000);
-  if (!guestLimit.ok) {
+  const workspaceLimit = checkRateLimit(`tv-approve-workspace:${auth.context.workspace.id}`, 20, 60 * 60 * 1000);
+  if (!workspaceLimit.ok) {
     return NextResponse.json(
       { success: false, error: "rate_limited", message: "Too many attempts for this session." },
       { status: 429 },
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const result = await approvePairing(typeof body.code === "string" ? body.code : "", auth.guest.id);
+  const result = await approvePairing(typeof body.code === "string" ? body.code : "", auth.context.workspace.id);
 
   if ("error" in result) {
     return NextResponse.json(

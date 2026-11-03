@@ -1,18 +1,98 @@
-import { pgTable, text, timestamp, integer, boolean, uuid, bigint, unique, index } from 'drizzle-orm/pg-core';
+import {
+  pgTable,
+  text,
+  timestamp,
+  integer,
+  boolean,
+  uuid,
+  bigint,
+  unique,
+  uniqueIndex,
+  index,
+} from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
-export const guests = pgTable('guests', {
+/**
+ * A permanent account. Credentials only — the workspace owns all resources.
+ *
+ * Users and workspaces are linked 1:1 for now through
+ * workspaces.owner_user_id. A future workspace_members table can make this
+ * many-to-many without moving any data.
+ */
+export const users = pgTable('users', {
   id: uuid('id').defaultRandom().primaryKey(),
-  token: text('token').notNull().unique(),  // stored in httpOnly cookie
+  email: text('email').notNull().unique(),          // always stored lowercase
+  passwordHash: text('password_hash').notNull(),    // scrypt$N$r$p$salt$hash
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+  lastLoginAt: timestamp('last_login_at'),
+});
+
+export type User = typeof users.$inferSelect;
+export type NewUser = typeof users.$inferInsert;
+
+/**
+ * A tenant. Every guest, download, worker, and TV device belongs to one.
+ *
+ * owner_user_id IS NULL  → anonymous guest workspace
+ * owner_user_id IS NOT NULL → permanent account workspace
+ */
+export const workspaces = pgTable('workspaces', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  ownerUserId: uuid('owner_user_id').references(() => users.id),
+  name: text('name').notNull().default('Personal workspace'),
+  // Deprecated: only used for one-release rollback to the old guest-token
+  // model. New code authenticates through auth_sessions instead.
+  legacyToken: text('legacy_token'),
   ipAddress: text('ip_address'),
   userAgent: text('user_agent'),
   isActive: boolean('is_active').default(true),
   lastSeenAt: timestamp('last_seen_at').defaultNow(),
   createdAt: timestamp('created_at').defaultNow(),
-  expiresAt: timestamp('expires_at').notNull(),
-});
+  // null = permanent account workspace; a date = anonymous guest workspace
+  expiresAt: timestamp('expires_at'),
+  // Soft delete for a future retention job. No destructive cleanup yet.
+  deletedAt: timestamp('deleted_at'),
+}, (t) => [
+  uniqueIndex('workspaces_owner_user_unique')
+    .on(t.ownerUserId)
+    .where(sql`${t.ownerUserId} is not null`),
+  index('workspaces_cleanup_idx')
+    .on(t.expiresAt)
+    .where(sql`${t.ownerUserId} is null and ${t.deletedAt} is null`),
+]);
 
-export type Guest = typeof guests.$inferSelect;
-export type NewGuest = typeof guests.$inferInsert;
+export type Workspace = typeof workspaces.$inferSelect;
+export type NewWorkspace = typeof workspaces.$inferInsert;
+
+/**
+ * One row per signed-in browser/device. The cookie holds a 256-bit random
+ * token; only its SHA-256 hash is stored here.
+ *
+ * user_id IS NULL → anonymous guest session
+ * user_id IS NOT NULL → authenticated account session
+ */
+export const authSessions = pgTable('auth_sessions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  tokenHash: text('token_hash').notNull().unique(),
+  workspaceId: uuid('workspace_id')
+    .notNull()
+    .references(() => workspaces.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  expiresAt: timestamp('expires_at').notNull(),
+  lastSeenAt: timestamp('last_seen_at').defaultNow(),
+  createdAt: timestamp('created_at').defaultNow(),
+  revokedAt: timestamp('revoked_at'),
+  ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+}, (t) => [
+  index('auth_sessions_workspace_idx').on(t.workspaceId),
+  index('auth_sessions_user_idx').on(t.userId),
+  index('auth_sessions_expiry_idx').on(t.expiresAt),
+]);
+
+export type AuthSession = typeof authSessions.$inferSelect;
+export type NewAuthSession = typeof authSessions.$inferInsert;
 
 export const megaSessions = pgTable('mega_sessions', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -26,8 +106,8 @@ export const megaSessions = pgTable('mega_sessions', {
 
 export const workers = pgTable('workers', {
   id: uuid('id').defaultRandom().primaryKey(),
-  guestId: uuid('guest_id').references(() => guests.id), // owning guest
-  name: text('name').notNull(),                          // unique per guest — see table constraint below
+  workspaceId: uuid('workspace_id').references(() => workspaces.id), // owning workspace
+  name: text('name').notNull(),                          // unique per workspace — see table constraint below
   downloadLocation: text('download_location').notNull(), // 'local' | 'mega'
   computeType: text('compute_type').notNull(),           // 'low' | 'medium' | 'high'
   consoleLogs: boolean('console_logs').notNull().default(true), // print worker logs to the console
@@ -52,7 +132,7 @@ export const workers = pgTable('workers', {
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 }, (t) => [
-  unique('workers_name_guest_unique').on(t.name, t.guestId), // name unique per guest
+  unique('workers_name_workspace_unique').on(t.name, t.workspaceId), // name unique per workspace
 ]);
 
 export type Worker = typeof workers.$inferSelect;
@@ -60,7 +140,7 @@ export type NewWorker = typeof workers.$inferInsert;
 
 export const fileDownloads = pgTable('file_downloads', {
   id: uuid('id').defaultRandom().primaryKey(),
-  guestId: uuid('guest_id').references(() => guests.id),   // owning guest
+  workspaceId: uuid('workspace_id').references(() => workspaces.id),   // owning workspace
   sessionId: uuid('session_id').references(() => megaSessions.id),
   workerId: uuid('worker_id').references(() => workers.id), // assigned worker (nullable)
   fileName: text('file_name').default("default"),
@@ -84,12 +164,12 @@ export type FileDownload = typeof fileDownloads.$inferSelect;
 // ── Android TV pairing ────────────────────────────────────────────────────────
 
 /**
- * A paired Android TV. The TV never holds the browser guest cookie — it gets
+ * A paired Android TV. The TV never holds the browser session cookie — it gets
  * its own bearer token, hashed here, so the web UI can revoke individual TVs.
  */
 export const tvDevices = pgTable('tv_devices', {
   id: uuid('id').defaultRandom().primaryKey(),
-  guestId: uuid('guest_id').notNull().references(() => guests.id, { onDelete: 'cascade' }),
+  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id, { onDelete: 'cascade' }),
   name: text('name').notNull().default('Android TV'),
   model: text('model'),
   appVersion: text('app_version'),
@@ -98,7 +178,7 @@ export const tvDevices = pgTable('tv_devices', {
   createdAt: timestamp('created_at').defaultNow(),
   revokedAt: timestamp('revoked_at'),
 }, (t) => [
-  index('tv_devices_guest_idx').on(t.guestId),
+  index('tv_devices_workspace_idx').on(t.workspaceId),
   index('tv_devices_token_idx').on(t.tokenHash),
 ]);
 
@@ -118,7 +198,7 @@ export const tvPairings = pgTable('tv_pairings', {
   model: text('model'),
   appVersion: text('app_version'),
   status: text('status').notNull().default('pending'), // pending | approved | denied | expired
-  guestId: uuid('guest_id').references(() => guests.id, { onDelete: 'cascade' }),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
   deviceId: uuid('device_id').references(() => tvDevices.id, { onDelete: 'cascade' }),
   attempts: integer('attempts').notNull().default(0),
   ipHash: text('ip_hash'),

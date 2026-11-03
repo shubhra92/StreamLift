@@ -5,7 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
+import { requireWorkspaceId } from "@/app/lib/sessionAuth";
 import { db } from "@/app/db";
 import { fileDownloads } from "@/app/db/schema";
 import { eq, and, gte, desc } from "drizzle-orm";
@@ -13,11 +13,9 @@ import { eq, and, gte, desc } from "drizzle-orm";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  const token = req.cookies.get(GUEST_COOKIE_NAME)?.value;
-  if (!token) return NextResponse.json({ data: [], syncedAt: new Date().toISOString() });
-
-  const guest = await validateGuestToken(token);
-  if (!guest) return NextResponse.json({ data: [], syncedAt: new Date().toISOString() });
+  const auth = await requireWorkspaceId(req);
+  if (!auth.ok) return NextResponse.json({ data: [], syncedAt: new Date().toISOString() });
+  const workspaceId = auth.workspaceId;
 
   const syncedAt = new Date().toISOString();
   const since   = req.nextUrl.searchParams.get("since")    ?? undefined;
@@ -25,7 +23,7 @@ export async function GET(req: NextRequest) {
 
   const conditions = [
     eq(fileDownloads.downloadType, "torrent"),
-    eq(fileDownloads.guestId, guest.id),
+    eq(fileDownloads.workspaceId, workspaceId),
   ];
 
   if (since) {
@@ -38,7 +36,7 @@ export async function GET(req: NextRequest) {
       .from(fileDownloads)
       .where(and(
         eq(fileDownloads.downloadType, "torrent"),
-        eq(fileDownloads.guestId, guest.id),
+        eq(fileDownloads.workspaceId, workspaceId),
       ));
     return NextResponse.json({ ids: rows.map((r) => r.id), syncedAt });
   }

@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
     {
       success: true,
       device: toDeviceSummary(auth.device),
-      guest: { expiresAt: auth.guest.expiresAt.toISOString() },
+      guest: { expiresAt: auth.workspace.expiresAt?.toISOString() ?? null },
       serverTime: new Date().toISOString(),
     },
     { headers: { "Cache-Control": "no-store" } },
@@ -27,8 +27,8 @@ export async function DELETE(req: NextRequest) {
   const auth = await requireTvDevice(req);
   if (!auth.ok) return auth.response;
 
-  await revokeTvDevice(auth.guest.id, auth.device.id);
-  clearTvCatalogCache(auth.guest.id);
+  await revokeTvDevice(auth.workspace.id, auth.device.id);
+  clearTvCatalogCache(auth.workspace.id);
 
   return NextResponse.json({ success: true }, { headers: { "Cache-Control": "no-store" } });
 }

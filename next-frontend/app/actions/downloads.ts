@@ -3,7 +3,7 @@
 import { db, fileDownloads } from "../db";
 import { desc, eq, and } from "drizzle-orm";
 import { workers } from "../db/schema";
-import { getGuestId } from "../lib/getGuestId";
+import { getWorkspaceId } from "../lib/getWorkspaceId";
 import type { FileDownload } from "../db/schema";
 
 const ONLINE_THRESHOLD_MS = 20_000; // 20 seconds
@@ -12,13 +12,13 @@ const ONLINE_THRESHOLD_MS = 20_000; // 20 seconds
  *  Uses DB last_heartbeat for online check — no in-memory store. */
 async function resolveWorkerAssignment(
   location: string,
-  guestId: string
+  workspaceId: string
 ): Promise<{ workerId: string | null; error?: string }> {
   if (location === "all-workers") {
     const allWorkers = await db
       .select()
       .from(workers)
-      .where(eq(workers.guestId, guestId));
+      .where(eq(workers.workspaceId, workspaceId));
 
     // Pick an online idle worker — prefer ones with no current session token activity
     const now = Date.now();
@@ -37,7 +37,7 @@ async function resolveWorkerAssignment(
     const [worker] = await db
       .select()
       .from(workers)
-      .where(and(eq(workers.id, workerId), eq(workers.guestId, guestId)))
+      .where(and(eq(workers.id, workerId), eq(workers.workspaceId, workspaceId)))
       .limit(1);
     if (!worker) return { workerId: null, error: "Worker not found" };
     return { workerId: worker.id };
@@ -54,9 +54,9 @@ export async function createDownload(
   fileType?: string | null,
   downloadType: "http" | "hls" = "http",
 ) {
-  const guestId = await getGuestId();
-  if (!guestId) throw new Error("Unauthorized");
-  const { workerId, error } = await resolveWorkerAssignment(location, guestId);
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) throw new Error("Unauthorized");
+  const { workerId, error } = await resolveWorkerAssignment(location, workspaceId);
   if (error) throw new Error(error);
 
   if (downloadType === "hls") {
@@ -68,7 +68,7 @@ export async function createDownload(
   const dt = downloadType === "hls" ? "hls" : "http";
 
   const [data] = await db.insert(fileDownloads).values({
-    guestId: guestId ?? undefined,
+    workspaceId: workspaceId ?? undefined,
     sourceUrl,
     location,
     workerId,
@@ -90,14 +90,14 @@ export interface DeltaSyncResult<T> {
 export async function getDownloads(
   since?: string
 ): Promise<DeltaSyncResult<FileDownload>> {
-  const guestId = await getGuestId();
-  if (!guestId) return { data: [], syncedAt: new Date().toISOString() };
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) return { data: [], syncedAt: new Date().toISOString() };
 
   const syncedAt = new Date().toISOString();
 
   const conditions = [
     eq(fileDownloads.downloadType, "http"),
-    eq(fileDownloads.guestId, guestId),
+    eq(fileDownloads.workspaceId, workspaceId),
   ];
 
   // Delta sync: only return rows updated after the cursor
@@ -118,12 +118,12 @@ export async function getDownloads(
 export async function getAllDownloads(
   since?: string
 ): Promise<DeltaSyncResult<FileDownload>> {
-  const guestId = await getGuestId();
-  if (!guestId) return { data: [], syncedAt: new Date().toISOString() };
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) return { data: [], syncedAt: new Date().toISOString() };
 
   const syncedAt = new Date().toISOString();
 
-  const conditions = [eq(fileDownloads.guestId, guestId)];
+  const conditions = [eq(fileDownloads.workspaceId, workspaceId)];
 
   // Delta sync: only return rows updated after the cursor
   if (since) {
@@ -154,8 +154,8 @@ export async function getAllDownloads(
 export async function claimDownload(
   id: string
 ): Promise<{ success: boolean; data?: FileDownload }> {
-  const guestId = await getGuestId();
-  if (!guestId) return { success: false };
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) return { success: false };
 
   // UPDATE WHERE status = 'pending' — only succeeds for one caller
   const [claimed] = await db
@@ -164,7 +164,7 @@ export async function claimDownload(
     .where(
       and(
         eq(fileDownloads.id, id),
-        eq(fileDownloads.guestId, guestId),
+        eq(fileDownloads.workspaceId, workspaceId),
         eq(fileDownloads.status, "pending")
       )
     )
@@ -179,26 +179,26 @@ export async function claimDownload(
 }
 
 export async function getDownloadById(fileId: string) {
-  const guestId = await getGuestId();
-  if (!guestId) return undefined;
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) return undefined;
 
   const [download] = await db
     .select()
     .from(fileDownloads)
-    .where(and(eq(fileDownloads.id, fileId), eq(fileDownloads.guestId, guestId)))
+    .where(and(eq(fileDownloads.id, fileId), eq(fileDownloads.workspaceId, workspaceId)))
     .limit(1);
 
   return download;
 }
 
 export async function deleteDownload(id: string) {
-  const guestId = await getGuestId();
-  if (!guestId) return { success: false, message: "Unauthorized" };
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) return { success: false, message: "Unauthorized" };
 
   const [existing] = await db
     .select()
     .from(fileDownloads)
-    .where(and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId)));
+    .where(and(eq(fileDownloads.id, id), eq(fileDownloads.workspaceId, workspaceId)));
 
   if (!existing) return { success: false, message: "Download not found" };
   if (existing.status === "downloading") {
@@ -210,13 +210,13 @@ export async function deleteDownload(id: string) {
 }
 
 export async function updateDownload(id: string, data: Partial<Omit<FileDownload, "id" | "createdAt" | "updatedAt">>) {
-  const guestId = await getGuestId();
-  if (!guestId) return { success: false, message: "Unauthorized" };
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) return { success: false, message: "Unauthorized" };
 
   const [existing] = await db
     .select()
     .from(fileDownloads)
-    .where(and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId)));
+    .where(and(eq(fileDownloads.id, id), eq(fileDownloads.workspaceId, workspaceId)));
 
   if (!existing) {
     return { success: false, message: "Download not found" };

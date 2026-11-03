@@ -6,7 +6,7 @@
  * Stores:
  *  - fileDownloads  — local replica of the fileDownloads table
  *  - workers        — local replica of the workers table
- *  - syncMeta       — cursor timestamps + guest guard value
+ *  - syncMeta       — cursor timestamps + workspace guard value
  */
 
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
@@ -41,7 +41,8 @@ export type SyncMetaKey =
   | "workers_cursor"       // max updatedAt seen for workers (delta query)
   | "filedownloads_synced_at" // wall-clock of last completed downloads sync
   | "workers_synced_at"     // wall-clock of last completed workers sync
-  | "guest_id";             // guards against guest rotation
+  | "workspace_id"          // guards against workspace rotation
+  | "guest_id";             // legacy cursor key — read once during migration
 
 // ─── DBSchema ─────────────────────────────────────────────────────────────────
 
@@ -64,7 +65,7 @@ export interface StreamLiftDB extends DBSchema {
   };
   syncMeta: {
     key: SyncMetaKey;
-    value: string;         // ISO timestamp string or guestId string
+    value: string;         // ISO timestamp string or workspaceId string
   };
 }
 

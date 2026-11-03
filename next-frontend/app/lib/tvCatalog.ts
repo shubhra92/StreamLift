@@ -129,10 +129,10 @@ function displayDownloadName(download: FileDownload, file: WorkerLocalFile): str
  * metadata and directly reachable worker thumbnail URLs.
  */
 export async function buildTvCatalog(
-  guestId: string,
+  workspaceId: string,
   options: { force?: boolean } = {},
 ): Promise<TvCatalogPayload> {
-  const cached = catalogCache.get(guestId);
+  const cached = catalogCache.get(workspaceId);
   if (!options.force && cached && Date.now() - cached.at < CATALOG_CACHE_TTL_MS) {
     return cached.data;
   }
@@ -141,7 +141,7 @@ export async function buildTvCatalog(
   const workerRows = await db
     .select()
     .from(workers)
-    .where(and(eq(workers.guestId, guestId), eq(workers.downloadLocation, "local")));
+    .where(and(eq(workers.workspaceId, workspaceId), eq(workers.downloadLocation, "local")));
 
   const onlineWorkers = workerRows.filter(
     (worker) =>
@@ -152,7 +152,7 @@ export async function buildTvCatalog(
   const downloads = await db
     .select()
     .from(fileDownloads)
-    .where(and(eq(fileDownloads.guestId, guestId), eq(fileDownloads.status, "completed")));
+    .where(and(eq(fileDownloads.workspaceId, workspaceId), eq(fileDownloads.status, "completed")));
 
   const downloadsByWorker = new Map<string, FileDownload[]>();
   for (const download of downloads) {
@@ -244,11 +244,11 @@ export async function buildTvCatalog(
     },
   };
 
-  catalogCache.set(guestId, { at: Date.now(), data: payload });
+  catalogCache.set(workspaceId, { at: Date.now(), data: payload });
   return payload;
 }
 
 /** Used when a TV is disconnected so a later re-pair gets a fresh view. */
-export function clearTvCatalogCache(guestId: string): void {
-  catalogCache.delete(guestId);
+export function clearTvCatalogCache(workspaceId: string): void {
+  catalogCache.delete(workspaceId);
 }

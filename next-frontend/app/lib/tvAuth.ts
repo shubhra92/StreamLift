@@ -1,19 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db";
-import { guests, tvDevices } from "../db/schema";
-import type { Guest, TvDevice } from "../db/schema";
-import { GUEST_COOKIE_MAX_AGE, GUEST_COOKIE_NAME } from "./guestConstants";
-import { validateGuestToken } from "./guestAuth";
+import { tvDevices, workspaces } from "../db/schema";
+import type { TvDevice, Workspace } from "../db/schema";
+import {
+  readSessionToken,
+  SESSION_MAX_AGE,
+} from "./sessionConstants";
+import {
+  validateSessionToken,
+  type AuthContext,
+} from "./sessionAuth";
 import { tvHash } from "./tvCrypto";
 import { consumeApprovedPairings } from "./tvPairing";
 
 export type TvAuthResult =
-  | { ok: true; device: TvDevice; guest: Guest }
+  | { ok: true; device: TvDevice; workspace: Workspace }
   | { ok: false; response: NextResponse };
 
-export type WebGuestResult =
-  | { ok: true; guest: Guest }
+export type WebSessionResult =
+  | { ok: true; context: AuthContext }
   | { ok: false; response: NextResponse };
 
 function jsonError(message: string, status: number, code: string): NextResponse {
@@ -32,9 +38,9 @@ function bearerToken(req: NextRequest): string | null {
 /**
  * Authenticate a TV request with its device bearer token.
  *
- * The guest expiry is slid forward on every authenticated TV request. Without
- * this, a paired TV would silently stop working when the 30-day browser guest
- * expires. The web cookie is refreshed separately by the middleware.
+ * Anonymous workspace expiry is slid forward on every authenticated TV request.
+ * Without this, a paired TV would silently stop working when the 30-day web
+ * session expires. Permanent workspaces never expire.
  */
 export async function requireTvDevice(req: NextRequest): Promise<TvAuthResult> {
   const token = bearerToken(req);
@@ -50,23 +56,32 @@ export async function requireTvDevice(req: NextRequest): Promise<TvAuthResult> {
     return { ok: false, response: jsonError("This TV is no longer connected.", 401, "device_revoked") };
   }
 
-  const [guest] = await db.select().from(guests).where(eq(guests.id, device.guestId)).limit(1);
+  const [workspace] = await db
+    .select()
+    .from(workspaces)
+    .where(and(eq(workspaces.id, device.workspaceId), isNull(workspaces.deletedAt)))
+    .limit(1);
 
-  if (!guest || !guest.isActive) {
-    return { ok: false, response: jsonError("This StreamLift session is no longer active.", 401, "guest_inactive") };
+  if (!workspace || !workspace.isActive) {
+    return { ok: false, response: jsonError("This StreamLift session is no longer active.", 401, "workspace_inactive") };
   }
 
   const now = new Date();
-  if (guest.expiresAt.getTime() <= now.getTime()) {
-    return { ok: false, response: jsonError("This StreamLift session has expired. Pair the TV again.", 401, "guest_expired") };
+  if (workspace.expiresAt && workspace.expiresAt.getTime() <= now.getTime()) {
+    return { ok: false, response: jsonError("This StreamLift session has expired. Pair the TV again.", 401, "workspace_expired") };
   }
 
-  const nextGuestExpiry = new Date(now.getTime() + GUEST_COOKIE_MAX_AGE * 1000);
+  // Permanent accounts never expire. Anonymous workspaces keep sliding forward
+  // so a paired TV can keep using the workspace without an open browser tab.
+  const nextWorkspaceExpiry = workspace.ownerUserId
+    ? null
+    : new Date(now.getTime() + SESSION_MAX_AGE * 1000);
+
   await Promise.all([
     db
-      .update(guests)
-      .set({ expiresAt: nextGuestExpiry, lastSeenAt: now })
-      .where(eq(guests.id, guest.id)),
+      .update(workspaces)
+      .set({ expiresAt: nextWorkspaceExpiry, lastSeenAt: now })
+      .where(eq(workspaces.id, workspace.id)),
     db
       .update(tvDevices)
       .set({ lastSeenAt: now })
@@ -79,21 +94,22 @@ export async function requireTvDevice(req: NextRequest): Promise<TvAuthResult> {
   return {
     ok: true,
     device: { ...device, lastSeenAt: now },
-    guest: { ...guest, expiresAt: nextGuestExpiry, lastSeenAt: now },
+    workspace: {
+      ...workspace,
+      expiresAt: nextWorkspaceExpiry,
+      lastSeenAt: now,
+    },
   };
 }
 
-/** Authenticate a web request using the normal guestToken cookie. */
-export async function requireWebGuest(req: NextRequest): Promise<WebGuestResult> {
-  const token = req.cookies.get(GUEST_COOKIE_NAME)?.value;
-  if (!token) return { ok: false, response: jsonError("Unauthorized", 401, "unauthorized") };
-
-  const guest = await validateGuestToken(token);
-  if (!guest) {
+/** Authenticate a web request using the normal session cookie. */
+export async function requireWebSession(req: NextRequest): Promise<WebSessionResult> {
+  const context = await validateSessionToken(readSessionToken(req.cookies));
+  if (!context) {
     return { ok: false, response: jsonError("Unauthorized", 401, "unauthorized") };
   }
 
-  return { ok: true, guest };
+  return { ok: true, context };
 }
 
 export function unauthorizedResponse(message = "Unauthorized", code = "unauthorized"): NextResponse {

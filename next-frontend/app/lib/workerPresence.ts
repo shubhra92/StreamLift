@@ -14,7 +14,7 @@ export function isWorkerOnline(lastHeartbeat: Date | null | undefined, now = Dat
  * intentionally safe to call from every status read; only stale rows that
  * still contain connection data are updated.
  */
-export async function clearStaleWorkerConnections(guestId?: string): Promise<void> {
+export async function clearStaleWorkerConnections(workspaceId?: string): Promise<void> {
   const cutoff = new Date(Date.now() - ONLINE_THRESHOLD_MS);
   const conditions = [
     lt(workers.lastHeartbeat, cutoff),
@@ -25,7 +25,7 @@ export async function clearStaleWorkerConnections(guestId?: string): Promise<voi
       isNotNull(workers.sessionToken),
     ),
   ];
-  if (guestId) conditions.unshift(eq(workers.guestId, guestId));
+  if (workspaceId) conditions.unshift(eq(workers.workspaceId, workspaceId));
 
   await db
     .update(workers)

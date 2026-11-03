@@ -9,7 +9,7 @@ import {
   TV_CODE_LENGTH,
   TV_CODE_TTL_MS,
   TV_DEVICE_ONLINE_MS,
-  TV_MAX_DEVICES_PER_GUEST,
+  TV_MAX_DEVICES_PER_WORKSPACE,
   isValidTvCode,
   normalizeTvCode,
 } from "./tvConstants";
@@ -212,7 +212,7 @@ export interface ApprovedPairing {
  */
 export async function approvePairing(
   rawCode: string,
-  guestId: string,
+  workspaceId: string,
 ): Promise<ApprovedPairing | { error: string; status: number }> {
   const code = normalizeTvCode(rawCode);
   if (!isValidTvCode(code)) {
@@ -241,18 +241,18 @@ export async function approvePairing(
       const [deviceCount] = await tx
         .select({ value: count() })
         .from(tvDevices)
-        .where(and(eq(tvDevices.guestId, guestId), isNull(tvDevices.revokedAt)));
+        .where(and(eq(tvDevices.workspaceId, workspaceId), isNull(tvDevices.revokedAt)));
 
-      if (Number(deviceCount?.value ?? 0) >= TV_MAX_DEVICES_PER_GUEST) {
+      if (Number(deviceCount?.value ?? 0) >= TV_MAX_DEVICES_PER_WORKSPACE) {
         return {
-          error: `You already have ${TV_MAX_DEVICES_PER_GUEST} TVs connected. Disconnect one first.`,
+          error: `You already have ${TV_MAX_DEVICES_PER_WORKSPACE} TVs connected. Disconnect one first.`,
           status: 409,
         };
       }
 
       const [claimed] = await tx
         .update(tvPairings)
-        .set({ status: "approved", guestId, approvedAt: now })
+        .set({ status: "approved", workspaceId, approvedAt: now })
         .where(
           and(
             eq(tvPairings.id, pairing.id),
@@ -269,7 +269,7 @@ export async function approvePairing(
       const [device] = await tx
         .insert(tvDevices)
         .values({
-          guestId,
+          workspaceId,
           name: pairing.deviceName?.trim() || "Android TV",
           model: pairing.model,
           appVersion: pairing.appVersion,
@@ -303,24 +303,24 @@ export function toDeviceSummary(device: TvDevice): TvDeviceSummary {
   };
 }
 
-export async function listTvDevices(guestId: string): Promise<TvDeviceSummary[]> {
+export async function listTvDevices(workspaceId: string): Promise<TvDeviceSummary[]> {
   const rows = await db
     .select()
     .from(tvDevices)
-    .where(and(eq(tvDevices.guestId, guestId), isNull(tvDevices.revokedAt)))
+    .where(and(eq(tvDevices.workspaceId, workspaceId), isNull(tvDevices.revokedAt)))
     .orderBy(desc(tvDevices.createdAt));
 
   return rows.map(toDeviceSummary);
 }
 
-export async function revokeTvDevice(guestId: string, deviceId: string): Promise<boolean> {
+export async function revokeTvDevice(workspaceId: string, deviceId: string): Promise<boolean> {
   const revoked = await db
     .update(tvDevices)
     .set({ revokedAt: new Date(), tokenHash: null })
     .where(
       and(
         eq(tvDevices.id, deviceId),
-        eq(tvDevices.guestId, guestId),
+        eq(tvDevices.workspaceId, workspaceId),
         isNull(tvDevices.revokedAt),
       ),
     )

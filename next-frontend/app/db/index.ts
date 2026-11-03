@@ -13,6 +13,11 @@ const connectionString = process.env.DATABASE_URL!;
 // UTC. timestamptz (OID 1184) keeps its own offset and is unaffected.
 const queryClient = postgres(connectionString, {
   connection: { TimeZone: "UTC" },
+  // Supabase's transaction pooler (port 6543) can invalidate named prepared
+  // statements between transactions. postgres.js then retries the COMMIT on a
+  // fresh connection after the server has already rolled the transaction back,
+  // which silently loses writes. Use unnamed/simple queries instead.
+  prepare: false,
   types: {
     timestampUtc: {
       to: 1114,

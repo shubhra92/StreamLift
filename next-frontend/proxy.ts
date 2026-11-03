@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GUEST_COOKIE_NAME } from "./app/lib/guestConstants";
+import { readSessionToken } from "./app/lib/sessionConstants";
 
 export const config = {
   matcher: [
@@ -8,23 +8,38 @@ export const config = {
   ],
 };
 
+// Auth pages must not bootstrap a guest session: otherwise signing out would
+// immediately create a fresh guest and trap the user away from the login form.
+const PUBLIC_AUTH_ROUTES = new Set(["/login", "/register"]);
+
 /**
  * Edge middleware — intentionally zero Node.js imports.
- * All it does is check if the guestToken cookie exists.
- * If missing, it rewrites to the guest-init API route which runs in Node.js,
- * creates the guest, sets the cookie, then redirects back to the original URL.
+ * It only checks whether a session cookie exists. If missing, it rewrites to
+ * the session-init API route which runs in Node.js, creates the workspace and
+ * session, sets the cookie, then redirects back to the original URL.
+ *
+ * `readSessionToken` accepts both `sl_session` and the legacy `guestToken`
+ * cookie for one release.
  */
 export function proxy(req: NextRequest) {
-  const token = req.cookies.get(GUEST_COOKIE_NAME)?.value;
+  const { pathname } = req.nextUrl;
+
+  // Login/register render without a session. The auth route handlers create a
+  // workspace only when registration actually needs one.
+  if (PUBLIC_AUTH_ROUTES.has(pathname)) {
+    return NextResponse.next();
+  }
+
+  const token = readSessionToken(req.cookies);
 
   // Cookie present — nothing to do, let the request through
   if (token) {
     return NextResponse.next();
   }
 
-  // No cookie — bounce through the init route so Node.js can create the guest
+  // No cookie — bounce through the init route so Node.js can create the session
   const returnTo = req.nextUrl.pathname + req.nextUrl.search;
-  const initUrl = new URL("/api/guest/init", req.url);
+  const initUrl = new URL("/api/session/init", req.url);
   initUrl.searchParams.set("returnTo", returnTo);
 
   return NextResponse.redirect(initUrl);

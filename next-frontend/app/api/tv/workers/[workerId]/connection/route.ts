@@ -27,7 +27,7 @@ export async function GET(
   const { workerId } = await params;
   const [worker] = await db.select().from(workers).where(eq(workers.id, workerId)).limit(1);
 
-  if (!worker || worker.guestId !== auth.guest.id) {
+  if (!worker || worker.workspaceId !== auth.workspace.id) {
     return NextResponse.json(
       { success: false, error: "not_found", message: "Worker not found" },
       { status: 404 },

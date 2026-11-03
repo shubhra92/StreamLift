@@ -3,16 +3,16 @@
 import { db, fileDownloads, workers } from "../db";
 import { eq, desc, and } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
-import { getGuestId } from "../lib/getGuestId";
+import { getWorkspaceId } from "../lib/getWorkspaceId";
 
 const ONLINE_THRESHOLD_MS = 20_000;
 
-async function resolveWorkerForTorrent(location: string, guestId: string): Promise<string | null> {
+async function resolveWorkerForTorrent(location: string, workspaceId: string): Promise<string | null> {
   if (location === "all-workers") {
     const allWorkers = await db
       .select()
       .from(workers)
-      .where(eq(workers.guestId, guestId));
+      .where(eq(workers.workspaceId, workspaceId));
 
     const now = Date.now();
     const online = allWorkers.filter((w) =>
@@ -36,8 +36,8 @@ export async function claimTorrentDownload(
   id: string
 ): Promise<{ success: boolean; data?: typeof fileDownloads.$inferSelect }> {
   try {
-    const guestId = await getGuestId();
-    if (!guestId) return { success: false };
+    const workspaceId = await getWorkspaceId();
+    if (!workspaceId) return { success: false };
 
     const [claimed] = await db
       .update(fileDownloads)
@@ -45,7 +45,7 @@ export async function claimTorrentDownload(
       .where(
         and(
           eq(fileDownloads.id, id),
-          eq(fileDownloads.guestId, guestId),
+          eq(fileDownloads.workspaceId, workspaceId),
           eq(fileDownloads.status, "pending")
         )
       )
@@ -65,12 +65,12 @@ export async function createTorrentDownload(
   meta: { fileName: string; fileSize: number; fileType: string }
 ) {
   try {
-    const guestId = await getGuestId();
-    if (!guestId) return { success: false, message: "Unauthorized" };
-    const workerId = await resolveWorkerForTorrent(location, guestId);
+    const workspaceId = await getWorkspaceId();
+    if (!workspaceId) return { success: false, message: "Unauthorized" };
+    const workerId = await resolveWorkerForTorrent(location, workspaceId);
 
     const [record] = await db.insert(fileDownloads).values({
-      guestId: guestId ?? undefined,
+      workspaceId: workspaceId ?? undefined,
       sourceUrl: magnetLink,
       location,
       workerId,
@@ -99,14 +99,14 @@ export async function getTorrentDownloads(
   since?: string
 ): Promise<TorrentDeltaSyncResult> {
   try {
-    const guestId = await getGuestId();
-    if (!guestId) return { data: [], syncedAt: new Date().toISOString() };
+    const workspaceId = await getWorkspaceId();
+    if (!workspaceId) return { data: [], syncedAt: new Date().toISOString() };
 
     const syncedAt = new Date().toISOString();
 
     const conditions: ReturnType<typeof eq>[] = [
       eq(fileDownloads.downloadType, "torrent"),
-      eq(fileDownloads.guestId, guestId),
+      eq(fileDownloads.workspaceId, workspaceId),
     ];
 
     if (since) {
@@ -129,13 +129,13 @@ export async function getTorrentDownloads(
 
 export async function deleteTorrentDownload(id: string) {
   try {
-    const guestId = await getGuestId();
-    if (!guestId) return { success: false, message: "Unauthorized" };
+    const workspaceId = await getWorkspaceId();
+    if (!workspaceId) return { success: false, message: "Unauthorized" };
 
     const [download] = await db
       .select()
       .from(fileDownloads)
-      .where(and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId)))
+      .where(and(eq(fileDownloads.id, id), eq(fileDownloads.workspaceId, workspaceId)))
       .limit(1);
 
     if (!download) {
@@ -167,13 +167,13 @@ export async function updateTorrentDownload(
   }
 ) {
   try {
-    const guestId = await getGuestId();
-    if (!guestId) return { success: false, message: "Unauthorized" };
+    const workspaceId = await getWorkspaceId();
+    if (!workspaceId) return { success: false, message: "Unauthorized" };
 
     const [download] = await db
       .select()
       .from(fileDownloads)
-      .where(and(eq(fileDownloads.id, id), eq(fileDownloads.guestId, guestId)))
+      .where(and(eq(fileDownloads.id, id), eq(fileDownloads.workspaceId, workspaceId)))
       .limit(1);
 
     if (!download) {

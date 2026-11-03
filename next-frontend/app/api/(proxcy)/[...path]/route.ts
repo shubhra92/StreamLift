@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
+import { requireAuthContext } from "@/app/lib/sessionAuth";
 
 const API_HOST = process.env.SERVER_HOST
 
@@ -14,14 +14,10 @@ function isSSERequest(pathname: string, accept: string | null): boolean {
 
 //All Request Handler
 async function handler(req: NextRequest) {
-    // Validate guest session before forwarding anything to Express.
+    // Validate the session before forwarding anything to Express.
     // This prevents unauthenticated requests from reaching the backend.
-    const token = req.cookies.get(GUEST_COOKIE_NAME)?.value;
-    if (!token) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    const guest = await validateGuestToken(token);
-    if (!guest) {
+    const auth = await requireAuthContext(req);
+    if (!auth.ok) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 

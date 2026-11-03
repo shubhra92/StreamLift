@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireWebGuest } from "@/app/lib/tvAuth";
+import { requireWebSession } from "@/app/lib/tvAuth";
 import { revokeTvDevice } from "@/app/lib/tvPairing";
 import { clearTvCatalogCache } from "@/app/lib/tvCatalog";
 
@@ -11,11 +11,11 @@ export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ deviceId: string }> },
 ) {
-  const auth = await requireWebGuest(req);
+  const auth = await requireWebSession(req);
   if (!auth.ok) return auth.response;
 
   const { deviceId } = await params;
-  const revoked = await revokeTvDevice(auth.guest.id, deviceId);
+  const revoked = await revokeTvDevice(auth.context.workspace.id, deviceId);
 
   if (!revoked) {
     return NextResponse.json(
@@ -24,6 +24,6 @@ export async function DELETE(
     );
   }
 
-  clearTvCatalogCache(auth.guest.id);
+  clearTvCatalogCache(auth.context.workspace.id);
   return NextResponse.json({ success: true });
 }

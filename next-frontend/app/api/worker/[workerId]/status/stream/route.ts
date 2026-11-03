@@ -11,7 +11,7 @@ import { NextRequest } from "next/server";
 import { db } from "@/app/db";
 import { workers } from "@/app/db/schema";
 import { eq } from "drizzle-orm";
-import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
+import { requireWorkspaceId } from "@/app/lib/sessionAuth";
 import { clearStaleWorkerConnections, isWorkerOnline } from "@/app/lib/workerPresence";
 
 export const dynamic = "force-dynamic";
@@ -23,11 +23,9 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ workerId: string }> },
 ) {
-  const token = req.cookies.get(GUEST_COOKIE_NAME)?.value;
-  if (!token) return new Response("Unauthorized", { status: 401 });
-
-  const guest = await validateGuestToken(token);
-  if (!guest) return new Response("Unauthorized", { status: 401 });
+  const auth = await requireWorkspaceId(req);
+  if (!auth.ok) return new Response("Unauthorized", { status: 401 });
+  const workspaceId = auth.workspaceId;
 
   const { workerId } = await params;
   const encoder = new TextEncoder();
@@ -36,14 +34,14 @@ export async function GET(
     async start(controller) {
       const push = async () => {
         try {
-          await clearStaleWorkerConnections(guest.id);
+          await clearStaleWorkerConnections(workspaceId);
           const [worker] = await db
-            .select({ id: workers.id, guestId: workers.guestId, lastHeartbeat: workers.lastHeartbeat, tunnelUrl: workers.tunnelUrl, version: workers.version })
+            .select({ id: workers.id, workspaceId: workers.workspaceId, lastHeartbeat: workers.lastHeartbeat, tunnelUrl: workers.tunnelUrl, version: workers.version })
             .from(workers)
             .where(eq(workers.id, workerId))
             .limit(1);
 
-          if (!worker || worker.guestId !== guest.id) {
+          if (!worker || worker.workspaceId !== workspaceId) {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: "Worker not found" })}\n\n`));
             controller.close();
             clearInterval(interval);

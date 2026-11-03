@@ -17,6 +17,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "StreamLift - Download Manager",
   description: "Download HTTP files and torrents to server or MEGA storage",
+  icons: { icon: "/app-icon.png" },
 };
 
 export default function RootLayout({

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getGuestId } from "@/app/lib/getGuestId";
+import { getWorkspaceId } from "@/app/lib/getWorkspaceId";
 import { db } from "@/app/db";
 import { workers } from "@/app/db/schema";
 import { and, eq } from "drizzle-orm";
@@ -20,15 +20,15 @@ export async function PATCH(
 ) {
   const { workerId } = await params;
 
-  const guestId = await getGuestId();
-  if (!guestId) {
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) {
     return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
   }
 
   const [worker] = await db
     .select({ id: workers.id })
     .from(workers)
-    .where(and(eq(workers.id, workerId), eq(workers.guestId, guestId)))
+    .where(and(eq(workers.id, workerId), eq(workers.workspaceId, workspaceId)))
     .limit(1);
   if (!worker) {
     return NextResponse.json({ success: false, message: "Worker not found" }, { status: 404 });

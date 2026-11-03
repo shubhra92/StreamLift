@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
   if (!auth.ok) return auth.response;
 
   const force = req.nextUrl.searchParams.get("force") === "1";
-  const catalog = await buildTvCatalog(auth.guest.id, { force });
+  const catalog = await buildTvCatalog(auth.workspace.id, { force });
 
   return NextResponse.json(
     { success: true, ...catalog },

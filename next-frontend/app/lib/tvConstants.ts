@@ -14,7 +14,7 @@ export const TV_POLL_INTERVAL_MS = 2_000;
 export const TV_APPROVED_TOKEN_WINDOW_MS = 15 * 60 * 1000;
 /** A TV is shown online in the web UI if it polled recently. */
 export const TV_DEVICE_ONLINE_MS = 60 * 1000;
-export const TV_MAX_DEVICES_PER_GUEST = 8;
+export const TV_MAX_DEVICES_PER_WORKSPACE = 8;
 
 export function normalizeTvCode(input: string): string {
   return String(input ?? "")

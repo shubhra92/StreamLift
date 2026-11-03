@@ -1,16 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireWebGuest } from "@/app/lib/tvAuth";
+import { requireWebSession } from "@/app/lib/tvAuth";
 import { listTvDevices } from "@/app/lib/tvPairing";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-/** GET /api/tv/devices — TVs paired to the current web guest session. */
+/** GET /api/tv/devices — TVs paired to the current web workspace session. */
 export async function GET(req: NextRequest) {
-  const auth = await requireWebGuest(req);
+  const auth = await requireWebSession(req);
   if (!auth.ok) return auth.response;
 
-  const devices = await listTvDevices(auth.guest.id);
+  const devices = await listTvDevices(auth.context.workspace.id);
   return NextResponse.json(
     { success: true, devices },
     { headers: { "Cache-Control": "no-store" } },

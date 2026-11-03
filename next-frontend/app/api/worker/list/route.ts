@@ -8,7 +8,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
+import { requireWorkspaceId } from "@/app/lib/sessionAuth";
 import { db } from "@/app/db";
 import { workers } from "@/app/db/schema";
 import { eq, and, gte, desc } from "drizzle-orm";
@@ -18,16 +18,11 @@ import { getTunnelBypassHeaders } from "@/app/lib/tunnelHeaders";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  const token = req.cookies.get(GUEST_COOKIE_NAME)?.value;
-  if (!token) {
-    return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
-  }
-  const guest = await validateGuestToken(token);
-  if (!guest) {
-    return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
-  }
+  const auth = await requireWorkspaceId(req);
+  if (!auth.ok) return auth.response;
+  const workspaceId = auth.workspaceId;
 
-  await clearStaleWorkerConnections(guest.id);
+  await clearStaleWorkerConnections(workspaceId);
 
   const syncedAt = new Date().toISOString();
   const since    = req.nextUrl.searchParams.get("since") ?? undefined;
@@ -37,12 +32,12 @@ export async function GET(req: NextRequest) {
     const allRows = await db
       .select({ id: workers.id })
       .from(workers)
-      .where(eq(workers.guestId, guest.id));
+      .where(eq(workers.workspaceId, workspaceId));
     return NextResponse.json({ ids: allRows.map((r) => r.id), syncedAt });
   }
 
   // Delta DB query
-  const conditions = [eq(workers.guestId, guest.id)];
+  const conditions = [eq(workers.workspaceId, workspaceId)];
   if (since) {
     conditions.push(gte(workers.updatedAt, new Date(since)));
   }
@@ -61,7 +56,7 @@ export async function GET(req: NextRequest) {
     const allRows = await db
       .select({ id: workers.id, lastHeartbeat: workers.lastHeartbeat })
       .from(workers)
-      .where(eq(workers.guestId, guest.id));
+      .where(eq(workers.workspaceId, workspaceId));
     allWorkerIds = allRows.map((w) => w.id);
   }
 
@@ -69,7 +64,7 @@ export async function GET(req: NextRequest) {
   const allWorkers = await db
     .select({ id: workers.id, lastHeartbeat: workers.lastHeartbeat, tunnelUrl: workers.tunnelUrl, ipAddress: workers.ipAddress })
     .from(workers)
-    .where(eq(workers.guestId, guest.id));
+    .where(eq(workers.workspaceId, workspaceId));
 
   const now = Date.now();
   const runtimeStatus: Record<string, {

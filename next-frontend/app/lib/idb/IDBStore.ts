@@ -170,7 +170,7 @@ export async function setCursor(key: SyncMetaKey, value: string): Promise<void> 
   } catch {}
 }
 
-// ─── Full cache clear (guest rotation) ───────────────────────────────────────
+// ─── Full cache clear (workspace rotation) ───────────────────────────────────────
 
 export async function clearAllIDB(): Promise<void> {
   try {

@@ -19,7 +19,7 @@ import {
   getCursor,
   setCursor,
 } from "@/app/lib/idb/IDBStore";
-import { runGuestGuard } from "@/app/lib/idb/guestGuard";
+import { runWorkspaceGuard } from "@/app/lib/idb/workspaceGuard";
 import type {
   TabToWorkerMessage,
   WorkerToTabMessage,
@@ -48,7 +48,7 @@ class WorkerClient {
   private worker: SharedWorker | null = null;
   private port: MessagePort | null = null;
   private initialized = false;
-  private guestVerified = false;
+  private workspaceVerified = false;
   private ready = false;
   private pendingMessages: TabToWorkerMessage[] = [];
 
@@ -95,10 +95,10 @@ class WorkerClient {
     if (this.initialized) return;
     this.initialized = true;
 
-    const guestId = await runGuestGuard();
-    // Never read or expose cached data before proving it belongs to this guest.
-    if (!guestId) return;
-    this.guestVerified = true;
+    const workspaceId = await runWorkspaceGuard();
+    // Never read or expose cached data before proving it belongs to this workspace.
+    if (!workspaceId) return;
+    this.workspaceVerified = true;
     this.emitSubscribedIDB();
 
     if (typeof window === "undefined") return;
@@ -354,7 +354,7 @@ class WorkerClient {
       this.downloadSubs.add(cb as DownloadDataCallback);
       if (this.downloadSubs.size === 1) {
         this.needs.add(target);
-        if (this.guestVerified) {
+        if (this.workspaceVerified) {
           void this.flushDeclare();
           void this.emitFromIDB(target);
         }
@@ -363,7 +363,7 @@ class WorkerClient {
       this.workerSubs.add(cb as WorkerDataCallback);
       if (this.workerSubs.size === 1) {
         this.needs.add("workers");
-        if (this.guestVerified) {
+        if (this.workspaceVerified) {
           void this.flushDeclare();
           void this.emitFromIDB("workers");
         }

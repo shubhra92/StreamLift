@@ -7,7 +7,7 @@ import type { TvDeviceSummary } from "../lib/tvTypes";
 const POLL_MS = 30_000;
 
 /**
- * Paired TVs for the current web guest, refreshed periodically so the
+ * Paired TVs for the current web workspace, refreshed periodically so the
  * "Connect to TV" button can show an online indicator and the dialog stays
  * current while open.
  */

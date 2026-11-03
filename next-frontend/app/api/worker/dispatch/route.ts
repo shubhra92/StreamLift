@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/app/db";
 import { fileDownloads, workers } from "@/app/db/schema";
 import { and, eq, inArray, asc } from "drizzle-orm";
-import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
+import { requireWorkspaceId } from "@/app/lib/sessionAuth";
 import { isSessionTokenExpired, rotateSessionToken } from "@/app/lib/sessionToken";
 import { getTunnelBypassHeaders } from "@/app/lib/tunnelHeaders";
 
@@ -31,11 +31,9 @@ function isServerLocation(location: string | null): boolean {
 }
 
 export async function POST(req: NextRequest) {
-  const token = req.cookies.get(GUEST_COOKIE_NAME)?.value;
-  if (!token) return NextResponse.json({ action: "none" }, { status: 401 });
-
-  const guest = await validateGuestToken(token);
-  if (!guest) return NextResponse.json({ action: "none" }, { status: 401 });
+  const auth = await requireWorkspaceId(req);
+  if (!auth.ok) return NextResponse.json({ action: "none" }, { status: 401 });
+  const workspaceId = auth.workspaceId;
 
   const now = Date.now();
 
@@ -47,7 +45,7 @@ export async function POST(req: NextRequest) {
     .from(fileDownloads)
     .where(
       and(
-        eq(fileDownloads.guestId, guest.id),
+        eq(fileDownloads.workspaceId, workspaceId),
         inArray(fileDownloads.status, ["downloading", "uploading"]),
       )
     );
@@ -56,7 +54,7 @@ export async function POST(req: NextRequest) {
     const allWorkers = await db
       .select({ id: workers.id, lastHeartbeat: workers.lastHeartbeat })
       .from(workers)
-      .where(eq(workers.guestId, guest.id));
+      .where(eq(workers.workspaceId, workspaceId));
 
     const workerLastSeen = new Map(allWorkers.map((w) => [w.id, w.lastHeartbeat]));
 
@@ -92,7 +90,7 @@ export async function POST(req: NextRequest) {
     .from(fileDownloads)
     .where(
       and(
-        eq(fileDownloads.guestId, guest.id),
+        eq(fileDownloads.workspaceId, workspaceId),
         eq(fileDownloads.status, "pending"),
       )
     )
@@ -107,7 +105,7 @@ export async function POST(req: NextRequest) {
     .from(fileDownloads)
     .where(
       and(
-        eq(fileDownloads.guestId, guest.id),
+        eq(fileDownloads.workspaceId, workspaceId),
         inArray(fileDownloads.status, ["downloading", "uploading"]),
       )
     );
@@ -121,7 +119,7 @@ export async function POST(req: NextRequest) {
   const allWorkers = await db
     .select()
     .from(workers)
-    .where(eq(workers.guestId, guest.id));
+    .where(eq(workers.workspaceId, workspaceId));
 
   const onlineWorkerMap = new Map(
     allWorkers

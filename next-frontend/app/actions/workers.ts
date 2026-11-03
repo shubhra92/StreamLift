@@ -4,7 +4,7 @@ import { db } from "../db";
 import { workers, fileDownloads } from "../db/schema";
 import { desc, eq, and, inArray } from "drizzle-orm";
 import { encryptCredentials, generateAuthToken } from "../lib/crypto";
-import { getGuestId } from "../lib/getGuestId";
+import { getWorkspaceId } from "../lib/getWorkspaceId";
 import type { Worker } from "../db/schema";
 import {
   type TunnelProvider,
@@ -77,8 +77,8 @@ function buildTunnelConfig(
 export async function createWorker(
   data: CreateWorkerData,
 ): Promise<{ success: boolean; message?: string; data?: Worker }> {
-  const guestId = await getGuestId();
-  if (!guestId) return { success: false, message: "Unauthorized" };
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) return { success: false, message: "Unauthorized" };
 
   if (!data.name?.trim())
     return { success: false, message: "Worker name is required" };
@@ -97,11 +97,11 @@ export async function createWorker(
   if (data.downloadLocation === "mega" && !data.megaSession)
     return { success: false, message: "Mega login is required for Mega location" };
 
-  // Name uniqueness — scoped to guest
+  // Name uniqueness — scoped to workspace
   const [existing] = await db
     .select({ id: workers.id })
     .from(workers)
-    .where(and(eq(workers.name, data.name.trim()), eq(workers.guestId, guestId)))
+    .where(and(eq(workers.name, data.name.trim()), eq(workers.workspaceId, workspaceId)))
     .limit(1);
   if (existing) return { success: false, message: "A worker with this name already exists" };
 
@@ -112,7 +112,7 @@ export async function createWorker(
   const [worker] = await db
     .insert(workers)
     .values({
-      guestId:              guestId ?? undefined,
+      workspaceId:              workspaceId ?? undefined,
       name:                 data.name.trim(),
       downloadLocation:     data.downloadLocation,
       computeType:          data.computeType,
@@ -132,13 +132,13 @@ export async function updateWorker(
   workerId: string,
   data: UpdateWorkerData,
 ): Promise<{ success: boolean; message?: string; data?: Worker }> {
-  const guestId = await getGuestId();
-  if (!guestId) return { success: false, message: "Unauthorized" };
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) return { success: false, message: "Unauthorized" };
 
   const [worker] = await db
     .select()
     .from(workers)
-    .where(and(eq(workers.id, workerId), eq(workers.guestId, guestId)))
+    .where(and(eq(workers.id, workerId), eq(workers.workspaceId, workspaceId)))
     .limit(1);
   if (!worker) return { success: false, message: "Worker not found" };
 
@@ -181,7 +181,7 @@ export async function updateWorker(
       .where(
         and(
           eq(workers.name, data.name.trim()),
-          eq(workers.guestId, guestId),
+          eq(workers.workspaceId, workspaceId),
         ),
       )
       .limit(1);
@@ -236,13 +236,13 @@ export async function updateWorker(
 export async function requestTunnelRestart(
   workerId: string,
 ): Promise<{ success: boolean; message?: string }> {
-  const guestId = await getGuestId();
-  if (!guestId) return { success: false, message: "Unauthorized" };
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) return { success: false, message: "Unauthorized" };
 
   const [worker] = await db
     .select({ id: workers.id, tunnelConfig: workers.tunnelConfig })
     .from(workers)
-    .where(and(eq(workers.id, workerId), eq(workers.guestId, guestId)))
+    .where(and(eq(workers.id, workerId), eq(workers.workspaceId, workspaceId)))
     .limit(1);
   if (!worker) return { success: false, message: "Worker not found" };
 
@@ -282,12 +282,12 @@ export interface WorkerDeltaSyncResult {
 }
 
 export async function getWorkers(since?: string): Promise<WorkerDeltaSyncResult> {
-  const guestId = await getGuestId();
-  if (!guestId) return { data: [], syncedAt: new Date().toISOString() };
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) return { data: [], syncedAt: new Date().toISOString() };
 
   const syncedAt = new Date().toISOString();
 
-  const conditions = [eq(workers.guestId, guestId)];
+  const conditions = [eq(workers.workspaceId, workspaceId)];
   if (since) {
     const { gte } = await import("drizzle-orm");
     conditions.push(gte(workers.updatedAt, new Date(since)));
@@ -303,13 +303,13 @@ export async function getWorkers(since?: string): Promise<WorkerDeltaSyncResult>
 }
 
 export async function getWorkerById(workerId: string) {
-  const guestId = await getGuestId();
-  if (!guestId) return null;
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) return null;
 
   const [worker] = await db
     .select()
     .from(workers)
-    .where(and(eq(workers.id, workerId), eq(workers.guestId, guestId)))
+    .where(and(eq(workers.id, workerId), eq(workers.workspaceId, workspaceId)))
     .limit(1);
 
   if (!worker) return null;
@@ -328,13 +328,13 @@ export async function getWorkerById(workerId: string) {
 export async function deleteWorker(
   workerId: string,
 ): Promise<{ success: boolean; message: string }> {
-  const guestId = await getGuestId();
-  if (!guestId) return { success: false, message: "Unauthorized" };
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) return { success: false, message: "Unauthorized" };
 
   const [worker] = await db
     .select()
     .from(workers)
-    .where(and(eq(workers.id, workerId), eq(workers.guestId, guestId)))
+    .where(and(eq(workers.id, workerId), eq(workers.workspaceId, workspaceId)))
     .limit(1);
   if (!worker) return { success: false, message: "Worker not found" };
 

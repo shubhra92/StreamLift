@@ -1,7 +1,7 @@
 /**
  * GET /api/worker/status/stream
  *
- * SSE stream pushing online status for ALL workers owned by the guest.
+ * SSE stream pushing online status for ALL workers owned by the workspace.
  * Reads last_heartbeat from DB every 5s — no in-memory cache.
  *
  * Note: live metrics and task progress are now streamed directly from the
@@ -12,7 +12,7 @@ import { NextRequest } from "next/server";
 import { db } from "@/app/db";
 import { workers } from "@/app/db/schema";
 import { eq } from "drizzle-orm";
-import { validateGuestToken, GUEST_COOKIE_NAME } from "@/app/lib/guestAuth";
+import { requireWorkspaceId } from "@/app/lib/sessionAuth";
 import { clearStaleWorkerConnections, isWorkerOnline } from "@/app/lib/workerPresence";
 
 export const dynamic = "force-dynamic";
@@ -20,11 +20,9 @@ export const runtime = "nodejs";
 
 const PUSH_INTERVAL_MS   = 5_000;
 export async function GET(req: NextRequest) {
-  const token = req.cookies.get(GUEST_COOKIE_NAME)?.value;
-  if (!token) return new Response("Unauthorized", { status: 401 });
-
-  const guest = await validateGuestToken(token);
-  if (!guest) return new Response("Unauthorized", { status: 401 });
+  const auth = await requireWorkspaceId(req);
+  if (!auth.ok) return new Response("Unauthorized", { status: 401 });
+  const workspaceId = auth.workspaceId;
 
   const encoder = new TextEncoder();
 
@@ -32,13 +30,13 @@ export async function GET(req: NextRequest) {
     async start(controller) {
       const push = async () => {
         try {
-          await clearStaleWorkerConnections(guest.id);
-          const guestWorkers = await db
+          await clearStaleWorkerConnections(workspaceId);
+          const workspaceWorkers = await db
             .select()
             .from(workers)
-            .where(eq(workers.guestId, guest.id));
+            .where(eq(workers.workspaceId, workspaceId));
 
-          for (const w of guestWorkers) {
+          for (const w of workspaceWorkers) {
             const online = isWorkerOnline(w.lastHeartbeat);
 
             const payload = {
