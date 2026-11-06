@@ -1,5 +1,10 @@
 """
 Download handlers — HTTP and torrent.
+
+Both paths download the payload to the worker's disk first, then either publish
+it to the local downloads folder or upload it to Mega. There is no concurrent
+download-while-uploading mode.
+
 Each handler reports progress back to the backend and handles cleanup.
 On completion or failure, calls api.status_update() to notify the Next.js backend.
 Respects cancel flags set via the worker's DELETE /download/{id} endpoint.
@@ -113,6 +118,15 @@ def _publish_staged_tree(staging_dir: str) -> list[str]:
     return published
 
 
+def _publish_staged_files(staging_dir: str, files: list[str]) -> list[str]:
+    """Publish only the selected files from a staged torrent."""
+    published: list[str] = []
+    for source in files:
+        relative = os.path.relpath(source, staging_dir)
+        published.append(_publish_staged_file(source, relative))
+    return published
+
+
 def _is_cancelled(download_id: str) -> bool:
     """Check if a cancel was requested via the worker API."""
     try:
@@ -176,7 +190,7 @@ def _process_http_download(config: WorkerConfig, task: dict, current_task: dict)
     download_id = task["downloadId"]
     source_url  = task["sourceUrl"]
     file_name   = _safe_file_name(task.get("fileName") or "download")
-    staging_dir = _partial_dir(download_id) if config.download_location == "local" else None
+    staging_dir = _partial_dir(download_id)
 
     logger.log("info", f"HTTP download: {file_name} → {config.download_location}")
     current_task.update({
@@ -189,87 +203,77 @@ def _process_http_download(config: WorkerConfig, task: dict, current_task: dict)
     # Notify backend — DB status: pending → downloading
     api.status_update(config, download_id, "downloading")
 
+    resp: Optional[requests.Response] = None
     try:
         resp = requests.get(source_url, stream=True, timeout=30)
         resp.raise_for_status()
         total = int(resp.headers.get("content-length", 0))
-        if config.download_location == "mega":
-            _http_stream_to_mega(config, resp, total, download_id, file_name, current_task)
-        else:
-            _http_save_local(config, resp, total, download_id, file_name, current_task, staging_dir)
+        _ensure_disk_space(staging_dir, total)
+        file_path = _http_download_to_disk(
+            config, resp, total, download_id, file_name, current_task, staging_dir
+        )
+        if file_path is None:
+            # Cancelled while downloading — the helper already reported failure.
+            return
 
+        if config.download_location == "mega":
+            _upload_staged_file_to_mega(
+                config, download_id, file_name, file_path, current_task
+            )
+        else:
+            published_path = _publish_staged_file(file_path, file_name)
+            record_completed_files(download_id, [published_path])
+            current_task["progress"] = 100
+            current_task["status"]   = "completed"
+            api.status_update(config, download_id, "completed", location_path=published_path)
+            logger.log(
+                "info",
+                f"HTTP download completed locally: {published_path} "
+                f"({os.path.getsize(published_path):,} bytes)",
+            )
+
+    except mega.UploadCancelled:
+        logger.log("info", "Mega upload cancelled by user")
+        current_task["status"] = "failed"
+        api.status_update(config, download_id, "failed", "Cancelled by user")
     except Exception as e:
         logger.log("error", f"HTTP download failed: {e}")
         api.status_update(config, download_id, "failed", str(e))
-        if staging_dir:
-            shutil.rmtree(staging_dir, ignore_errors=True)
     finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+        shutil.rmtree(staging_dir, ignore_errors=True)
         current_task.clear()
 
 
-def _http_stream_to_mega(
-    config: WorkerConfig,
-    resp: requests.Response,
-    total: int,
-    download_id: str,
-    file_name: str,
-    current_task: dict,
-) -> None:
-    if total == 0:
+def _ensure_disk_space(directory: str, required: int) -> None:
+    """Fail early with a clear message when the payload cannot fit on disk."""
+    if required <= 0:
+        return
+    free = shutil.disk_usage(directory).free
+    if free < required:
         raise RuntimeError(
-            "Cannot stream to Mega: server did not return Content-Length. "
-            "Mega requires the file size upfront."
+            f"Not enough free disk space: need {required/1024/1024:.1f} MB, "
+            f"have {free/1024/1024:.1f} MB"
         )
 
-    logger.log("info", f"Streaming {file_name} directly to Mega ({total/1024/1024:.1f} MB) — no disk write")
 
-    downloaded = 0
-    last_report = time.time()
-
-    class _ProgressStream:
-        def read(self, n: int = -1) -> bytes:
-            nonlocal downloaded, last_report
-            chunk = resp.raw.read(n)
-            if chunk:
-                downloaded += len(chunk)
-                pct = downloaded / total * 100
-                current_task["progress"] = round(pct, 2)
-
-                now = time.time()
-                if now - last_report >= 10:
-                    mem_mb = psutil.virtual_memory().used / 1024 / 1024
-                    logger.log("info",
-                        f"📊 {pct:.1f}% | "
-                        f"{downloaded/1024/1024:.1f} / {total/1024/1024:.1f} MB | "
-                        f"RAM: {mem_mb:.0f} MB")
-                    last_report = now
-            return chunk
-
-    current_task["status"] = "uploading"
-    handle = mega.stream_to_mega(config, _ProgressStream(), total, file_name)
-
-    if handle:
-        current_task["progress"] = 100
-        current_task["status"]   = "completed"
-        mega.register_uploaded_node(download_id, handle)
-        api.status_update(config, download_id, "completed", cloud_file_handle=handle)
-        logger.log("info", f"HTTP→Mega stream completed: {file_name}")
-    else:
-        current_task["status"] = "failed"
-        api.status_update(config, download_id, "failed", "Mega stream upload failed — check logs")
-
-
-def _http_save_local(
+def _http_download_to_disk(
     config: WorkerConfig,
     resp: requests.Response,
     total: int,
     download_id: str,
     file_name: str,
     current_task: dict,
-    staging_dir: str | None,
-) -> None:
-    if not staging_dir:
-        raise RuntimeError("Local download staging directory is unavailable")
+    staging_dir: str,
+) -> Optional[str]:
+    """Write the HTTP response body to the staging directory.
+
+    Returns the staged file path, or ``None`` when the user cancelled. Raises
+    on network/filesystem errors so the caller can report a failed download.
+    """
     file_path = os.path.join(staging_dir, file_name)
 
     downloaded        = 0
@@ -286,8 +290,7 @@ def _http_save_local(
                 logger.log("info", f"Download cancelled: {file_name}")
                 current_task["status"] = "failed"
                 api.status_update(config, download_id, "failed", "Cancelled by user")
-                _cleanup_local_file(staging_dir, file_name)
-                return
+                return None
 
             f.write(chunk)
             downloaded += len(chunk)
@@ -305,22 +308,51 @@ def _http_save_local(
                 last_report_bytes = downloaded
                 last_report_time  = time.time()
 
-    published_path = _publish_staged_file(file_path, file_name)
-    shutil.rmtree(staging_dir, ignore_errors=True)
-    record_completed_files(download_id, [published_path])
-    current_task["progress"] = 100
-    current_task["status"]   = "completed"
-    api.status_update(config, download_id, "completed", location_path=published_path)
-    logger.log("info", f"HTTP download completed locally: {published_path} ({downloaded:,} bytes)")
+    if total > 0 and downloaded != total:
+        raise RuntimeError(
+            f"Download incomplete: expected {total:,} bytes, got {downloaded:,}"
+        )
+
+    logger.log(
+        "info",
+        f"HTTP download finished on disk: {file_name} ({downloaded:,} bytes)",
+    )
+    return file_path
 
 
-def _cleanup_local_file(directory: str, file_name: str) -> None:
-    path = os.path.join(directory, file_name)
-    if os.path.exists(path):
-        try:
-            os.remove(path)
-        except Exception:
-            pass
+def _upload_staged_file_to_mega(
+    config: WorkerConfig,
+    download_id: str,
+    file_name: str,
+    file_path: str,
+    current_task: dict,
+) -> None:
+    """Upload an already-downloaded file to Mega, then report the result."""
+    total = os.path.getsize(file_path)
+    current_task["status"]   = "uploading"
+    current_task["progress"] = 0
+    api.status_update(config, download_id, "uploading")
+    logger.log("info", f"Uploading {file_name} to Mega ({total/1024/1024:.1f} MB)")
+
+    progress_cb, stall_cb = _make_upload_progress_callback(download_id, current_task)
+    handle = mega.upload_file_to_mega(
+        config,
+        file_path,
+        file_name,
+        progress_cb=progress_cb,
+        progress_total=total,
+        stall_cb=stall_cb,
+    )
+
+    if handle:
+        current_task["progress"] = 100
+        current_task["status"]   = "completed"
+        mega.register_uploaded_node(download_id, handle)
+        api.status_update(config, download_id, "completed", cloud_file_handle=handle)
+        logger.log("info", f"HTTP download uploaded to Mega: {file_name}")
+    else:
+        current_task["status"] = "failed"
+        api.status_update(config, download_id, "failed", "Mega upload failed — check logs")
 
 
 # ── Torrent download ──────────────────────────────────────────────────────────
@@ -352,10 +384,30 @@ def _process_torrent_download(config: WorkerConfig, task: dict, current_task: di
             parsed = (json.loads(file_indices_raw)
                       if isinstance(file_indices_raw, str)
                       else file_indices_raw)
-            if isinstance(parsed, list) and parsed:
-                file_indices_0 = [i for i in parsed if isinstance(i, int)]
+            if isinstance(parsed, list):
+                coerced: list[int] = []
+                for item in parsed:
+                    if isinstance(item, bool):
+                        continue
+                    if isinstance(item, int):
+                        if item >= 0:
+                            coerced.append(item)
+                    elif isinstance(item, str) and item.strip().isdigit():
+                        coerced.append(int(item.strip()))
+                file_indices_0 = coerced or None
+                if parsed and file_indices_0 is None:
+                    logger.log(
+                        "warning",
+                        f"fileIndices contained no usable non-negative integers: {parsed!r}",
+                    )
         except Exception as e:
             logger.log("warning", f"Could not parse fileIndices: {e}")
+
+    if file_indices_0 is None:
+        logger.log("info", "No fileIndices supplied — downloading every torrent file")
+    else:
+        logger.log("info", f"fileIndices received: {file_indices_0}")
+
     file_indices: Optional[list[int]] = (
         [i + 1 for i in file_indices_0] if file_indices_0 else None
     )
@@ -372,34 +424,6 @@ def _process_torrent_download(config: WorkerConfig, task: dict, current_task: di
     })
     # Notify backend — DB status: pending → downloading
     api.status_update(config, download_id, "downloading")
-
-    # Streaming path (download + upload in parallel) when the target is MEGA.
-    # Colab-safe: implemented purely over aria2c (no libtorrent), so it never
-    # relies on Colab-banned packages.
-    if config.download_location == "mega":
-        try:
-            from streamlift_worker import aria2c_stream
-
-            res = aria2c_stream.stream_torrent_to_mega(
-                config, download_id, magnet_link, file_indices_0,
-                display_name, current_task,
-            )
-        except mega.UploadCancelled:
-            logger.log("info", "Mega streaming cancelled by user")
-            current_task["status"] = "failed"
-            api.status_update(config, download_id, "failed", "Cancelled by user")
-            return
-
-        if res:
-            # Single-file torrents return the MEGA node id → report it as
-            # cloudFileHandle so the share-link/download icons light up.
-            cloud_handle = res if isinstance(res, str) else None
-            current_task["progress"] = 100
-            current_task["status"]   = "completed"
-            api.status_update(config, download_id, "completed", cloud_file_handle=cloud_handle)
-            logger.log("info", f"Torrent task completed (streamed): {display_name}")
-            return
-        # Else: falling back to the classic aria2c download → upload path below.
 
     if not _ensure_aria2c():
         msg = "aria2c is not available. Run: !apt-get install -y aria2"
@@ -432,10 +456,17 @@ def _process_torrent_download(config: WorkerConfig, task: dict, current_task: di
             bufsize=1,
         )
 
+        cancelled = False
         for line in process.stdout:  # type: ignore[union-attr]
             line = line.rstrip()
             if line and logger.console_enabled():
                 print(line, flush=True)
+
+            if _is_cancelled(download_id):
+                cancelled = True
+                logger.log("info", f"Torrent download cancelled: {display_name}")
+                process.terminate()
+                break
 
             if "Download complete:" in line:
                 downloaded_path = line.split("Download complete:")[-1].strip()
@@ -484,6 +515,11 @@ def _process_torrent_download(config: WorkerConfig, task: dict, current_task: di
 
         process.wait()
 
+        if cancelled:
+            current_task["status"] = "failed"
+            api.status_update(config, download_id, "failed", "Cancelled by user")
+            return
+
         if process.returncode != 0:
             msg = f"aria2c exited with code {process.returncode}"
             logger.log("error", msg)
@@ -493,10 +529,30 @@ def _process_torrent_download(config: WorkerConfig, task: dict, current_task: di
 
         logger.log("info", f"Torrent download finished in staging: {display_name}")
 
+        # BitTorrent downloads whole pieces, so files that share a piece with
+        # the selected file (typically the .srt or small extras next to the
+        # video) are written to disk too. Keep only the paths the user actually
+        # selected; otherwise those neighbours get uploaded and turn a
+        # single-file download into a MEGA folder.
+        torrent_path = _find_saved_torrent(save_path)
+        selected_paths = _selected_relative_paths(torrent_path, file_indices_0)
+        if torrent_path:
+            try:
+                os.remove(torrent_path)
+            except OSError:
+                pass
+
+        staged_files = _collect_downloaded_files(save_path, downloaded_path, display_name)
+        files = _filter_downloaded_files(staged_files, save_path, selected_paths)
+        if selected_paths is not None and not files:
+            raise RuntimeError(
+                "Selected torrent file(s) were not found after download"
+            )
+
         if config.download_location == "mega":
-            current_task["status"] = "uploading"
+            current_task["status"]   = "uploading"
+            current_task["progress"] = 0
             api.status_update(config, download_id, "uploading")
-            files = _collect_downloaded_files(save_path, downloaded_path, display_name)
             progress_cb, stall_cb = _make_upload_progress_callback(download_id, current_task)
             try:
                 upload_total = sum(os.path.getsize(f) for f in files if os.path.isfile(f))
@@ -515,7 +571,7 @@ def _process_torrent_download(config: WorkerConfig, task: dict, current_task: di
                 return
             cloud_handle = uploaded if isinstance(uploaded, str) else None
         else:
-            published = _publish_staged_tree(save_path)
+            published = _publish_staged_files(save_path, files)
             if not published:
                 raise RuntimeError("aria2c completed without producing a local file")
             record_completed_files(download_id, published)
@@ -614,7 +670,106 @@ def _collect_downloaded_files(
     return []
 
 
+def _find_saved_torrent(save_path: str) -> Optional[str]:
+    """Return the .torrent metadata aria2c saved for a magnet download."""
+    try:
+        candidates = [
+            os.path.join(save_path, name)
+            for name in os.listdir(save_path)
+            if re.fullmatch(r"[0-9a-fA-F]{40,64}\.torrent", name)
+            and os.path.isfile(os.path.join(save_path, name))
+        ]
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    return max(candidates, key=os.path.getmtime)
+
+
+def _selected_relative_paths(
+    torrent_path: Optional[str],
+    file_indices_0: Optional[list[int]],
+) -> Optional[list[str]]:
+    """Map the user's 0-based indices to paths inside the torrent.
+
+    ``None`` means "no selection / could not resolve" and keeps the legacy
+    upload-everything behaviour. An empty selection (all files) is also
+    represented by ``None`` so callers do not filter.
+    """
+    if not file_indices_0:
+        return None
+    if not torrent_path:
+        logger.log(
+            "warning",
+            "Torrent selection could not be resolved: no saved .torrent metadata; "
+            "all staged files will be uploaded",
+        )
+        return None
+
+    from streamlift_worker.torrent_metadata import _is_pad, _parse_torrent_meta
+
+    try:
+        _piece_len, meta_files = _parse_torrent_meta(torrent_path)
+    except Exception as e:
+        logger.log("warning", f"Could not parse saved torrent metadata: {e}")
+        return None
+
+    by_index = {idx: rel for idx, rel, _size, _offset in meta_files}
+    selected: list[str] = []
+    for idx in file_indices_0:
+        rel = by_index.get(idx)
+        if rel is None:
+            logger.log("warning", f"Selected torrent index {idx} is absent from metadata")
+            continue
+        if _is_pad(rel):
+            logger.log("warning", f"Ignoring pad file selected at index {idx}")
+            continue
+        selected.append(rel.replace("\\", "/"))
+
+    if not selected:
+        logger.log(
+            "warning",
+            "No valid selected file paths; all staged files will be uploaded",
+        )
+        return None
+
+    preview = ", ".join(selected[:5])
+    if len(selected) > 5:
+        preview += f" … (+{len(selected) - 5})"
+    logger.log("info", f"Torrent selection resolved ({len(selected)}): {preview}")
+    return selected
+
+
+def _filter_downloaded_files(
+    files: list[str],
+    save_path: str,
+    selected_paths: Optional[list[str]],
+) -> list[str]:
+    """Keep staged files that belong to the user's torrent selection."""
+    if selected_paths is None:
+        return files
+
+    selected = {path.strip("/") for path in selected_paths}
+    kept: list[str] = []
+    for path in files:
+        relative = os.path.relpath(path, save_path).replace("\\", "/").lstrip("/")
+        if any(
+            relative == wanted or relative.endswith("/" + wanted)
+            for wanted in selected
+        ):
+            kept.append(path)
+
+    logger.log(
+        "info",
+        f"Torrent selection filter: {len(kept)} of {len(files)} staged file(s) "
+        "will be uploaded",
+    )
+    return kept
+
+
 def _build_aria2c_cmd(save_path: str, magnet_link: str, file_indices: Optional[list[int]]) -> list[str]:
+    from streamlift_worker.torrent_metadata import _bt_tracker_map
+
     cmd = [
         "aria2c",
         "--dir", save_path,
@@ -627,7 +782,11 @@ def _build_aria2c_cmd(save_path: str, magnet_link: str, file_indices: Optional[l
         "--show-console-readout=true",
         "--allow-overwrite=true",
         "--auto-file-renaming=false",
+        "--bt-save-metadata=true",
     ]
+    tracker = _bt_tracker_map()
+    if tracker:
+        cmd += ["--bt-tracker", tracker]
     # --select-file MUST come before the magnet URI
     if file_indices:
         select_str = ",".join(str(i) for i in file_indices)

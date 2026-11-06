@@ -5,12 +5,10 @@ A race in the frontend dispatcher (trigger while the row is still `pending`,
 then the scheduled 1s/5s/15s re-dispatch) used to start the SAME torrent twice
 on the worker. One stream finished and posted `completed` while the other was
 still uploading — the frontend showed a completed item with an alive upload.
-This test locks in the three layers that close that hole:
+This test locks in the two layers that close that hole:
 
   1. worker /download: same downloadId while busy → idempotent, no 2nd thread
   2. downloader: in-flight id dedupe — a duplicate start is a no-op
-  3. streaming: throttled `uploading` status posts so the row never sits on
-     `downloading` while the MEGA upload runs
 """
 import asyncio
 import os
@@ -211,62 +209,3 @@ def test_downloader_dedupe_releases_on_exception(monkeypatch):
     # And a follow-up start works again.
     downloader.process_http_download(cfg, task, {})
     assert counted["runs"] == 2
-
-
-# ── 3. streaming: throttled 'uploading' progress posts ───────────────────────
-
-
-def test_stream_posts_uploading_progress_throttled(monkeypatch):
-    from streamlift_worker import aria2c_stream
-
-    posted = []
-    monkeypatch.setattr(
-        aria2c_stream,
-        "_post_upload_progress",
-        lambda config, did, pct, total: posted.append((did, pct, total)),
-    )
-
-    clock = {"t": 1_000.0}
-    monkeypatch.setattr(aria2c_stream.time, "time", lambda: clock["t"])
-
-    cfg = _Cfg()
-    task = {"status": "downloading", "progress": 0}
-    progress_cb, _ = aria2c_stream._upload_progress_callback(cfg, "d1", task, 1000)
-
-    # First tick at t=0: inside the 10s window → only live task state, no post.
-    progress_cb(100, 1000)
-    assert posted == []
-    assert task["status"] == "uploading"
-    assert task["progress"] == 10.0
-
-    # +10s with the same bytes → the 10s gate fires → post.
-    clock["t"] += 10
-    progress_cb(200, 1000)
-    assert posted == [("d1", 20.0, 1000)]
-
-    # +5s (still inside 10s post gate) → no post despite a big byte jump.
-    clock["t"] += 5
-    progress_cb(900, 1000)
-    assert len(posted) == 1
-
-    # +5s more (10s post window) → posts again.
-    clock["t"] += 5
-    progress_cb(900, 1000)
-    assert posted == [("d1", 20.0, 1000), ("d1", 90.0, 1000)]
-
-    assert task["progress"] == 90.0
-
-
-def test_stream_posts_initial_uploading_status(monkeypatch):
-    from streamlift_worker import aria2c_stream
-
-    posted = []
-    monkeypatch.setattr(
-        aria2c_stream,
-        "_post_upload_progress",
-        lambda config, did, pct, total: posted.append((did, pct, total)),
-    )
-
-    cfg = _Cfg()
-    aria2c_stream._post_upload_progress(cfg, "d1", 0.0, 630_000_000)
-    assert ("d1", 0.0, 630_000_000) in posted

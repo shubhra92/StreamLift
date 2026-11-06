@@ -1,6 +1,6 @@
 """
 Mega upload helpers using the custom streamlift-megapy package.
-Handles login, session persistence, and zero-disk streaming uploads.
+Handles login, session persistence, and streaming a local file to Mega.
 
 Two modes are supported:
   * Legacy — credentials (--mega-email/--mega-password) stored/generated in the
@@ -254,7 +254,7 @@ def stream_to_mega(
 ) -> bool:
     """
     Upload binary data from a stream directly to Mega.
-    Uses upload_stream() for zero-disk streaming.
+    Uses upload_stream(), so the file is never loaded into memory in full.
     Retries once with a fresh login if the session went stale — the stream is
     reopened via *reopen* on the retry so the file isn't re-read from EOF.
 

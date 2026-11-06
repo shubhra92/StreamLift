@@ -7,7 +7,7 @@ Designed to run in **Google Colab** — paste the one-liner from the dashboard a
 
 - Registers itself with the StreamLift backend
 - Polls for download tasks (HTTP URLs or magnet links)
-- Downloads files and streams them directly to **Mega** (zero local disk) or saves them **locally**
+- Downloads files to the worker's disk, then uploads them to **Mega** or keeps them **locally**
 - Reports live progress back to the backend
 - Sends heartbeats with CPU / RAM / network metrics
 
@@ -50,7 +50,8 @@ streamlift_worker/
 ├── __main__.py       # CLI entry point & arg parsing
 ├── config.py         # WorkerConfig dataclass
 ├── worker.py         # main loop, registration, heartbeat thread
-├── downloader.py     # HTTP + torrent download handlers
+├── downloader.py     # HTTP + torrent download handlers (stage to disk, then upload)
+├── torrent_metadata.py # magnet → file list resolution for the metadata endpoint
 ├── mega.py           # Mega upload helpers (uses streamlift-megapy)
 ├── api.py            # all HTTP calls to the backend
 ├── metrics.py        # CPU / RAM / network metrics

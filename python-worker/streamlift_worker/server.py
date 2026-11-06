@@ -995,15 +995,15 @@ async def worker_torrent_metadata(
     _require_session_token(x_session_token)
     if not body.magnetLink.startswith("magnet:?"):
         raise HTTPException(status_code=400, detail="Invalid magnet link format")
-    from streamlift_worker import aria2c_stream
+    from streamlift_worker import torrent_metadata
 
     async def _resolve():
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
-            aria2c_stream.fetch_torrent_metadata,
+            torrent_metadata.fetch_torrent_metadata,
             body.magnetLink,
-            aria2c_stream._bt_tracker_map(),
+            torrent_metadata._bt_tracker_map(),
         )
 
     try:
