@@ -1,7 +1,7 @@
 "use server";
 
 import { db, fileDownloads } from "../db";
-import { desc, eq, and } from "drizzle-orm";
+import { desc, eq, and, inArray } from "drizzle-orm";
 import { workers } from "../db/schema";
 import { getWorkspaceId } from "../lib/getWorkspaceId";
 import type { FileDownload } from "../db/schema";
@@ -207,6 +207,87 @@ export async function deleteDownload(id: string) {
 
   await db.delete(fileDownloads).where(eq(fileDownloads.id, id));
   return { success: true };
+}
+
+export interface BulkDeleteResult {
+  /** False only for a whole-batch failure (auth/db); per-row issues go in `failed` */
+  success: boolean;
+  message?: string;
+  deletedIds: string[];
+  failed: { id: string; message: string }[];
+}
+
+/**
+ * Deletes many rows in a single SQL statement instead of N round-trips.
+ * Rows that are missing or still downloading are reported per-id and skipped.
+ */
+export async function deleteDownloads(ids: string[]): Promise<BulkDeleteResult> {
+  const uniqueIds = [...new Set(ids)].filter(Boolean);
+
+  const workspaceId = await getWorkspaceId();
+  if (!workspaceId) {
+    return {
+      success: false,
+      message: "Unauthorized",
+      deletedIds: [],
+      failed: uniqueIds.map((id) => ({ id, message: "Unauthorized" })),
+    };
+  }
+
+  if (uniqueIds.length === 0) {
+    return { success: true, deletedIds: [], failed: [] };
+  }
+
+  try {
+    const rows = await db
+      .select()
+      .from(fileDownloads)
+      .where(
+        and(
+          eq(fileDownloads.workspaceId, workspaceId),
+          inArray(fileDownloads.id, uniqueIds)
+        )
+      );
+
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const deletableIds: string[] = [];
+    const failed: { id: string; message: string }[] = [];
+
+    for (const id of uniqueIds) {
+      const row = byId.get(id);
+      if (!row) {
+        failed.push({ id, message: "Download not found" });
+      } else if (row.status === "downloading") {
+        failed.push({ id, message: "Cannot delete a downloading file" });
+      } else {
+        deletableIds.push(id);
+      }
+    }
+
+    if (deletableIds.length > 0) {
+      await db
+        .delete(fileDownloads)
+        .where(
+          and(
+            eq(fileDownloads.workspaceId, workspaceId),
+            inArray(fileDownloads.id, deletableIds)
+          )
+        );
+    }
+
+    return { success: true, deletedIds: deletableIds, failed };
+  } catch (error) {
+    console.error("Failed to bulk delete downloads:", error);
+    return {
+      success: false,
+      message: "Failed to delete downloads",
+      deletedIds: [],
+      failed: uniqueIds.map((id) => ({
+        id,
+        message: "Failed to delete this download",
+      })),
+    };
+  }
 }
 
 export async function updateDownload(id: string, data: Partial<Omit<FileDownload, "id" | "createdAt" | "updatedAt">>) {

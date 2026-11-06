@@ -43,6 +43,8 @@ function isBandwidthLimitError(err: any): boolean {
   return msg.includes("bandwidth") || msg.includes("509");
 }
 
+const MEGA_API_GATEWAY = "/api/cloud/mega-gateway";
+
 /**
  * Raw MEGA pre-flight: test whether this share can be downloaded without relying
  * on megajs's internal chunk splitting. Request the WHOLE file range
@@ -59,7 +61,9 @@ async function checkMegaQuota(shareUrl: string, fileSize: number): Promise<numbe
   try {
     const handle = shareUrl.match(/\/file\/([^#?]+)/)?.[1];
     if (!handle) return null;
-    const apiRes = await fetch("https://g.api.mega.co.nz/cs", {
+    // The same-origin gateway avoids the MEGA API CORS preflight (Firefox can
+    // send Pragma/Cache-Control headers that MEGA's allow-list rejects).
+    const apiRes = await fetch(`${MEGA_API_GATEWAY}/cs?id=${Date.now()}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify([{ a: "g", v: 2, g: 1, ssl: 1, p: handle }]),
@@ -1988,9 +1992,11 @@ export function downloadCloudFileToDisk(
           if (superseded()) return;
           activeStream = null;
           settled = false;
-          const { File } = await import("megajs");
-          const freshFile = File.fromURL(shareUrl);
-          freshFile.api.userAgent = "StreamLift (+https://streamlift.app)";
+          const { File, API } = await import("megajs");
+          const api = new API(false, {
+            gateway: `${window.location.origin}${MEGA_API_GATEWAY}/`,
+          });
+          const freshFile = File.fromURL(shareUrl, { api });
           await freshFile.loadAttributes();
 
           // A manual refresh may have superseded this attempt while we were
@@ -2152,9 +2158,11 @@ export function downloadCloudFileToDisk(
 
   (async () => {
     try {
-      const { File } = await import("megajs");
-      const initFile = File.fromURL(shareUrl);
-      initFile.api.userAgent = "StreamLift (+https://streamlift.app)";
+      const { File, API } = await import("megajs");
+      const initApi = new API(false, {
+        gateway: `${window.location.origin}${MEGA_API_GATEWAY}/`,
+      });
+      const initFile = File.fromURL(shareUrl, { api: initApi });
       try {
         await initFile.loadAttributes();
         resolvedFileName = initFile.name ?? fileName;

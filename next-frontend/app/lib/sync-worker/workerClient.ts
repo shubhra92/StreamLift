@@ -553,6 +553,13 @@ class WorkerClient {
     await this.emitFromIDB("downloads");
   }
 
+  /** Bulk variant — one IDB cleanup pass and a single re-emit. */
+  async deleteDownloads(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await Promise.all(ids.map((id) => deleteDownloadFromIDB(id)));
+    await this.emitFromIDB("downloads");
+  }
+
   async deleteWorker(id: string): Promise<void> {
     await deleteWorkerFromIDB(id);
     await this.emitFromIDB("workers");

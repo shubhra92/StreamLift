@@ -34,8 +34,20 @@ export interface DownloadItemProps {
   onCloudTabDownload?: (download: FileDownload) => void;
   /** True while creating a share link for this row */
   isCreatingLink?: boolean;
+  /** Download ids already saved to the Watch page */
+  watchDownloadIds?: Set<string>;
+  /** Save this completed cloud download to the Watch page */
+  onAddToWatch?: (download: FileDownload) => void;
+  /** True while this row is being added to the Watch page */
+  isAddingToWatch?: boolean;
   /** Worker ids that are currently online (for gating the share-link icon) */
   onlineWorkerIds?: Set<string>;
+  /** True while the downloads page is in multi-select mode */
+  selectionMode?: boolean;
+  /** True when this row is checked for a batch operation */
+  isChecked?: boolean;
+  /** Toggles this row's checked state (batch selection) */
+  onToggleChecked?: (id: string) => void;
 }
 
 export interface DownloadListProps {
@@ -58,8 +70,23 @@ export interface DownloadListProps {
   onCloudExternalLink?: (download: FileDownload) => void;
   onCloudTabDownload?: (download: FileDownload) => void;
   creatingLinkIds?: Set<string>;
+  /** Download ids already saved to the Watch page */
+  watchDownloadIds?: Set<string>;
+  /** Save a completed cloud download to the Watch page */
+  onAddToWatch?: (download: FileDownload) => void;
+  /** Download ids currently being added to the Watch page */
+  addingWatchIds?: Set<string>;
   /** Worker ids that are currently online (for gating the share-link icon) */
   onlineWorkerIds?: Set<string>;
+  /** Multi-select mode */
+  selectionMode?: boolean;
+  checkedIds: Set<string>;
+  onToggleChecked: (id: string) => void;
+  /** Receives the ids of every row that is eligible for selection */
+  onToggleAll: (selectableIds: string[]) => void;
+  onClearChecked: () => void;
+  onBulkDelete: () => void;
+  isBulkDeleting?: boolean;
 }
 
 export interface DownloadDetailsProps {

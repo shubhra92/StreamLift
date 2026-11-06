@@ -409,11 +409,19 @@ export function WorkerDetails({ worker, status, onClose, onRelinked }: WorkerDet
                 <Field label="Version"   value={version} />
                 <Field label="Last Seen" value={timeAgo(status?.lastHeartbeat)} />
                 <Field label="Public IP" value={publicIp} mono={Boolean(worker?.ipAddress)} />
-                <Field label="Download To" value={worker.downloadLocation === "mega" ? "Mega" : "Local"} />
+                <Field
+                  label="Download To"
+                  value={
+                    worker.downloadLocation === "mega"
+                      ? worker.megaEmail
+                        ? `Mega (${worker.megaEmail})`
+                        : "Mega"
+                      : "Local"
+                  }
+                />
                 <Field label="Compute"   value={worker.computeType.charAt(0).toUpperCase() + worker.computeType.slice(1)} />
                 <Field label="Created"   value={formatDate(worker.createdAt?.toString())} />
                 <Field label="Tunnel"    value={tunnelLabel} />
-                {worker.megaEmail && <Field label="Mega Account" value={worker.megaEmail} />}
               </div>
 
               <div className="space-y-3">

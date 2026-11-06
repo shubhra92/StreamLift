@@ -161,6 +161,43 @@ export const fileDownloads = pgTable('file_downloads', {
 
 export type FileDownload = typeof fileDownloads.$inferSelect;
 
+/**
+ * An item explicitly saved to the Watch page.
+ *
+ * Rows are standalone: `source_download_id` is intentionally NOT a foreign key,
+ * so deleting the originating download (or its MEGA file) never removes the
+ * Watch entry. The saved `source_url` is enough to keep playing it.
+ *
+ * `provider` + `playback_mode` tell the client which playback adapter to use:
+ *   provider "mega", playback_mode "mega-share" -> megajs range decryption
+ *   provider "s3",   playback_mode "direct"     -> plain range fetch
+ * Future providers only add values/adapters; the table shape stays the same.
+ */
+export const watchItems = pgTable('watch_items', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id, { onDelete: 'cascade' }),
+  provider: text('provider').notNull().default('mega'),
+  providerItemId: text('provider_item_id'),
+  name: text('name').notNull(),
+  fileSize: bigint('file_size', { mode: 'number' }),
+  kind: text('kind').notNull(), // 'video' | 'audio'
+  mimeType: text('mime_type'),
+  sourceUrl: text('source_url').notNull(),
+  playbackMode: text('playback_mode').notNull().default('mega-share'),
+  sourceDownloadId: uuid('source_download_id'), // no FK — survives download deletion
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+}, (t) => [
+  index('watch_items_workspace_idx').on(t.workspaceId),
+  uniqueIndex('watch_items_workspace_provider_source_unique').on(t.workspaceId, t.provider, t.sourceUrl),
+  uniqueIndex('watch_items_workspace_download_unique')
+    .on(t.workspaceId, t.sourceDownloadId)
+    .where(sql`${t.sourceDownloadId} is not null`),
+]);
+
+export type WatchItem = typeof watchItems.$inferSelect;
+export type NewWatchItem = typeof watchItems.$inferInsert;
+
 // ── Android TV pairing ────────────────────────────────────────────────────────
 
 /**

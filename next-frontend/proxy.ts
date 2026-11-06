@@ -3,8 +3,10 @@ import { readSessionToken } from "./app/lib/sessionConstants";
 
 export const config = {
   matcher: [
-    // Only run on page routes — skip all API routes, static assets, Next internals
-    "/((?!api/|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    // Only run on page routes — skip all API routes, static assets, Next internals,
+    // the cloud-media service worker + its vendor bundle, and the virtual stream
+    // URLs (those are handled entirely in the browser).
+    "/((?!api/|__mega-stream/|mega-stream-sw.js|vendor/|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
 

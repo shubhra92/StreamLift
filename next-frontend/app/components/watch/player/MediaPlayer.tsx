@@ -80,6 +80,11 @@ interface Props {
   speed: number | null;
   sourceHeight: number | null;
   targetHeight: number | null;
+  /** Override the worker-oriented copy for non-worker sources (cloud playback). */
+  preparingLabel?: string;
+  preparingDetail?: string;
+  loadingDetail?: string;
+  errorHint?: string;
   errorMessage: string | null;
   downloading: boolean;
   downloadError: string | null;
@@ -187,6 +192,10 @@ export function MediaPlayer({
   speed,
   sourceHeight,
   targetHeight,
+  preparingLabel,
+  preparingDetail,
+  loadingDetail,
+  errorHint,
   errorMessage,
   downloading,
   downloadError,
@@ -1725,7 +1734,7 @@ export function MediaPlayer({
           {status === "preparing" ? (
             <>
               <p className="text-sm">
-                Preparing stream… {Math.round(progress * 100)}%
+                {preparingLabel ?? "Preparing stream…"} {Math.round(progress * 100)}%
                 {speed != null && speed > 0
                   ? ` · ${speed >= 10 ? Math.round(speed) : speed.toFixed(1)}× realtime`
                   : ""}
@@ -1737,9 +1746,10 @@ export function MediaPlayer({
                 />
               </div>
               <p className="max-w-sm text-xs text-white/55">
-                {sourceHeight != null && targetHeight != null && targetHeight < sourceHeight
-                  ? `Converting ${sourceHeight}p to ${targetHeight}p on the worker — this only happens once.`
-                  : "Converting on the worker so the timeline is exact — this only happens once."}
+                {preparingDetail ??
+                  (sourceHeight != null && targetHeight != null && targetHeight < sourceHeight
+                    ? `Converting ${sourceHeight}p to ${targetHeight}p on the worker — this only happens once.`
+                    : "Converting on the worker so the timeline is exact — this only happens once.")}
               </p>
               {speed != null && speed > 0 && speed < 1 && (
                 <p className="text-xs text-amber-300/90">
@@ -1751,11 +1761,12 @@ export function MediaPlayer({
             <>
               <p className="text-sm">Loading stream…</p>
               <p className="max-w-sm text-xs text-white/55">
-                {source?.kind === "hls"
-                  ? "Adaptive stream — quality options appear in Settings when available."
-                  : sourceHeight != null && targetHeight != null && targetHeight < sourceHeight
-                    ? `Converting ${sourceHeight}p to ${targetHeight}p on the worker as you watch.`
-                    : "Remote formats are converted on the worker — this can take a moment."}
+                {loadingDetail ??
+                  (source?.kind === "hls"
+                    ? "Adaptive stream — quality options appear in Settings when available."
+                    : sourceHeight != null && targetHeight != null && targetHeight < sourceHeight
+                      ? `Converting ${sourceHeight}p to ${targetHeight}p on the worker as you watch.`
+                      : "Remote formats are converted on the worker — this can take a moment.")}
               </p>
             </>
           )}
@@ -1768,8 +1779,8 @@ export function MediaPlayer({
           <AlertCircle className="h-8 w-8" />
           <p className="max-w-md text-sm">{errorMessage}</p>
           <p className="max-w-md text-xs text-white/55">
-            The file may have been removed, the worker may be offline, or this browser
-            cannot decode the stream.
+            {errorHint ??
+              "The file may have been removed, the worker may be offline, or this browser cannot decode the stream."}
           </p>
           <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
             <button

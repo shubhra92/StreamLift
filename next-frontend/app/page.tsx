@@ -7,7 +7,9 @@ import { useProgress } from "./hooks/useProgress"; //need go deep
 import { useWorkerProgress } from "./hooks/useWorkerProgress"; //need go deep
 import { useAllDownloads } from "./hooks/useAllDownloads"; //need go deep
 import { useWorkers } from "./hooks/useWorkers"; //need go deep
-import { createDownload, deleteDownload, updateDownload, claimDownload } from "./actions/downloads"; //need go deep
+import { useWatchItems } from "./hooks/useWatchItems";
+import { createDownload, deleteDownload, deleteDownloads, updateDownload, claimDownload } from "./actions/downloads"; //need go deep
+import { addWatchItem } from "./actions/watchItems";
 import { createTorrentDownload, claimTorrentDownload, updateTorrentDownload, deleteTorrentDownload } from "./actions/torrents"; //need go deep
 import type { FileDownload } from "./db/schema"; //need go deep
 import type { IDBFileDownload } from "./lib/idb/schema"; //need go deep
@@ -35,6 +37,7 @@ import {
   AddUnifiedModal,
   EditDownloadModal,
   PartCountDialog,
+  BulkDeleteDialog,
 } from "./components/downloads"; //need go deep
 import type { SelectedFilesMeta } from "./components/torrents/AddTorrentModal";
 
@@ -63,6 +66,11 @@ export default function Home() {
   const [pendingPartDownload, setPendingPartDownload] = useState<{ download: FileDownload; file: WorkerLocalFile } | null>(null);
   const [pendingCloudDownload, setPendingCloudDownload] = useState<{ download: FileDownload; shareUrl: string; fileName: string; fileSize: number } | null>(null);
   const [creatingLinkIds, setCreatingLinkIds] = useState<Set<string>>(new Set());
+  const [addingWatchIds, setAddingWatchIds] = useState<Set<string>>(new Set());
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   // Refs for outside-click detection on the details panel
   const contentRef = useRef<HTMLDivElement>(null);
@@ -71,6 +79,15 @@ export default function Home() {
 
   const { downloads: idbDownloads, networkStatus, syncNow } = useAllDownloads();
   const downloads = idbDownloads.map(toFileDownload);
+  const { items: watchItems, refresh: refreshWatchItems } = useWatchItems();
+  // Match by share URL as well as source id: deleting a download and adding the
+  // same cloud file again creates a new row, but it is already on the Watch page.
+  const watchSourceUrls = new Set(watchItems.map((item) => item.sourceUrl));
+  const watchDownloadIds = new Set(
+    downloads
+      .filter((download) => !!download.cloudShareUrl && watchSourceUrls.has(download.cloudShareUrl))
+      .map((download) => download.id),
+  );
   const torrentService = useTorrentService();
   const workerFileAvailabilityKey = downloads
     .filter((download) => download.status === "completed" && !!download.workerId)
@@ -348,7 +365,9 @@ export default function Home() {
     }
   };
 
-  const handleDelete = async (id: string) => {
+  // Deletes a single row and returns the result without alerting, so the
+  // single-row and bulk flows can share it.
+  const deleteOne = async (id: string) => {
     setDeletingIds((prev) => new Set(prev).add(id));
     try {
       const result = await deleteDownload(id);
@@ -359,10 +378,9 @@ export default function Home() {
           setDownloadingFileId(null);
         }
         await client.current.deleteDownload(id);
-        syncNow();
-      } else {
-        alert(result.message);
+        return { success: true as const };
       }
+      return { success: false as const, message: result.message };
     } finally {
       setDeletingIds((prev) => {
         const next = new Set(prev);
@@ -371,6 +389,125 @@ export default function Home() {
       });
     }
   };
+
+  const handleDelete = async (id: string) => {
+    const result = await deleteOne(id);
+    if (result.success) {
+      syncNow();
+    } else {
+      alert(result.message);
+    }
+  };
+
+  const enterSelectionMode = () => {
+    setSelectedId(null);
+    setCheckedIds(new Set());
+    setSelectionMode(true);
+  };
+
+  const exitSelectionMode = () => {
+    setCheckedIds(new Set());
+    setSelectionMode(false);
+  };
+
+  const handleToggleChecked = (id: string) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleToggleAll = (selectableIds: string[]) => {
+    setCheckedIds((prev) => {
+      const allSelected =
+        selectableIds.length > 0 && selectableIds.every((id) => prev.has(id));
+      const next = new Set(prev);
+      for (const id of selectableIds) {
+        if (allSelected) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleClearChecked = () => setCheckedIds(new Set());
+
+  const handleBulkDelete = () => {
+    if (checkedIds.size > 0) setIsBulkDeleteOpen(true);
+  };
+
+  const confirmBulkDelete = async () => {
+    const ids = downloads
+      .filter(
+        (d) =>
+          checkedIds.has(d.id) &&
+          d.status !== "downloading" &&
+          d.id !== downloadingFileIdRef.current
+      )
+      .map((d) => d.id);
+
+    if (ids.length === 0) {
+      setIsBulkDeleteOpen(false);
+      setCheckedIds(new Set());
+      return;
+    }
+
+    setIsBulkDeleting(true);
+    setDeletingIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) next.add(id);
+      return next;
+    });
+
+    const failures: string[] = [];
+    try {
+      // One server round-trip with a single SQL `DELETE ... WHERE id IN (...)`.
+      const result = await deleteDownloads(ids);
+
+      if (result.deletedIds.length > 0) {
+        if (
+          downloadingFileIdRef.current &&
+          result.deletedIds.includes(downloadingFileIdRef.current)
+        ) {
+          client.current.stopTracking();
+          downloadingFileIdRef.current = null;
+          setDownloadingFileId(null);
+        }
+        await client.current.deleteDownloads(result.deletedIds);
+        syncNow();
+      }
+
+      if (!result.success && result.message) failures.push(result.message);
+      failures.push(...result.failed.map((failure) => failure.message));
+    } catch {
+      failures.push("Failed to delete downloads");
+    } finally {
+      setDeletingIds((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+      setIsBulkDeleting(false);
+      setIsBulkDeleteOpen(false);
+      setCheckedIds(new Set());
+      setSelectionMode(false);
+    }
+
+    if (failures.length > 0) {
+      alert([...new Set(failures)].join("\n"));
+    }
+  };
+
+  // Count only rows that are still present and eligible, so synced/removed
+  // rows never inflate the batch count.
+  const checkedCount = downloads.filter(
+    (d) =>
+      checkedIds.has(d.id) &&
+      d.status !== "downloading" &&
+      d.id !== downloadingFileId
+  ).length;
 
   const handleEditSubmit = async (
     id: string,
@@ -614,6 +751,27 @@ export default function Home() {
     await runCloudDownload(download, shareUrl, name, fileSize, 1);
   };
 
+  const handleAddToWatch = async (download: FileDownload) => {
+    if (addingWatchIds.has(download.id)) return;
+    setAddingWatchIds((prev) => new Set(prev).add(download.id));
+    try {
+      const result = await addWatchItem(download.id);
+      if (!result.success) {
+        alert(result.message ?? "Could not add this file to the Watch page");
+        return;
+      }
+      await refreshWatchItems();
+    } catch (error: any) {
+      alert(error?.message ?? "Could not add this file to the Watch page");
+    } finally {
+      setAddingWatchIds((prev) => {
+        const next = new Set(prev);
+        next.delete(download.id);
+        return next;
+      });
+    }
+  };
+
   const selectedDownload = downloads.find((d) => d.id === selectedId);
 
   return (
@@ -630,12 +788,24 @@ export default function Home() {
               <h2 className="text-xl md:text-2xl font-bold">Downloads</h2>
               <p className="text-sm text-muted-foreground mt-1">Download files from direct URLs or torrents</p>
             </div>
-            <Button
-              onClick={() => setIsModalOpen(true)}
-              className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 py-2 cursor-pointer"
-            >
-              + Add Download
-            </Button>
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              {!selectionMode && (
+                <Button
+                  onClick={() => setIsModalOpen(true)}
+                  className="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 py-2 cursor-pointer"
+                >
+                  + Add Download
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                onClick={selectionMode ? exitSelectionMode : enterSelectionMode}
+                disabled={!selectionMode && downloads.length === 0}
+                className="flex-1 sm:flex-none py-2 cursor-pointer"
+              >
+                {selectionMode ? "Cancel" : "Select"}
+              </Button>
+            </div>
           </motion.div>
 
           <OfflineBanner networkStatus={networkStatus} />
@@ -659,7 +829,17 @@ export default function Home() {
             onCloudExternalLink={handleCloudExternalLink}
             onCloudTabDownload={handleCloudTabDownload}
             creatingLinkIds={creatingLinkIds}
+            watchDownloadIds={watchDownloadIds}
+            onAddToWatch={handleAddToWatch}
+            addingWatchIds={addingWatchIds}
             onlineWorkerIds={new Set(workers.filter((w) => w.online).map((w) => w.id))}
+            selectionMode={selectionMode}
+            checkedIds={checkedIds}
+            onToggleChecked={handleToggleChecked}
+            onToggleAll={handleToggleAll}
+            onClearChecked={handleClearChecked}
+            onBulkDelete={handleBulkDelete}
+            isBulkDeleting={isBulkDeleting}
           />
           <div className="h-4 md:h-6" />
         </div>
@@ -735,6 +915,14 @@ export default function Home() {
           }
           setPendingCloudDownload(null);
         }}
+      />
+
+      <BulkDeleteDialog
+        isOpen={isBulkDeleteOpen}
+        count={checkedCount}
+        isDeleting={isBulkDeleting}
+        onClose={() => setIsBulkDeleteOpen(false)}
+        onConfirm={() => { void confirmBulkDelete(); }}
       />
     </main>
   );
